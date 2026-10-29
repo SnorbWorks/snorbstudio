@@ -27,6 +27,7 @@ export function initMaint(theApp) {
   mr.on('klippy', update);
   mr.on('procstat', (s) => { procStats = s; if (app.page === 'maint') renderSystem(); });
   app.onPage((p) => { if (p === 'maint') { loadSystem(); update(); } });
+  mr.on('connection', (up) => { if (up && app.page === 'maint') { loadSystem(); loadConfigList(); } });
 }
 
 export async function restartFirmware() {

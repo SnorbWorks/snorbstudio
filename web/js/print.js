@@ -13,10 +13,11 @@ export function initPrint(theApp) {
   app = theApp;
   const chart = new TempChart($('#temp-chart'));
   mr.on('status', update);
-  mr.on('klippy', (s) => { if (s === 'ready') { loadHistory(chart); update(); } });
+  mr.on('klippy', (s) => { if (s === 'ready') loadHistory(chart); update(); });
   mr.on('queue', loadQueue);
+  mr.on('connection', (up) => { if (up && app.page === 'print') { loadRecent(); loadQueue(); } });
   mr.on('files', () => { if (!mr.busy) loadRecent(); });
-  app.onPage((p) => { chart.visible = p === 'print'; if (chart.visible) { chart.draw(); loadRecent(); loadQueue(); } });
+  app.onPage((p) => { chart.visible = p === 'print'; if (chart.visible) { update(); chart.draw(); loadRecent(); loadQueue(); } });
   setInterval(() => {
     const p = mr.printer;
     if (p.extruder) chart.push(p.extruder, p.heater_bed);

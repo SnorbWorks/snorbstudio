@@ -28,6 +28,7 @@ export function initFiles(theApp) {
   mr.on('files', () => { if (app.page === 'files') loadGcodes(); });
   mr.on('history', () => { if (app.page === 'files') loadHistory(); });
   app.onPage((p) => { if (p === 'files') refresh(); });
+  mr.on('connection', (up) => { if (up && app.page === 'files') refresh(); });
   return { fileCard };
 }
 
