@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ender Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='22' width='26' height='6' rx='2' fill='%23ff8a3d'/%3E%3Cpath d='M10 20 16 6l6 14z' fill='%23ffd0a8'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/app.css">
+<script type="importmap">
+{ "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+} }
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo"></span>Ender Studio</div>
+  <nav class="tabs" id="tabs">
+    <button data-page="prepare" class="active">Prepare</button>
+    <button data-page="print">Print</button>
+    <button data-page="control">Control</button>
+    <button data-page="files">Files</button>
+    <button data-page="maint">Maintenance</button>
+  </nav>
+  <div class="status-strip">
+    <span class="pill" id="state-pill">Connecting…</span>
+    <span class="temp" title="Nozzle"><i class="dot nozzle"></i><b id="hdr-noz">--</b></span>
+    <span class="temp" title="Bed"><i class="dot bed"></i><b id="hdr-bed">--</b></span>
+    <button class="estop" id="estop" title="Emergency stop: cuts all motors and heaters instantly">STOP</button>
+  </div>
+</header>
+
+<div class="banner hidden" id="klippy-banner">
+  <div><b id="kb-title">Printer not ready</b><span id="kb-msg"></span></div>
+  <div class="row">
+    <button class="btn" id="kb-fw">Restart printer board</button>
+    <button class="btn ghost" id="kb-svc">Restart Klipper service</button>
+  </div>
+</div>
+
+<main>
+<!-- ============================================================ PREPARE -->
+<section class="page active" id="page-prepare">
+  <div class="viewport" id="viewport">
+    <div class="view-toolbar">
+      <div class="seg" id="gizmo-mode">
+        <button data-mode="translate" class="active" title="Move (W)">Move</button>
+        <button data-mode="rotate" title="Rotate (E)">Rotate</button>
+        <button data-mode="scale" title="Scale (R)">Scale</button>
+      </div>
+      <div class="seg" id="view-buttons">
+        <button data-view="iso">3D</button>
+        <button data-view="top">Top</button>
+        <button data-view="front">Front</button>
+        <button data-view="side">Side</button>
+      </div>
+      <div class="seg" id="mode-toggle">
+        <button data-show="model" class="active">Model</button>
+        <button data-show="preview" id="preview-btn" disabled title="Slice first">Preview</button>
+      </div>
+    </div>
+    <div class="drop-hint" id="drop-hint">
+      <div class="drop-card">
+        <div class="big">Drop STL, 3MF or OBJ files here</div>
+        <div>or <button class="btn" id="open-files">Choose files…</button></div>
+        <div class="muted small">Files go straight onto the bed. They are also kept in your model library on the Pi.</div>
+      </div>
+    </div>
+    <div class="face-pick-hint hidden" id="face-hint">Click the face that should sit on the bed · <a href="#" id="face-cancel">cancel</a></div>
+    <div class="layer-bar hidden" id="layer-bar">
+      <span id="layer-label">Layer</span>
+      <input type="range" id="layer-slider" min="1" max="1" value="1">
+      <label class="chk"><input type="checkbox" id="layer-single"> only this layer</label>
+      <label class="chk hidden" id="follow-wrap"><input type="checkbox" id="follow-print" checked> follow the print</label>
+      <button class="btn sm" id="color-change" title="Pause at the start of this layer so you can swap to another filament colour">+ Colour change here</button>
+      <span class="small" id="color-list"></span>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="view-msg hidden" id="view-msg"></div>
+  </div>
+  <aside class="sidebar">
+    <div class="panel">
+      <div class="panel-h">Models <span class="muted small" id="plate-count"></span></div>
+      <div class="model-list" id="model-list"></div>
+      <div class="row">
+        <button class="btn" id="add-model">Add…</button>
+        <button class="btn ghost" id="from-library">From library</button>
+        <button class="btn ghost danger" id="clear-plate" title="Remove everything from the bed">Clear</button>
+      </div>
+      <input type="file" id="file-input" accept=".stl,.3mf,.obj" multiple hidden>
+    </div>
+
+    <div class="panel" id="pos-panel">
+      <div class="panel-h">Place <span class="muted small" id="sel-name">select a model</span></div>
+      <div class="grid2">
+        <button class="btn" id="lay-flat" title="Turn the model so its largest flat side sits on the bed">Lay flat</button>
+        <button class="btn" id="pick-face" title="Click a face of the model to put it on the bed">Pick face…</button>
+        <button class="btn" id="auto-orient" title="Try every stable orientation and pick the one needing the least support">Auto-orient</button>
+        <button class="btn" id="arrange" title="Spread all models out on the bed">Arrange all</button>
+      </div>
+      <div class="rot-row">
+        <span class="muted small">Rotate 90°</span>
+        <button class="btn sm" data-rot="x">X</button>
+        <button class="btn sm" data-rot="y">Y</button>
+        <button class="btn sm" data-rot="z">Z</button>
+        <button class="btn sm ghost" id="reset-rot" title="Undo all rotation">Reset</button>
+      </div>
+      <div class="rot-row">
+        <span class="muted small">Turn</span>
+        <input type="number" id="rot-angle" value="45" step="5" title="Degrees">
+        <button class="btn sm" data-turn="z" title="Turn around the vertical axis">↻ Z</button>
+        <button class="btn sm" data-turn="x">↻ X</button>
+        <button class="btn sm" data-turn="y">↻ Y</button>
+      </div>
+      <div class="rot-row">
+        <span class="muted small">Mirror</span>
+        <button class="btn sm" data-mirror="x">Left↔Right</button>
+        <button class="btn sm" data-mirror="y">Front↔Back</button>
+      </div>
+      <div class="dims">
+        <label>Scale <input type="number" id="scale-pct" min="1" max="1000" step="5" value="100">%</label>
+        <span class="muted small" id="dims">–</span>
+      </div>
+      <div class="row">
+        <span class="muted small">Copies</span>
+        <input type="number" id="copies" min="2" max="50" value="2">
+        <button class="btn sm" id="make-copies" title="Fill the bed with this many of the selected model">Make</button>
+        <button class="btn sm ghost" id="inch-mm" title="For models drawn in inches">Inches → mm</button>
+      </div>
+      <div class="muted small" id="model-stats"></div>
+      <div class="row">
+        <button class="btn sm ghost" id="center-model">Center</button>
+        <button class="btn sm ghost" id="dup-model">Duplicate</button>
+        <button class="btn sm ghost danger" id="del-model">Delete</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">Supports</div>
+      <label class="chk"><input type="checkbox" id="show-overhang" checked> Show overhangs in red</label>
+      <label class="slider-row">Overhang angle <input type="range" id="overhang-angle" min="30" max="70" value="45"> <b id="overhang-val">45°</b></label>
+      <div class="support-forecast" id="support-forecast">–</div>
+      <select id="supports"></select>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">Print settings</div>
+      <label class="field">Quality <select id="quality"></select></label>
+      <label class="field">Material <select id="material"></select></label>
+      <label class="slider-row">Infill <input type="range" id="infill" min="0" max="100" step="5" value="15"> <b id="infill-val">15%</b></label>
+      <label class="field">Brim
+        <select id="brim">
+          <option value="0">None</option>
+          <option value="4">Small (4 mm) – helps small parts stick</option>
+          <option value="8">Large (8 mm) – tall or thin parts</option>
+        </select>
+      </label>
+      <details class="adv" id="adv">
+        <summary>Advanced <span class="muted small" id="adv-count"></span></summary>
+        <p class="muted small">Leave a box empty to use the quality/material default.</p>
+        <div class="adv-grid">
+          <label>Layer height <input type="number" data-adv="layer_height" step="0.02" min="0.06" max="0.32" placeholder="auto"><i>mm</i></label>
+          <label>Walls <input type="number" data-adv="perimeters" min="1" max="10" placeholder="auto"></label>
+          <label>Top layers <input type="number" data-adv="top_solid_layers" min="0" max="30" placeholder="auto"></label>
+          <label>Bottom layers <input type="number" data-adv="bottom_solid_layers" min="0" max="30" placeholder="auto"></label>
+          <label>Nozzle temp <input type="number" data-adv="temperature" min="150" max="250" placeholder="auto"><i>°C</i></label>
+          <label>Bed temp <input type="number" data-adv="bed_temperature" min="0" max="100" placeholder="auto"><i>°C</i></label>
+          <label>Print speed <input type="number" data-adv="speed_pct" min="30" max="200" step="10" placeholder="100"><i>%</i></label>
+          <label>Cooling fan <input type="number" data-adv="max_fan_speed" min="0" max="100" step="5" placeholder="auto"><i>%</i></label>
+          <label>Retraction <input type="number" data-adv="retract_length" min="0" max="10" step="0.5" placeholder="5"><i>mm</i></label>
+          <label>Z hop <input type="number" data-adv="retract_lift" min="0" max="2" step="0.1" placeholder="0.2"><i>mm</i></label>
+          <label>Raft layers <input type="number" data-adv="raft_layers" min="0" max="6" placeholder="0"></label>
+          <label>Hole/size fix <input type="number" data-adv="xy_size_compensation" min="-1" max="1" step="0.05" placeholder="0" title="Negative values make holes bigger and outsides smaller"><i>mm</i></label>
+          <label class="span2">Infill pattern
+            <select data-adv="fill_pattern">
+              <option value="">Gyroid (default)</option><option value="grid">Grid</option>
+              <option value="rectilinear">Rectilinear</option><option value="honeycomb">Honeycomb (strong)</option>
+              <option value="cubic">Cubic</option><option value="adaptivecubic">Adaptive cubic (fast)</option>
+              <option value="lightning">Lightning (fastest, top support only)</option>
+            </select></label>
+          <label class="span2">Seam
+            <select data-adv="seam_position">
+              <option value="">Aligned (default)</option><option value="rear">At the back</option>
+              <option value="nearest">Nearest</option><option value="random">Random</option>
+            </select></label>
+          <label class="span2">Surface
+            <select data-adv="fuzzy_skin">
+              <option value="">Smooth (default)</option><option value="external">Fuzzy outside (textured)</option>
+            </select></label>
+          <label class="chk span2"><input type="checkbox" data-adv="ironing"> Iron top surfaces (smoother, slower)</label>
+          <label class="chk span2"><input type="checkbox" data-adv="spiral_vase"> Vase mode (one continuous wall, no top)</label>
+        </div>
+        <button class="btn sm ghost" id="adv-reset">Reset advanced</button>
+      </details>
+    </div>
+
+    <div class="panel slice-panel">
+      <label class="field">File name <input type="text" id="job-name" placeholder="model"></label>
+      <button class="btn primary big" id="slice-btn" disabled>Slice</button>
+      <div class="progress hidden" id="slice-progress"><div class="bar"><i></i></div><span class="small"></span>
+        <button class="btn sm ghost" id="slice-cancel">Cancel</button></div>
+      <div class="slice-result hidden" id="slice-result">
+        <div class="stats" id="slice-stats"></div>
+        <div class="row">
+          <button class="btn primary" id="print-now">Print now</button>
+          <button class="btn ghost" id="show-preview">Preview layers</button>
+        </div>
+        <div class="muted small">Saved to Files as <b id="slice-file"></b></div>
+      </div>
+    </div>
+  </aside>
+</section>
+
+<!-- ============================================================ PRINT -->
+<section class="page" id="page-print">
+  <div class="print-layout">
+    <div class="card job-card">
+      <div class="job-top">
+        <img class="thumb" id="job-thumb" alt="">
+        <div class="job-info">
+          <div class="muted small" id="job-state">Idle</div>
+          <h2 id="job-file">Nothing printing</h2>
+          <div class="job-meta" id="job-meta"></div>
+        </div>
+        <div class="ring" id="job-ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="track"/><circle cx="60" cy="60" r="52" class="fill" id="ring-fill"/></svg><b id="job-pct">0%</b></div>
+      </div>
+      <div class="job-stats">
+        <div><span>Elapsed</span><b id="job-elapsed">–</b></div>
+        <div><span>Remaining</span><b id="job-remaining">–</b></div>
+        <div><span>Finish at</span><b id="job-eta">–</b></div>
+        <div><span>Layer</span><b id="job-layer">–</b></div>
+        <div><span>Height</span><b id="job-z">–</b></div>
+        <div><span>Filament</span><b id="job-fil">–</b></div>
+      </div>
+      <div class="row job-buttons">
+        <button class="btn big" id="job-pause">Pause</button>
+        <button class="btn big" id="job-resume">Resume</button>
+        <button class="btn big danger" id="job-cancel">Cancel print</button>
+        <button class="btn ghost" id="job-3d" title="Show the toolpaths with the current layer highlighted">Watch in 3D</button>
+      </div>
+      <div class="row hidden" id="paused-fil">
+        <span class="small">Paused – swap filament:</span>
+        <button class="btn sm" id="p-unload">Unload</button>
+        <button class="btn sm" id="p-load">Load</button>
+        <button class="btn sm ghost" data-extrude="10">Extrude 10 mm</button>
+      </div>
+      <div class="idle-files hidden" id="idle-files">
+        <div class="panel-h">Ready to print</div>
+        <div class="file-grid compact" id="recent-files"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-h">First layer height (live)</div>
+      <p class="muted small">If the first layer looks too thin (scraping) raise it; if lines don't stick or have gaps, lower it.</p>
+      <div class="babystep">
+        <button class="btn" data-z="-0.05">−0.05</button>
+        <button class="btn" data-z="-0.01">−0.01</button>
+        <b id="z-adjust">0.000 mm</b>
+        <button class="btn" data-z="0.01">+0.01</button>
+        <button class="btn" data-z="0.05">+0.05</button>
+      </div>
+      <button class="btn sm ghost" id="z-save" title="Make this adjustment permanent (applies after the print)">Save as new Z offset</button>
+      <div class="panel-h">Tuning</div>
+      <label class="slider-row">Speed <input type="range" id="speed-factor" min="50" max="200" step="5" value="100"> <b id="speed-val">100%</b></label>
+      <label class="slider-row">Flow <input type="range" id="flow-factor" min="80" max="120" step="1" value="100"> <b id="flow-val">100%</b></label>
+      <label class="slider-row">Part fan <input type="range" id="fan-print" min="0" max="100" step="5" value="0"> <b id="fan-print-val">0%</b></label>
+      <div class="objects hidden" id="objects-box">
+        <div class="panel-h">Objects on the bed</div>
+        <p class="muted small">Skip a failed part and keep printing the rest.</p>
+        <div id="objects-list"></div>
+      </div>
+    </div>
+
+    <div class="card wide">
+      <div class="panel-h">Temperatures</div>
+      <canvas class="chart" id="temp-chart"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CONTROL -->
+<section class="page" id="page-control">
+  <div class="control-layout">
+    <div class="card">
+      <div class="panel-h">Move <span class="muted small" id="pos-readout"></span></div>
+      <div class="jog">
+        <div class="jog-xy">
+          <button class="btn" data-jog="Y+">Y+<small>back</small></button>
+          <button class="btn" data-jog="X-">X−<small>left</small></button>
+          <button class="btn home" data-home="XY">Home XY</button>
+          <button class="btn" data-jog="X+">X+<small>right</small></button>
+          <button class="btn" data-jog="Y-">Y−<small>front</small></button>
+        </div>
+        <div class="jog-z">
+          <button class="btn" data-jog="Z+">Z+<small>up</small></button>
+          <button class="btn home" data-home="Z">Home Z</button>
+          <button class="btn" data-jog="Z-">Z−<small>down</small></button>
+        </div>
+      </div>
+      <div class="row">
+        <span class="muted small">Step</span>
+        <div class="seg" id="jog-step">
+          <button data-step="0.1">0.1</button><button data-step="1">1</button>
+          <button data-step="10" class="active">10</button><button data-step="50">50</button>
+        </div>
+        <span class="muted small">mm</span>
+      </div>
+      <div class="row">
+        <button class="btn primary" data-home="ALL">Home all</button>
+        <button class="btn ghost" id="motors-off">Motors off</button>
+      </div>
+      <p class="muted small" id="jog-note"></p>
+    </div>
+
+    <div class="card">
+      <div class="panel-h">Heat</div>
+      <div class="heater">
+        <span><i class="dot nozzle"></i>Nozzle</span><b id="c-noz">--</b>
+        <input type="number" id="t-noz" min="0" max="250" placeholder="°C"><button class="btn sm" data-set="extruder">Set</button>
+      </div>
+      <div class="heater">
+        <span><i class="dot bed"></i>Bed</span><b id="c-bed">--</b>
+        <input type="number" id="t-bed" min="0" max="110" placeholder="°C"><button class="btn sm" data-set="heater_bed">Set</button>
+      </div>
+      <div class="row">
+        <button class="btn" data-preheat="pla">Preheat PLA <small>210 / 60</small></button>
+        <button class="btn" data-preheat="petg">Preheat PETG <small>240 / 75</small></button>
+        <button class="btn ghost" data-preheat="off">Cool down</button>
+      </div>
+      <div class="panel-h">Filament</div>
+      <div class="row">
+        <button class="btn" id="load-fil">Load</button>
+        <button class="btn" id="unload-fil">Unload</button>
+        <button class="btn ghost" data-extrude="10">Extrude 10 mm</button>
+        <button class="btn ghost" data-extrude="-10">Retract 10 mm</button>
+      </div>
+      <p class="muted small">Load/Unload heat the nozzle to the material temperature first (PLA 210 °C unless you set the nozzle higher).</p>
+      <div class="panel-h">Part cooling fan</div>
+      <label class="slider-row">Fan <input type="range" id="fan" min="0" max="100" step="5" value="0"> <b id="fan-val">0%</b></label>
+    </div>
+
+    <div class="card wide console-card">
+      <div class="panel-h">Console</div>
+      <div class="console" id="console"></div>
+      <form class="console-input" id="console-form">
+        <input type="text" id="console-cmd" placeholder="Type a G-code command, e.g. M114 or QUERY_PROBE" autocomplete="off">
+        <button class="btn">Send</button>
+      </form>
+      <div class="chips" id="console-chips">
+        <button data-cmd="M114">Position</button><button data-cmd="QUERY_PROBE">Probe state</button>
+        <button data-cmd="QUERY_Z_GUARD">Z guard</button><button data-cmd="QUERY_ENDSTOPS">Endstops</button>
+        <button data-cmd="BLTOUCH_DEBUG COMMAND=reset">Reset probe</button><button data-cmd="HELP">All commands</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ FILES -->
+<section class="page" id="page-files">
+  <div class="files-layout">
+    <div class="card wide">
+      <div class="panel-h">Print files <span class="muted small">(sliced, ready to print)</span>
+        <span class="spacer"></span>
+        <input type="text" id="file-search" placeholder="Search…" style="width:180px">
+        <select id="file-sort"><option value="new">Newest first</option><option value="name">Name</option><option value="size">Largest</option></select>
+        <label class="btn sm ghost">Upload G-code<input type="file" id="gcode-upload" accept=".gcode,.gco,.g" hidden></label>
+      </div>
+      <div class="file-grid" id="gcode-files"></div>
+    </div>
+    <div class="card wide">
+      <div class="panel-h">Model library <span class="muted small">(STL/3MF/OBJ kept on the Pi)</span></div>
+      <div class="model-lib" id="model-lib"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ MAINTENANCE -->
+<section class="page" id="page-maint">
+  <div class="maint-layout">
+    <div class="card">
+      <div class="panel-h">Printer</div>
+      <div class="kv" id="sys-kv"></div>
+      <div class="row">
+        <button class="btn" id="fw-restart">Restart printer board</button>
+        <button class="btn ghost" id="svc-restart">Restart Klipper service</button>
+      </div>
+      <p class="muted small">Use "Restart Klipper service" if the board restart doesn't bring it back (e.g. after a Z-guard stop).</p>
+      <div class="panel-h">Z crash guard</div>
+      <div class="kv" id="zguard-kv"></div>
+      <p class="muted small">The spare Z switch cuts all motion if it's pressed while the printer is homing or probing. It's set to click when the nozzle is ~0.8 mm above the bed.</p>
+    </div>
+
+    <div class="card">
+      <div class="panel-h">Bed level map <span class="muted small" id="mesh-range"></span></div>
+      <div class="mesh" id="mesh-view"></div>
+      <p class="muted small">Numbers are mm above (+) or below (−) the centre, seen from above with the back of the bed at the top. The printer corrects for this automatically.</p>
+      <div class="row">
+        <button class="btn" id="mesh-run">Measure the bed again</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="panel-h">Calibration</div>
+      <div class="cal">
+        <b>Z offset (paper test)</b>
+        <p class="muted small">Sets how far the nozzle sits from the bed. Do this after changing the nozzle or moving the probe.</p>
+        <div id="zcal-idle"><button class="btn" id="zcal-start">Start Z offset calibration</button></div>
+        <div id="zcal-active" class="hidden">
+          <p class="small">Slide a sheet of paper under the nozzle. Lower it until the paper drags slightly.</p>
+          <div class="babystep">
+            <button class="btn" data-testz="-1">−1</button><button class="btn" data-testz="-0.1">−0.1</button>
+            <button class="btn" data-testz="-0.02">−0.02</button>
+            <b id="zcal-pos">–</b>
+            <button class="btn" data-testz="+0.02">+0.02</button><button class="btn" data-testz="+0.1">+0.1</button>
+          </div>
+          <div class="row"><button class="btn primary" id="zcal-accept">Paper drags – save</button><button class="btn ghost" id="zcal-abort">Cancel</button></div>
+        </div>
+      </div>
+      <div class="cal">
+        <b>Temperature tuning (PID)</b>
+        <p class="muted small">Teaches the printer to hold temperatures steady. Re-run after changing the heater or hot end.</p>
+        <div class="row">
+          <button class="btn" id="pid-hotend">Tune nozzle (200 °C)</button>
+          <button class="btn" id="pid-bed">Tune bed (60 °C)</button>
+        </div>
+      </div>
+      <div class="cal">
+        <b>Advanced</b>
+        <p class="muted small">The original Klipper page (Mainsail) is still available for anything not covered here.</p>
+        <a class="btn ghost" id="mainsail-link" target="_blank">Open Mainsail</a>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+
+<div class="modal hidden" id="modal"><div class="modal-card">
+  <h3 id="modal-title"></h3><div id="modal-body"></div>
+  <div class="row right"><button class="btn ghost" id="modal-no">Cancel</button><button class="btn primary" id="modal-yes">OK</button></div>
+</div></div>
+<div class="toasts" id="toasts"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
