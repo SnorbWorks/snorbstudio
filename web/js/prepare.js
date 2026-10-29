@@ -9,6 +9,7 @@ import { Viewer, BED } from './viewer.js';
 import * as T from './mesh_tools.js';
 import { GcodePreview, parseGcode, FEATURES } from './gcode_preview.js';
 import { mr } from './moonraker.js';
+import { buildShape, shapeName, shapeForm } from './shapes.js';
 import { $, $$, el, toast, attempt, confirmBox, fmtBytes, fmtDate, debounce } from './ui.js';
 
 const MAX_LIVE_FACES = 150000;     // repaint overhangs while dragging below this
@@ -99,6 +100,18 @@ async function loadFromLibrary(name) {
   if (!r.ok) return toast(`Couldn't load ${name}`, 'err');
   await addFiles([{ name, buffer: await r.arrayBuffer() }], { saveToLibrary: false, fromLibrary: true });
   app.show('prepare');
+}
+
+async function addShape() {
+  const f = shapeForm();
+  if (!await confirmBox('Add a shape', f.form, 'Add to bed')) return;
+  const { kind, values } = f.read();
+  try {
+    const mesh = T.makeMesh(T.toGeometry(await buildShape(kind, values)), 'shape');
+    await addFiles([{ name: shapeName(kind, values), buffer: T.toSTL(mesh) }]);
+  } catch (e) {
+    toast(e.message, 'err', 7000);
+  }
 }
 
 // --------------------------------------------------------------- plate memory
@@ -369,6 +382,7 @@ function wireSidebar() {
     }
   };
   $('#from-library').onclick = () => app.show('files');
+  $('#add-shape').onclick = addShape;
 
   $('#show-overhang').onchange = changed;
   $('#overhang-angle').oninput = () => {
