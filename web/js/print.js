@@ -4,6 +4,7 @@
 
 import { mr } from './moonraker.js';
 import { $, $$, el, toast, attempt, confirmBox, fmtDuration, fmtFilament, fmtDate } from './ui.js';
+import * as fil from './filaments.js';
 
 let app;
 let meta = null, metaFile = null;
@@ -73,6 +74,21 @@ function slider(sel, label, send) {
 
 async function saveZOffset() {
   const z = mr.printer.gcode_move?.homing_origin?.[2] || 0;
+  const act = fil.activeFilament();
+  // A non-PLA print: the adjustment belongs to that filament's squish.
+  // Saving it is just a variable, so it works mid-print with no restart.
+  if (act.material && act.material !== 'pla') {
+    const name = (await fil.materials())[act.material]?.label || act.material;
+    if (Math.abs(z - act.squish) < 0.001) return toast(`No adjustment to save – ${name} is already at ${fil.fmtSquish(z)}.`);
+    if (Math.abs(z) > 0.3) return toast('That is more than 0.3 mm away from PLA – re-check the PLA Z offset instead.', 'err', 8000);
+    if (!await confirmBox(`Save the ${name} first layer?`,
+      `${name} prints will start at ${fil.fmtSquish(z)} from now on (was ${fil.fmtSquish(act.squish)}). The PLA Z offset doesn't change.`, 'Save')) return;
+    await attempt(async () => {
+      await mr.gcode(`SAVE_VARIABLE VARIABLE=squish_${act.material} VALUE=${z.toFixed(3)}`);
+      await mr.gcode(`SET_GCODE_VARIABLE MACRO=_STUDIO_FILAMENT VARIABLE=squish VALUE=${z.toFixed(3)}`);
+    }, `${name} first layer saved`);
+    return;
+  }
   if (Math.abs(z) < 0.001) return toast('No adjustment to save.');
   if (mr.busy) return toast('Save it after the print finishes – saving restarts the printer.', 'err');
   if (!await confirmBox('Save the Z offset?', `Make the ${z > 0 ? '+' : ''}${z.toFixed(3)} mm adjustment permanent. Klipper will restart.`, 'Save')) return;
@@ -144,7 +160,14 @@ function update() {
   $('#job-3d').classList.toggle('hidden', !active);
   $('#paused-fil').classList.toggle('hidden', state !== 'paused');
   $('#idle-files').classList.toggle('hidden', active);
-  $('#z-save').disabled = active;
+  const act = fil.activeFilament();
+  const perFil = !!act.material && act.material !== 'pla';
+  $('#z-save').disabled = active && !perFil;
+  $('#z-save').textContent = perFil ? 'Save for this filament' : 'Save as new Z offset';
+  $('#z-filament').classList.toggle('hidden', !perFil);
+  if (perFil) {
+    $('#z-filament').textContent = `This print's filament started at ${fil.fmtSquish(act.squish)} – the number above includes it. Saving updates that filament only.`;
+  }
 
   const gm = p.gcode_move || {};
   $('#z-adjust').textContent = `${(gm.homing_origin?.[2] ?? 0) >= 0 ? '+' : ''}${(gm.homing_origin?.[2] ?? 0).toFixed(3)} mm`;

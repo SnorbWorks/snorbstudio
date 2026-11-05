@@ -11,6 +11,7 @@ import { GcodePreview, parseGcode, FEATURES } from './gcode_preview.js';
 import { mr } from './moonraker.js';
 import { buildShape, shapeName, shapeForm } from './shapes.js';
 import { $, $$, el, toast, attempt, confirmBox, fmtBytes, fmtDate, debounce } from './ui.js';
+import * as fil from './filaments.js';
 
 const MAX_LIVE_FACES = 150000;     // repaint overhangs while dragging below this
 let viewer, preview;
@@ -395,6 +396,8 @@ function wireSidebar() {
   for (const id of ['#supports', '#quality', '#material', '#brim', '#infill']) {
     $(id).addEventListener('change', () => { invalidateSlice(); refreshForecast(); saveSettings(); });
   }
+  $('#material').addEventListener('change', materialInfo);
+  mr.on('status', (st) => { if (st && ('save_variables' in st)) materialInfo(); });
   wireAdvanced();
   $('#slice-btn').onclick = slice;
   $('#slice-cancel').onclick = () => currentJob && fetch(`/studio-api/jobs/${currentJob}/cancel`, { method: 'POST' });
@@ -462,7 +465,7 @@ function saveSettings() {
 
 async function loadInfo() {
   let info;
-  try { info = await (await fetch('/studio-api/info')).json(); } catch (e) {
+  try { info = await fil.loadInfo(); } catch (e) {
     toast('The slicing helper on the Pi is not running.', 'err', 8000);
     return;
   }
@@ -481,8 +484,29 @@ async function loadInfo() {
   } catch (e) { /* ignore */ }
   $('#infill-val').textContent = `${$('#infill').value}%`;
   $('#overhang-val').textContent = `${angle()}°`;
+  materials = info.materials || {};
+  materialInfo();
   if (!info.slicer) toast('PrusaSlicer is not installed on the Pi, so slicing won\'t work.', 'err', 10000);
   refreshForecast();
+}
+
+// What the chosen filament changes, so it's not a mystery.
+let materials = {};
+function materialInfo() {
+  const key = $('#material').value;
+  const m = materials[key];
+  const box = $('#material-info');
+  if (!m) return box.replaceChildren();
+  const sq = fil.squishFor(materials, key);
+  const saved = key !== 'pla' && fil.savedSquish(key) != null;
+  box.replaceChildren(
+    el('div', { class: 'mat-chips' },
+      el('span', {}, `${m.temp} °C nozzle`), el('span', {}, `${m.bed} °C bed`),
+      el('span', { title: 'First-layer nozzle height compared with PLA. Tune it from the Print page while a print runs.' },
+        `First layer ${fil.fmtSquish(sq)}${saved ? ' · tuned' : ''}`),
+      el('span', {}, `Speed ${m.speed_pct}%`), el('span', {}, `Fan ${m.fan}%`),
+      el('span', {}, `Retraction ${m.retract} mm`)),
+    el('div', { class: 'muted small' }, m.note));
 }
 
 // --------------------------------------------------------------- slicing

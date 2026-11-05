@@ -52,16 +52,72 @@ QUALITY = {
                  "first_layer_height": 0.2, "perimeters": 4,
                  "top_solid_layers": 5, "bottom_solid_layers": 5},
 }
+# Filament presets.  Slicer keys are PrusaSlicer config keys; the rest:
+#   squish      default first-layer nozzle height change in mm vs. PLA
+#               (+ = higher = less squish).  PRINT_START applies it with
+#               SET_GCODE_OFFSET; a value saved on the printer (SAVE_VARIABLE
+#               squish_<key>, from the Print page) wins over this default.
+#               PLA is the reference: its "squish" is the probe Z offset.
+#   speed_pct   default print speed (% of the base profile's speeds)
+#   note        one line shown under the dropdown
+# max_volumetric_speed (mm3/s) caps how fast the stock hotend can melt it.
 MATERIAL = {
-    "pla":  {"label": "PLA", "temperature": 205, "first_layer_temperature": 210,
-             "bed_temperature": 60, "first_layer_bed_temperature": 60,
-             "min_fan_speed": 100, "max_fan_speed": 100,
-             "disable_fan_first_layers": 1, "retract_length": 5},
-    "petg": {"label": "PETG", "temperature": 235, "first_layer_temperature": 240,
-             "bed_temperature": 75, "first_layer_bed_temperature": 75,
-             "min_fan_speed": 30, "max_fan_speed": 50,
-             "disable_fan_first_layers": 3, "retract_length": 4},
+    "pla": {"label": "PLA", "squish": 0.0, "speed_pct": 100,
+            "note": "The reference filament. Easy, no smell.",
+            "filament_type": "PLA",
+            "temperature": 205, "first_layer_temperature": 210,
+            "bed_temperature": 60, "first_layer_bed_temperature": 60,
+            "min_fan_speed": 100, "max_fan_speed": 100,
+            "disable_fan_first_layers": 1, "retract_length": 5,
+            "retract_speed": 40, "deretract_speed": 40,
+            "max_volumetric_speed": 10, "first_layer_speed": 20},
+    "pla_plus": {"label": "PLA+ / Tough PLA", "squish": 0.0, "speed_pct": 100,
+            "note": "Like PLA but a bit hotter; tougher, less brittle.",
+            "filament_type": "PLA",
+            "temperature": 215, "first_layer_temperature": 220,
+            "bed_temperature": 60, "first_layer_bed_temperature": 60,
+            "min_fan_speed": 100, "max_fan_speed": 100,
+            "disable_fan_first_layers": 1, "retract_length": 5,
+            "retract_speed": 40, "deretract_speed": 40,
+            "max_volumetric_speed": 10, "first_layer_speed": 20},
+    "silk": {"label": "Silk PLA", "squish": 0.0, "speed_pct": 70,
+            "note": "Shiny PLA. Slower and hotter keeps the shine.",
+            "filament_type": "PLA",
+            "temperature": 215, "first_layer_temperature": 220,
+            "bed_temperature": 60, "first_layer_bed_temperature": 60,
+            "min_fan_speed": 100, "max_fan_speed": 100,
+            "disable_fan_first_layers": 1, "retract_length": 5,
+            "retract_speed": 40, "deretract_speed": 40,
+            "max_volumetric_speed": 8, "first_layer_speed": 20},
+    "petg": {"label": "PETG", "squish": 0.05, "speed_pct": 80,
+            "note": "Strong and heat-resistant. Less squish, less fan; a bit stringy.",
+            "filament_type": "PETG",
+            "temperature": 235, "first_layer_temperature": 240,
+            "bed_temperature": 75, "first_layer_bed_temperature": 75,
+            "min_fan_speed": 30, "max_fan_speed": 50,
+            "disable_fan_first_layers": 3, "retract_length": 4,
+            "retract_speed": 35, "deretract_speed": 30,
+            "max_volumetric_speed": 8, "first_layer_speed": 20},
+    "tpu": {"label": "TPU (flexible)", "squish": 0.03, "speed_pct": 40,
+            "note": "Rubbery. Prints slowly with almost no retraction (Bowden tube).",
+            "filament_type": "FLEX",
+            "temperature": 225, "first_layer_temperature": 230,
+            "bed_temperature": 50, "first_layer_bed_temperature": 50,
+            "min_fan_speed": 50, "max_fan_speed": 50,
+            "disable_fan_first_layers": 1, "retract_length": 1,
+            "retract_speed": 20, "deretract_speed": 20,
+            "max_volumetric_speed": 2.5, "first_layer_speed": 15},
+    "abs": {"label": "ABS / ASA", "squish": 0.0, "speed_pct": 80,
+            "note": "Needs a draft-free enclosure and ventilation (fumes). Bed 100 °C.",
+            "filament_type": "ABS",
+            "temperature": 240, "first_layer_temperature": 245,
+            "bed_temperature": 100, "first_layer_bed_temperature": 100,
+            "min_fan_speed": 0, "max_fan_speed": 15,
+            "disable_fan_first_layers": 3, "retract_length": 5,
+            "retract_speed": 40, "deretract_speed": 40,
+            "max_volumetric_speed": 10, "first_layer_speed": 20},
 }
+MATERIAL_META = ("label", "squish", "speed_pct", "note")
 SUPPORTS = {
     "none":      {"label": "No supports"},
     "auto":      {"label": "Supports everywhere"},
@@ -113,7 +169,18 @@ def base_speeds():
     return BASE_SPEEDS
 
 
-def advanced_config(adv):
+def materials_info():
+    """What the UI shows about each filament preset."""
+    return {k: {"label": v["label"], "note": v["note"], "squish": v["squish"],
+                "speed_pct": v["speed_pct"],
+                "temp": v["first_layer_temperature"],
+                "bed": v["first_layer_bed_temperature"],
+                "fan": v["max_fan_speed"], "retract": v["retract_length"],
+                "flow": v["max_volumetric_speed"]}
+            for k, v in MATERIAL.items()}
+
+
+def advanced_config(adv, material=None):
     cfg = {}
     for key, val in (adv or {}).items():
         spec = ADVANCED.get(key)
@@ -136,7 +203,8 @@ def advanced_config(adv):
     if "max_fan_speed" in cfg:
         cfg["min_fan_speed"] = cfg["max_fan_speed"]
     try:
-        pct = float((adv or {}).get("speed_pct") or 100)
+        pct = float((adv or {}).get("speed_pct")
+                    or (material or {}).get("speed_pct") or 100)
     except ValueError:
         pct = 100
     pct = max(30, min(200, pct))
@@ -188,8 +256,16 @@ def job_config(opts):
     cfg = {}
     cfg.update({k: v for k, v in QUALITY[opts.get("quality", "standard")].items()
                 if k != "label"})
-    cfg.update({k: v for k, v in MATERIAL[opts.get("material", "pla")].items()
-                if k != "label"})
+    key = opts.get("material", "pla")
+    mat = MATERIAL[key]
+    cfg.update({k: v for k, v in mat.items() if k not in MATERIAL_META})
+    # PRINT_START applies the filament's first-layer squish (a value saved on
+    # the printer for this filament wins over the default passed here).
+    cfg["start_gcode"] = (
+        "SET_PRINT_STATS_INFO TOTAL_LAYER=[total_layer_count]\\n"
+        "PRINT_START BED=[first_layer_bed_temperature] "
+        "HOTEND=[first_layer_temperature] MATERIAL=%s SQUISH=%.3f"
+        % (key, mat["squish"]))
     sup = opts.get("supports", "none")
     cfg["support_material"] = int(sup != "none")
     cfg["support_material_auto"] = 1
@@ -200,7 +276,7 @@ def job_config(opts):
     brim = float(opts.get("brim", 0))
     cfg["brim_width"] = brim
     cfg["skirts"] = 0 if brim > 0 else 1
-    cfg.update(advanced_config(opts.get("advanced")))
+    cfg.update(advanced_config(opts.get("advanced"), mat))
     return cfg
 
 
@@ -400,6 +476,7 @@ class Handler(BaseHTTPRequestHandler):
                     "slicer": self.server.slicer_version,
                     "quality": {k: v["label"] for k, v in QUALITY.items()},
                     "material": {k: v["label"] for k, v in MATERIAL.items()},
+                    "materials": materials_info(),
                     "supports": {k: v["label"] for k, v in SUPPORTS.items()},
                 })
             if parts == ["models"]:

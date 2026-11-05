@@ -148,7 +148,8 @@
     <div class="panel">
       <div class="panel-h">Print settings</div>
       <label class="field">Quality <select id="quality"></select></label>
-      <label class="field">Material <select id="material"></select></label>
+      <label class="field">Filament <select id="material"></select></label>
+      <div class="mat-info" id="material-info"></div>
       <label class="slider-row">Infill <input type="range" id="infill" min="0" max="100" step="5" value="15"> <b id="infill-val">15%</b></label>
       <label class="field">Brim
         <select id="brim">
@@ -262,7 +263,8 @@
         <button class="btn" data-z="0.01">+0.01</button>
         <button class="btn" data-z="0.05">+0.05</button>
       </div>
-      <button class="btn sm ghost" id="z-save" title="Make this adjustment permanent (applies after the print)">Save as new Z offset</button>
+      <p class="muted small hidden" id="z-filament"></p>
+      <button class="btn sm ghost" id="z-save" title="Make this adjustment permanent">Save as new Z offset</button>
       <div class="panel-h">Tuning</div>
       <label class="slider-row">Speed <input type="range" id="speed-factor" min="50" max="200" step="5" value="100"> <b id="speed-val">100%</b></label>
       <label class="slider-row">Flow <input type="range" id="flow-factor" min="80" max="120" step="1" value="100"> <b id="flow-val">100%</b></label>
@@ -326,8 +328,8 @@
         <input type="number" id="t-bed" min="0" max="110" placeholder="°C"><button class="btn sm" data-set="heater_bed">Set</button>
       </div>
       <div class="row">
-        <button class="btn" data-preheat="pla">Preheat PLA <small>210 / 60</small></button>
-        <button class="btn" data-preheat="petg">Preheat PETG <small>240 / 75</small></button>
+        <select id="preheat-mat" title="Filament"></select>
+        <button class="btn" id="preheat-btn">Preheat <small id="preheat-temps"></small></button>
         <button class="btn ghost" data-preheat="off">Cool down</button>
       </div>
       <div class="panel-h">Filament</div>
@@ -337,7 +339,7 @@
         <button class="btn ghost" data-extrude="10">Extrude 10 mm</button>
         <button class="btn ghost" data-extrude="-10">Retract 10 mm</button>
       </div>
-      <p class="muted small">Load/Unload heat the nozzle to the material temperature first (PLA 210 °C unless you set the nozzle higher).</p>
+      <p class="muted small">Load/Unload heat the nozzle to the filament's temperature first (or the nozzle target, if it's already set higher than 180 °C).</p>
       <div class="panel-h">Part cooling fan</div>
       <label class="slider-row">Fan <input type="range" id="fan" min="0" max="100" step="5" value="0"> <b id="fan-val">0%</b></label>
     </div>

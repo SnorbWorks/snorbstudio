@@ -2,8 +2,9 @@
 
 import { mr } from './moonraker.js';
 import { $, $$, el, toast, attempt, confirmBox } from './ui.js';
+import * as fil from './filaments.js';
 
-const PRESETS = { pla: [210, 60], petg: [240, 75] };
+let mats = {};
 const HIDDEN_MACROS = new Set(['PRINT_START', 'PRINT_END', 'CANCEL_PRINT', 'PAUSE', 'RESUME',
   'SET_PAUSE_NEXT_LAYER', 'SET_PAUSE_AT_LAYER', 'SET_PRINT_STATS_INFO', 'LOAD_FILAMENT', 'UNLOAD_FILAMENT']);
 let step = 10;
@@ -28,17 +29,33 @@ export function initControl(app) {
   for (const id of ['#t-noz', '#t-bed']) {
     $(id).onkeydown = (e) => { if (e.key === 'Enter') $(id).nextElementSibling.click(); };
   }
-  $$('[data-preheat]').forEach((b) => b.onclick = () => {
-    const p = PRESETS[b.dataset.preheat];
-    attempt(() => mr.gcode(p
-      ? `SET_HEATER_TEMPERATURE HEATER=extruder TARGET=${p[0]}\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=${p[1]}`
-      : 'TURN_OFF_HEATERS'), p ? `Heating to ${p[0]} / ${p[1]} °C` : 'Heaters off');
+  $$('[data-preheat]').forEach((b) => b.onclick = () =>
+    attempt(() => mr.gcode('TURN_OFF_HEATERS'), 'Heaters off'));
+  // One filament list, shared with the Prepare page.
+  const pick = $('#preheat-mat');
+  const temps = () => {
+    const m = mats[pick.value];
+    $('#preheat-temps').textContent = m ? `${m.temp} / ${m.bed}` : '';
+  };
+  fil.materials().then((m) => {
+    mats = m;
+    pick.replaceChildren(...Object.entries(mats).map(([k, v]) => el('option', { value: k }, v.label)));
+    pick.value = mats[fil.selectedMaterial()] ? fil.selectedMaterial() : 'pla';
+    temps();
   });
+  pick.onchange = temps;
+  app.onPage?.((p) => { if (p === 'control' && mats[fil.selectedMaterial()]) { pick.value = fil.selectedMaterial(); temps(); } });
+  $('#preheat-btn').onclick = () => {
+    const m = mats[pick.value];
+    if (!m) return toast('Filament list not loaded – is the slicing helper running?', 'err');
+    attempt(() => mr.gcode(`SET_HEATER_TEMPERATURE HEATER=extruder TARGET=${m.temp}\nSET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=${m.bed}`),
+      `Heating for ${m.label}: ${m.temp} / ${m.bed} °C`);
+  };
 
   // ---- filament
   const filTemp = () => {
     const t = mr.printer.extruder?.target || 0;
-    return t >= 180 ? t : 210;
+    return t >= 180 ? t : (mats[pick.value]?.temp || 210);
   };
   $('#load-fil').onclick = async () => {
     if (!guardFilament()) return;

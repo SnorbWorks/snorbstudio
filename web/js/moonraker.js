@@ -8,6 +8,7 @@ const OBJECTS = {
   idle_timeout: null, pause_resume: null, z_guard: null, bed_mesh: null,
   exclude_object: null, motion_report: ['live_position', 'live_velocity'],
   probe: ['last_query', 'last_z_result'], manual_probe: null, configfile: ['save_config_pending'],
+  save_variables: null, 'gcode_macro _STUDIO_FILAMENT': null,
 };
 
 export class Moonraker extends EventTarget {

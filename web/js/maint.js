@@ -5,6 +5,7 @@
 import { mr } from './moonraker.js';
 import { $, el, toast, attempt, confirmBox, fmtBytes, fmtDuration } from './ui.js';
 import { BED } from './viewer.js';
+import * as fil from './filaments.js';
 
 let app;
 let sysInfo = null;
@@ -230,6 +231,7 @@ function buildExtras() {
       calPrint('Bridging test', 'Pillars joined by 10-50 mm bridges. Shows how well unsupported spans print.', bridgeTest)));
   layout.append(cal);
   layout.append(extruderCard());
+  layout.append(squishCard());
 
   // Config editor
   const files = el('div', { class: 'editor-files', id: 'cfg-files' });
@@ -256,6 +258,35 @@ function buildExtras() {
     el('pre', { class: 'console hidden', id: 'log-tail' })));
 
   app.onPage((p) => { if (p === 'maint' && !files.childElementCount) loadConfigList(); });
+}
+
+// Per-filament first-layer squish (relative to PLA, saved on the printer).
+function squishCard() {
+  const rows = el('div', { class: 'squish-rows' });
+  const card = el('div', { class: 'card' },
+    el('div', { class: 'panel-h' }, 'Filament first layer'),
+    el('p', { class: 'muted small' }, 'How much higher (+) or lower (−) the nozzle starts for each filament, compared with PLA. PLA uses the Z offset. The easiest way to tune these is live on the Print page – "Save for this filament" lands here.'),
+    rows);
+  let mats = {};
+  const render = () => {
+    if (document.activeElement?.closest?.('.squish-rows')) return;   // don't clobber typing
+    rows.replaceChildren(...Object.entries(mats).filter(([k]) => k !== 'pla').map(([k, m]) => {
+      const cur = fil.squishFor(mats, k);
+      const input = el('input', { type: 'number', step: '0.01', min: '-0.3', max: '0.3', value: cur.toFixed(2) });
+      const save = (v) => {
+        if (!mr.ready) return toast('The printer isn\'t ready.', 'err');
+        v = Math.max(-0.3, Math.min(0.3, +v || 0));
+        attempt(() => mr.gcode(`SAVE_VARIABLE VARIABLE=squish_${k} VALUE=${v.toFixed(3)}`), `${m.label}: ${fil.fmtSquish(v)}`);
+      };
+      return el('div', { class: 'squish-row' },
+        el('span', {}, m.label), input, el('i', { class: 'muted small' }, 'mm'),
+        el('button', { class: 'btn sm', onclick: () => save(input.value) }, 'Save'),
+        el('button', { class: 'btn sm ghost', title: `Default ${fil.fmtSquish(m.squish)}`, onclick: () => save(m.squish) }, 'Default'));
+    }));
+  };
+  fil.materials().then((m) => { mats = m; render(); });
+  mr.on('status', (st) => { if (st && 'save_variables' in st) render(); });
+  return card;
 }
 
 function calPrint(title, text, fn) {
