@@ -227,7 +227,7 @@ function buildExtras() {
     el('div', { class: 'calprints' },
       calPrint('First layer test', 'Five thin squares across the bed. Shows whether the Z offset and bed level are right everywhere.', firstLayerTest),
       calPrint('20 mm cube', 'Checks dimensions (should measure 20.0 mm) and general print quality.', () => boxModel('cal_cube_20mm.stl', [[0, 0, 0, 20, 20, 20]])),
-      calPrint('Temperature tower', 'Prints at 220 → 190 °C in 5° steps. Pick the temperature whose block looks best.', tempTower),
+      calPrint('Temperature tower', 'Steps the nozzle temperature down through the filament\'s range (the one picked on Prepare). Pick the block that looks best.', tempTower),
       calPrint('Bridging test', 'Pillars joined by 10-50 mm bridges. Shows how well unsupported spans print.', bridgeTest)));
   layout.append(cal);
   layout.append(extruderCard());
@@ -339,12 +339,18 @@ function bridgeTest() {
 }
 
 async function tempTower() {
-  if (!await confirmBox('Temperature tower', 'This slices a tower for PLA with 7 blocks from 220 °C down to 190 °C (about 1 hour to print). It appears in Files when ready.', 'Create')) return;
+  const mats = await fil.materials();
+  const key = mats[fil.selectedMaterial()] ? fil.selectedMaterial() : 'pla';
+  const m = mats[key] || { label: 'PLA', tower: [220, 190] };
+  const [hot, cool] = m.tower;
+  const blocks = Math.round((hot - cool) / 5) + 1;
+  if (!await confirmBox(`Temperature tower – ${m.label}`,
+    `${blocks} blocks from ${hot} °C down to ${cool} °C in 5° steps (about ${Math.round(blocks * 8.5 / 5) * 5} minutes). Uses the filament picked on the Prepare page. It appears in Files when ready.`, 'Create')) return;
   toast('Slicing the temperature tower…');
   try {
     const r = await fetch('/studio-api/calibration/temp_tower', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start: 220, end: 190, step: 5 }) });
+      body: JSON.stringify({ material: key, start: hot, end: cool, step: 5 }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Failed');
     for (let i = 0; i < 120; i++) {

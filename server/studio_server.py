@@ -60,9 +60,11 @@ QUALITY = {
 #               PLA is the reference: its "squish" is the probe Z offset.
 #   speed_pct   default print speed (% of the base profile's speeds)
 #   note        one line shown under the dropdown
+#   tower       temperature tower range (hot -> cool, 5 degree steps)
 # max_volumetric_speed (mm3/s) caps how fast the stock hotend can melt it.
 MATERIAL = {
     "pla": {"label": "PLA", "squish": 0.0, "speed_pct": 100,
+            "tower": (220, 190),
             "note": "The reference filament. Easy, no smell.",
             "filament_type": "PLA",
             "temperature": 205, "first_layer_temperature": 210,
@@ -72,6 +74,7 @@ MATERIAL = {
             "retract_speed": 40, "deretract_speed": 40,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
     "pla_plus": {"label": "PLA+ / Tough PLA", "squish": 0.0, "speed_pct": 100,
+            "tower": (230, 205),
             "note": "Like PLA but a bit hotter; tougher, less brittle.",
             "filament_type": "PLA",
             "temperature": 215, "first_layer_temperature": 220,
@@ -81,6 +84,7 @@ MATERIAL = {
             "retract_speed": 40, "deretract_speed": 40,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
     "silk": {"label": "Silk PLA", "squish": 0.0, "speed_pct": 70,
+            "tower": (230, 205),
             "note": "Shiny PLA. Slower and hotter keeps the shine.",
             "filament_type": "PLA",
             "temperature": 215, "first_layer_temperature": 220,
@@ -90,6 +94,7 @@ MATERIAL = {
             "retract_speed": 40, "deretract_speed": 40,
             "max_volumetric_speed": 8, "first_layer_speed": 20},
     "petg": {"label": "PETG", "squish": 0.05, "speed_pct": 80,
+            "tower": (250, 230),
             "note": "Strong and heat-resistant. Less squish, less fan; a bit stringy.",
             "filament_type": "PETG",
             "temperature": 235, "first_layer_temperature": 240,
@@ -99,6 +104,7 @@ MATERIAL = {
             "retract_speed": 35, "deretract_speed": 30,
             "max_volumetric_speed": 8, "first_layer_speed": 20},
     "tpu": {"label": "TPU (flexible)", "squish": 0.03, "speed_pct": 40,
+            "tower": (240, 215),
             "note": "Rubbery. Prints slowly with almost no retraction (Bowden tube).",
             "filament_type": "FLEX",
             "temperature": 225, "first_layer_temperature": 230,
@@ -108,6 +114,7 @@ MATERIAL = {
             "retract_speed": 20, "deretract_speed": 20,
             "max_volumetric_speed": 2.5, "first_layer_speed": 15},
     "abs": {"label": "ABS / ASA", "squish": 0.0, "speed_pct": 80,
+            "tower": (250, 230),
             "note": "Needs a draft-free enclosure and ventilation (fumes). Bed 100 °C.",
             "filament_type": "ABS",
             "temperature": 240, "first_layer_temperature": 245,
@@ -117,7 +124,7 @@ MATERIAL = {
             "retract_speed": 40, "deretract_speed": 40,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
 }
-MATERIAL_META = ("label", "squish", "speed_pct", "note")
+MATERIAL_META = ("label", "squish", "speed_pct", "note", "tower")
 SUPPORTS = {
     "none":      {"label": "No supports"},
     "auto":      {"label": "Supports everywhere"},
@@ -176,7 +183,7 @@ def materials_info():
                 "temp": v["first_layer_temperature"],
                 "bed": v["first_layer_bed_temperature"],
                 "fan": v["max_fan_speed"], "retract": v["retract_length"],
-                "flow": v["max_volumetric_speed"]}
+                "flow": v["max_volumetric_speed"], "tower": v["tower"]}
             for k, v in MATERIAL.items()}
 
 
@@ -660,7 +667,11 @@ class Handler(BaseHTTPRequestHandler):
     def start_temp_tower(self):
         try:
             req = json.loads(self.body() or b"{}")
-            start, end = int(req.get("start", 220)), int(req.get("end", 190))
+            material = req.get("material", "pla")
+            if material not in MATERIAL:
+                return self.error("unknown material")
+            hot, cool = MATERIAL[material]["tower"]
+            start, end = int(req.get("start", hot)), int(req.get("end", cool))
             step = int(req.get("step", 5)) or 5
         except ValueError:
             return self.error("bad request")
@@ -670,8 +681,8 @@ class Handler(BaseHTTPRequestHandler):
         workdir = tempfile.mkdtemp(prefix="studio-cal-")
         path = os.path.join(workdir, "temp_tower.stl")
         boxes_stl(path, boxes)
-        opts = {"name": "temp_tower_%d-%d" % (temps[0], temps[-1]),
-                "quality": "standard", "material": "pla", "supports": "none",
+        opts = {"name": "temp_tower_%s_%d-%d" % (material, temps[0], temps[-1]),
+                "quality": "standard", "material": material, "supports": "none",
                 "infill": 15, "brim": 0, "temp_steps": steps}
         job_id = self.new_job(opts, [path], workdir)
         if not job_id:
