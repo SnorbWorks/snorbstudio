@@ -14,6 +14,10 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   POST   /studio-api/slice                start a slice job (see read_slice_body)
   GET    /studio-api/jobs/<id>            job progress / result
   POST   /studio-api/jobs/<id>/cancel
+  GET    /studio-api/update               version + update status
+  POST   /studio-api/update/check         look for updates now
+  POST   /studio-api/update/install       install the waiting update now
+  POST   /studio-api/update/auto          {"auto": true|false}
 """
 import base64
 import json
@@ -28,6 +32,8 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
+
+import updater
 
 HOME = os.path.expanduser("~")
 GCODES = os.path.join(HOME, "printer_data", "gcodes")
@@ -227,6 +233,13 @@ def advanced_config(adv, material=None):
 
 jobs = {}
 jobs_lock = threading.Lock()
+
+
+def slicing():
+    return any(j["state"] in ("queued", "slicing") for j in jobs.values())
+
+
+UPDATER = updater.Updater(slicing)
 
 
 def safe_name(name, exts=None):
@@ -486,6 +499,8 @@ class Handler(BaseHTTPRequestHandler):
                     "materials": materials_info(),
                     "supports": {k: v["label"] for k, v in SUPPORTS.items()},
                 })
+            if parts == ["update"]:
+                return self.send_json(UPDATER.status())
             if parts == ["models"]:
                 os.makedirs(MODELS, exist_ok=True)
                 out = []
@@ -559,6 +574,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.start_temp_tower()
         if parts == ["gcode", "color_changes"]:
             return self.color_changes()
+        if parts[:1] == ["update"]:
+            return self.update_action(parts[1:])
         if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel":
             job = jobs.get(parts[1])
             if not job:
@@ -612,6 +629,20 @@ class Handler(BaseHTTPRequestHandler):
         if not job_id:
             return self.error("Already slicing - wait for it to finish", 409)
         return self.send_json({"id": job_id})
+
+    def update_action(self, parts):
+        try:
+            if parts == ["check"]:
+                UPDATER.check()
+            elif parts == ["install"]:
+                UPDATER.install(manual=True)
+            elif parts == ["auto"]:
+                UPDATER.set_auto(json.loads(self.body() or b"{}").get("auto", True))
+            else:
+                return self.error("not found", 404)
+        except updater.UpdateError as e:
+            return self.error(str(e), 409)
+        return self.send_json(UPDATER.status())
 
     def new_job(self, opts, paths, workdir):
         """Start slicing in the background; None if a slice is running."""
@@ -693,6 +724,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 8091), Handler)
     srv.slicer_version = slicer_version()
+    UPDATER.start()
     print("Ender Studio server on 127.0.0.1:8091, slicer:",
           srv.slicer_version, flush=True)
     srv.serve_forever()

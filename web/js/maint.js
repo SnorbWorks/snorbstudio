@@ -3,7 +3,7 @@
 // logs and Pi power.
 
 import { mr } from './moonraker.js';
-import { $, el, toast, attempt, confirmBox, fmtBytes, fmtDuration } from './ui.js';
+import { $, el, toast, attempt, confirmBox, fmtBytes, fmtDuration, fmtDate } from './ui.js';
 import { BED } from './viewer.js';
 import * as fil from './filaments.js';
 
@@ -220,6 +220,8 @@ async function pid(heater, temp) {
 function buildExtras() {
   const layout = $('#page-maint .maint-layout');
 
+  layout.prepend(updateCard());
+
   // Calibration prints
   const cal = el('div', { class: 'card wide' },
     el('div', { class: 'panel-h' }, 'Calibration prints'),
@@ -258,6 +260,83 @@ function buildExtras() {
     el('pre', { class: 'console hidden', id: 'log-tail' })));
 
   app.onPage((p) => { if (p === 'maint' && !files.childElementCount) loadConfigList(); });
+}
+
+// --------------------------------------------------------------- updates
+// Ender Studio updates itself from GitHub (studio/server/updater.py): it
+// checks every 6 hours and installs when the printer is idle.
+
+let upd = null;
+const isoDate = (s) => fmtDate(Date.parse(s) / 1000);
+
+async function updAction(path, body) {
+  const r = await fetch(`/studio-api/update${path}`, {
+    method: path ? 'POST' : 'GET',
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Failed');
+  upd = j;
+  renderUpdate();
+  return j;
+}
+
+function updateCard() {
+  const card = el('div', { class: 'card wide', id: 'update-card' },
+    el('div', { class: 'panel-h' }, 'Software updates', el('span', { class: 'spacer' }),
+      el('button', { class: 'btn sm ghost', id: 'upd-check', onclick: () =>
+        attempt(async () => { await updAction('/check'); if (upd.error) throw new Error(upd.error); },
+          null) }, 'Check now')),
+    el('div', { id: 'upd-body', class: 'small' }, 'Checking…'));
+  const poll = () => updAction('').catch(() => {});
+  poll();
+  setInterval(poll, 5 * 60 * 1000);
+  app.onPage((p) => { if (p === 'maint') poll(); });
+  return card;
+}
+
+function renderUpdate() {
+  const u = upd;
+  const tab = document.querySelector('[data-page="maint"]');
+  tab?.classList.toggle('has-update', !!(u && u.behind && !u.installing));
+  const box = $('#upd-body');
+  if (!box || !u) return;
+  if (!u.git) {
+    return box.replaceChildren(el('p', { class: 'muted' },
+      'This copy was installed by hand, so it can\'t update itself. Re-install it from GitHub once to turn updates on.'));
+  }
+  const v = u.version || {};
+  const rows = [el('p', {}, 'Installed: ', el('b', {}, v.subject || '?'),
+    el('span', { class: 'muted' }, ` (${v.sha || '?'}${v.date ? ', ' + isoDate(v.date) : ''})`))];
+  if (u.installing) {
+    rows.push(el('p', { class: 'upd-note' }, 'Installing the update… Ender Studio restarts by itself, then this page reconnects.'));
+    setTimeout(() => updAction('').catch(() => {}), 5000);
+  } else if (u.behind) {
+    rows.push(el('p', { class: 'upd-note' }, `${u.behind} update${u.behind > 1 ? 's' : ''} ready:`),
+      el('ul', { class: 'upd-list' }, ...u.commits.map((c) =>
+        el('li', {}, c.subject, el('span', { class: 'muted' }, ` – ${isoDate(c.date)}`)))),
+      el('p', { class: 'muted' }, u.auto
+        ? 'It installs by itself the next time the printer is idle (not printing, heaters off). Or:'
+        : 'Automatic updates are off.'),
+      el('button', { class: 'btn sm primary', onclick: installUpdate }, 'Install now'));
+  } else {
+    rows.push(el('p', { class: 'muted' }, u.checked
+      ? `Up to date – last checked ${fmtDate(u.checked)}.` : 'Not checked yet.'));
+  }
+  if (u.error) rows.push(el('p', { class: 'upd-err' }, u.error));
+  const l = u.last;
+  if (l && l.result !== 'ok') rows.push(el('p', { class: 'upd-err' }, l.message));
+  else if (l) rows.push(el('p', { class: 'muted' }, `Last update installed ${isoDate(l.time)}.`));
+  const auto = el('input', { type: 'checkbox', checked: u.auto, onchange: () =>
+    attempt(() => updAction('/auto', { auto: auto.checked }), auto.checked ? 'Automatic updates on' : 'Automatic updates off') });
+  rows.push(el('label', { class: 'chk' }, auto, ' Install updates automatically when the printer is idle'));
+  if (u.repo) rows.push(el('p', { class: 'muted' }, 'From ', el('a', { href: u.repo.replace(/\.git$/, ''), target: '_blank' }, u.repo.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, ''))));
+  box.replaceChildren(...rows);
+}
+
+async function installUpdate() {
+  if (mr.busy) return toast('Not while a print is running.', 'err');
+  if (!await confirmBox('Install the update?', 'Ender Studio restarts (about 10 seconds). If the update changes the printer macros, Klipper restarts too. If anything fails to start, it goes back to the current version by itself.', 'Install')) return;
+  attempt(() => updAction('/install'), 'Installing…');
 }
 
 // Per-filament first-layer squish (relative to PLA, saved on the printer).

@@ -47,6 +47,10 @@ a { color: var(--accent2); }
   background: none; border: 0; padding: 0 14px; cursor: pointer; color: var(--muted);
   border-bottom: 2px solid transparent; font-weight: 600;
 }
+.tabs button.has-update::after { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; vertical-align: super; }
+.upd-note { color: var(--accent2); }
+.upd-err { color: var(--bad); }
+.upd-list { margin: 4px 0 8px 18px; padding: 0; }
 .tabs button:hover { color: var(--text); }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 .tabs button .badge { background: var(--accent); color: #000; border-radius: 8px; padding: 0 6px; font-size: 11px; margin-left: 4px; }
