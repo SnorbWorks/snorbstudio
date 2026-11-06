@@ -75,6 +75,7 @@ a { color: var(--accent2); }
   background: #3d1c1c; border-bottom: 1px solid #6b2b2b; padding: 8px 14px; flex: none;
 }
 .banner b { margin-right: 8px; }
+.banner.update { background: #1c2d3d; border-bottom-color: #2b4b6b; }
 .banner .row { margin: 0; }
 
 main { flex: 1; min-height: 0; position: relative; }

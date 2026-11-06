@@ -287,6 +287,7 @@ function updateCard() {
         attempt(async () => { await updAction('/check'); if (upd.error) throw new Error(upd.error); },
           null) }, 'Check now')),
     el('div', { id: 'upd-body', class: 'small' }, 'Checking…'));
+  $('#ub-reload').onclick = () => location.reload();
   const poll = () => updAction('').catch(() => {});
   poll();
   setInterval(poll, 5 * 60 * 1000);
@@ -294,8 +295,21 @@ function updateCard() {
   return card;
 }
 
+// The page's own code is whatever was installed when it loaded; after an
+// update, offer a reload (not automatic: it would drop models on the plate).
+let loadedSha = null;
+function checkPageVersion(u) {
+  const sha = u?.version?.sha;
+  if (!sha) return;
+  if (!loadedSha) loadedSha = sha;
+  if (sha === loadedSha) return;
+  $('#ub-msg').textContent = ` – reload to use the new version (${u.version.subject}).`;
+  $('#update-banner').classList.remove('hidden');
+}
+
 function renderUpdate() {
   const u = upd;
+  checkPageVersion(u);
   const tab = document.querySelector('[data-page="maint"]');
   tab?.classList.toggle('has-update', !!(u && u.behind && !u.installing));
   const box = $('#upd-body');
@@ -309,7 +323,7 @@ function renderUpdate() {
     el('span', { class: 'muted' }, ` (${v.sha || '?'}${v.date ? ', ' + isoDate(v.date) : ''})`))];
   if (u.installing) {
     rows.push(el('p', { class: 'upd-note' }, 'Installing the update… Ender Studio restarts by itself, then this page reconnects.'));
-    setTimeout(() => updAction('').catch(() => {}), 5000);
+    followInstall();
   } else if (u.behind) {
     rows.push(el('p', { class: 'upd-note' }, `${u.behind} update${u.behind > 1 ? 's' : ''} ready:`),
       el('ul', { class: 'upd-list' }, ...u.commits.map((c) =>
@@ -331,6 +345,19 @@ function renderUpdate() {
   rows.push(el('label', { class: 'chk' }, auto, ' Install updates automatically when the printer is idle'));
   if (u.repo) rows.push(el('p', { class: 'muted' }, 'From ', el('a', { href: u.repo.replace(/\.git$/, ''), target: '_blank' }, u.repo.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, ''))));
   box.replaceChildren(...rows);
+}
+
+// Ender Studio restarts mid-install, so keep asking (failures included)
+// until it answers as not installing - for up to 3 minutes.
+let following = false;
+async function followInstall() {
+  if (following) return;
+  following = true;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    try { if (!(await updAction('')).installing) break; } catch (e) { /* restarting */ }
+  }
+  following = false;
 }
 
 async function installUpdate() {
