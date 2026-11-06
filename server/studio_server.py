@@ -187,6 +187,7 @@ def materials_info():
     return {k: {"label": v["label"], "note": v["note"], "squish": v["squish"],
                 "speed_pct": v["speed_pct"],
                 "temp": v["first_layer_temperature"],
+                "nozzle": v["temperature"], "bed_print": v["bed_temperature"],
                 "bed": v["first_layer_bed_temperature"],
                 "fan": v["max_fan_speed"], "retract": v["retract_length"],
                 "flow": v["max_volumetric_speed"], "tower": v["tower"]}

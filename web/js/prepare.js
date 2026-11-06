@@ -396,7 +396,6 @@ function wireSidebar() {
   for (const id of ['#supports', '#quality', '#material', '#brim', '#infill']) {
     $(id).addEventListener('change', () => { invalidateSlice(); refreshForecast(); saveSettings(); });
   }
-  $('#material').addEventListener('change', materialInfo);
   mr.on('status', (st) => { if (st && ('save_variables' in st)) materialInfo(); });
   wireAdvanced();
   $('#slice-btn').onclick = slice;
@@ -412,12 +411,57 @@ function wireSidebar() {
 
 // --------------------------------------------------------------- advanced
 
+// Advanced boxes the filament owns.  Picking a filament fills them with its
+// preset; changing one is remembered for that filament only (so a PLA tweak
+// never leaks into PETG).  Only values that differ from the preset are sent.
+const FILAMENT_FIELDS = { temperature: 'nozzle', bed_temperature: 'bed_print',
+  max_fan_speed: 'fan', retract_length: 'retract', speed_pct: 'speed_pct' };
+const EDITS_KEY = 'studio.filamentEdits';
+const loadEdits = () => { try { return JSON.parse(localStorage.getItem(EDITS_KEY) || '{}'); } catch (e) { return {}; } };
+const saveEdits = (e) => { try { localStorage.setItem(EDITS_KEY, JSON.stringify(e)); } catch (x) { /* private mode */ } };
+const isFilamentField = (f) => f.dataset.adv in FILAMENT_FIELDS;
+
+function fillFilamentFields() {
+  const key = $('#material').value;
+  const m = materials[key];
+  if (!m) return;
+  const mine = loadEdits()[key] || {};
+  for (const [adv, presetKey] of Object.entries(FILAMENT_FIELDS)) {
+    const f = $(`[data-adv="${adv}"]`);
+    if (!f) continue;
+    f.dataset.preset = m[presetKey];
+    f.value = mine[adv] ?? m[presetKey];
+    f.classList.toggle('edited', mine[adv] != null);
+  }
+}
+
+function rememberFilamentEdit(f) {
+  const key = $('#material').value;
+  const edits = loadEdits();
+  const mine = edits[key] || {};
+  if (f.value === '' || +f.value === +f.dataset.preset) {
+    delete mine[f.dataset.adv];
+    if (f.value === '') f.value = f.dataset.preset;
+  } else mine[f.dataset.adv] = f.value;
+  edits[key] = mine;
+  saveEdits(edits);
+  f.classList.toggle('edited', f.dataset.adv in mine);
+}
+
 function advancedValues() {
   const out = {};
   for (const f of $$('[data-adv]')) {
     if (f.type === 'checkbox') { if (f.checked) out[f.dataset.adv] = 1; }
+    else if (isFilamentField(f)) { if (f.value !== '' && +f.value !== +f.dataset.preset) out[f.dataset.adv] = f.value; }
     else if (f.value !== '') out[f.dataset.adv] = f.value;
   }
+  return out;
+}
+
+// Saved with the page settings: everything except the filament's boxes.
+function generalAdvanced() {
+  const out = advancedValues();
+  for (const k of Object.keys(FILAMENT_FIELDS)) delete out[k];
   return out;
 }
 
@@ -428,11 +472,19 @@ function advCount() {
 
 function wireAdvanced() {
   for (const f of $$('[data-adv]')) {
-    f.addEventListener('change', () => { advCount(); invalidateSlice(); saveSettings(); });
+    f.addEventListener('change', () => {
+      if (isFilamentField(f)) { rememberFilamentEdit(f); materialInfo(); }
+      advCount(); invalidateSlice(); saveSettings();
+    });
   }
+  $('#material').addEventListener('change', () => { fillFilamentFields(); advCount(); materialInfo(); });
   $('#adv-reset').onclick = () => {
     for (const f of $$('[data-adv]')) f.type === 'checkbox' ? (f.checked = false) : (f.value = '');
-    advCount(); invalidateSlice(); saveSettings();
+    const edits = loadEdits();
+    delete edits[$('#material').value];
+    saveEdits(edits);
+    fillFilamentFields();
+    advCount(); invalidateSlice(); saveSettings(); materialInfo();
   };
 }
 
@@ -459,7 +511,7 @@ function saveSettings() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({
       quality: $('#quality').value, material: $('#material').value, supports: $('#supports').value,
       brim: $('#brim').value, infill: $('#infill').value, angle: $('#overhang-angle').value,
-      advanced: advancedValues() }));
+      advanced: generalAdvanced() }));
   } catch (e) { /* private mode */ }
 }
 
@@ -477,14 +529,17 @@ async function loadInfo() {
     for (const k of ['quality', 'material', 'supports', 'brim', 'infill']) if (s[k] != null) $(`#${k}`).value = s[k];
     if (s.angle) $('#overhang-angle').value = s.angle;
     for (const [k, v] of Object.entries(s.advanced || {})) {
+      if (k in FILAMENT_FIELDS) continue;    // old saves: these belong to the filament now
       const f = $(`[data-adv="${k}"]`);
       if (f) f.type === 'checkbox' ? (f.checked = !!v) : (f.value = v);
     }
-    advCount();
   } catch (e) { /* ignore */ }
   $('#infill-val').textContent = `${$('#infill').value}%`;
   $('#overhang-val').textContent = `${angle()}°`;
   materials = info.materials || {};
+  fillFilamentFields();
+  advCount();
+  saveSettings();
   materialInfo();
   if (!info.slicer) toast('PrusaSlicer is not installed on the Pi, so slicing won\'t work.', 'err', 10000);
   refreshForecast();
@@ -498,14 +553,18 @@ function materialInfo() {
   const box = $('#material-info');
   if (!m) return box.replaceChildren();
   const sq = fil.squishFor(materials, key);
+  const val = (adv, presetKey) => $(`[data-adv="${adv}"]`)?.value || m[presetKey];
+  const edited = (adv) => ($(`[data-adv="${adv}"]`)?.classList.contains('edited') ? ' (changed)' : '');
   const saved = key !== 'pla' && fil.savedSquish(key) != null;
   box.replaceChildren(
     el('div', { class: 'mat-chips' },
-      el('span', {}, `${m.temp} °C nozzle`), el('span', {}, `${m.bed} °C bed`),
+      el('span', {}, `${val('temperature', 'nozzle')} °C nozzle${edited('temperature')}`),
+      el('span', {}, `${val('bed_temperature', 'bed_print')} °C bed${edited('bed_temperature')}`),
       el('span', { title: 'First-layer nozzle height compared with PLA. Tune it from the Print page while a print runs.' },
         `First layer ${fil.fmtSquish(sq)}${saved ? ' · tuned' : ''}`),
-      el('span', {}, `Speed ${m.speed_pct}%`), el('span', {}, `Fan ${m.fan}%`),
-      el('span', {}, `Retraction ${m.retract} mm`)),
+      el('span', {}, `Speed ${val('speed_pct', 'speed_pct')}%${edited('speed_pct')}`),
+      el('span', {}, `Fan ${val('max_fan_speed', 'fan')}%${edited('max_fan_speed')}`),
+      el('span', {}, `Retraction ${val('retract_length', 'retract')} mm${edited('retract_length')}`)),
     el('div', { class: 'muted small' }, m.note));
 }
 
