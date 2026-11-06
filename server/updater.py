@@ -1,8 +1,10 @@
 """Ender Studio self-updater: follows the GitHub repo the Pi's copy came from.
 
 The Pi keeps a git checkout (~/ender3-pi, with ~/studio pointing into it).
-Every few hours this fetches origin; when there are new commits and the
-printer is idle (not printing, heaters off, not slicing) it fast-forwards
+It looks for updates once per start-up, after the printer services have
+settled (and when asked: the page's "Check now", or push.sh).  When there
+are new commits and the printer is idle (not printing, heaters off, not
+slicing) it fast-forwards
 and runs studio/deploy/install.sh in its own systemd unit, so restarting
 this service doesn't kill the install.  install.sh checks the result and
 rolls back to the previous commit if Ender Studio or Klipper won't start.
@@ -27,9 +29,12 @@ SETTINGS = os.path.join(DATA, "studio_settings.json")
 LAST_RESULT = os.path.join(DATA, "studio_update.json")    # written by install.sh
 LOG = os.path.join(DATA, "logs", "studio_update.log")
 MOONRAKER = "http://127.0.0.1:7125"
-CHECK_EVERY = 6 * 3600       # fetch from GitHub
+SERVICES = ["klipper", "moonraker", "nginx", "ender-studio"]
+STABLE_FOR = 60              # services must stay up this long before checking
+STABLE_MAX = 15 * 60         # ...but check anyway after this long
+FETCH_TRIES = 10             # Wi-Fi can come up late: retry a failed fetch
+FETCH_RETRY = 60
 POLL = 600                   # look for an idle moment to install
-FIRST_CHECK = 120            # after start-up
 
 
 class UpdateError(Exception):
@@ -59,6 +64,7 @@ class Updater:
         self.checked = 0
         self.behind = 0
         self.commits = []
+        self.startup = "waiting"      # waiting -> checking -> done
 
     # ------------------------------------------------------------ state
     @property
@@ -107,6 +113,7 @@ class Updater:
                 "behind": self.behind, "commits": self.commits,
                 "checked": self.checked, "checking": self.checking,
                 "installing": self.installing, "error": self.error,
+                "startup": self.startup,
                 "auto": self.auto, "last": last}
 
     # ------------------------------------------------------------ check
@@ -209,20 +216,58 @@ class Updater:
             return False
 
     # ------------------------------------------------------------ loop
+    def services_stable(self):
+        """Every printer service is running (not starting or restarting)
+        and Klipper has finished starting up (ready, or stopped with an
+        error such as the printer being switched off)."""
+        r = subprocess.run(["systemctl", "is-active"] + SERVICES,
+                           capture_output=True, text=True)
+        if r.returncode:
+            return False
+        try:
+            return moonraker("/printer/info").get("state") != "startup"
+        except Exception:
+            return False
+
+    def wait_until_stable(self):
+        start, since = time.time(), None
+        while time.time() - start < STABLE_MAX:
+            if self.services_stable():
+                since = since or time.time()
+                if time.time() - since >= STABLE_FOR:
+                    return
+            else:
+                since = None
+            time.sleep(5)
+
+    def startup_check(self):
+        self.wait_until_stable()
+        self.startup = "checking"
+        for _ in range(FETCH_TRIES):
+            self.check()
+            if not self.error:
+                break
+            time.sleep(FETCH_RETRY)
+        self.startup = "done"
+
     def run_forever(self):
-        time.sleep(FIRST_CHECK)
+        if not self.is_git:
+            return
+        try:
+            self.startup_check()
+        except Exception as e:
+            self.error, self.startup = str(e), "done"
+        # Wait for an idle moment to install what was found (no more
+        # GitHub checks until the next start-up or a "Check now").
         while True:
             try:
-                if self.is_git:
-                    if time.time() - self.checked > CHECK_EVERY:
-                        self.check()
-                    if self.behind and self.auto and not self.installing \
-                            and not self.known_bad():
-                        try:
-                            self.install(manual=False)
-                        except UpdateError as e:
-                            if not str(e).startswith("Not now"):
-                                self.error = str(e)   # (not idle: retry later)
+                if self.behind and self.auto and not self.installing \
+                        and not self.known_bad():
+                    try:
+                        self.install(manual=False)
+                    except UpdateError as e:
+                        if not str(e).startswith("Not now"):
+                            self.error = str(e)   # (not idle: retry later)
             except Exception as e:        # never let the loop die
                 self.error = str(e)
             time.sleep(POLL)

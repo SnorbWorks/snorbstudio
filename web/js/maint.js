@@ -264,7 +264,8 @@ function buildExtras() {
 
 // --------------------------------------------------------------- updates
 // Ender Studio updates itself from GitHub (studio/server/updater.py): it
-// checks every 6 hours and installs when the printer is idle.
+// checks once per start-up (after the services settle) and installs when
+// the printer is idle.
 
 let upd = null;
 const isoDate = (s) => fmtDate(Date.parse(s) / 1000);
@@ -334,7 +335,9 @@ function renderUpdate() {
       el('button', { class: 'btn sm primary', onclick: installUpdate }, 'Install now'));
   } else {
     rows.push(el('p', { class: 'muted' }, u.checked
-      ? `Up to date – last checked ${fmtDate(u.checked)}.` : 'Not checked yet.'));
+      ? `Up to date – last checked ${fmtDate(u.checked)}.`
+      : u.startup === 'checking' ? 'Checking for updates…'
+        : 'Checks for updates once the printer services have started up.'));
   }
   if (u.error) rows.push(el('p', { class: 'upd-err' }, u.error));
   const l = u.last;
@@ -342,7 +345,8 @@ function renderUpdate() {
   else if (l) rows.push(el('p', { class: 'muted' }, `Last update installed ${isoDate(l.time)}.`));
   const auto = el('input', { type: 'checkbox', checked: u.auto, onchange: () =>
     attempt(() => updAction('/auto', { auto: auto.checked }), auto.checked ? 'Automatic updates on' : 'Automatic updates off') });
-  rows.push(el('label', { class: 'chk' }, auto, ' Install updates automatically when the printer is idle'));
+  rows.push(el('label', { class: 'chk' }, auto, ' Install updates automatically when the printer is idle'),
+    el('p', { class: 'muted' }, 'Looks for updates each time the Pi starts up, or when you press Check now.'));
   if (u.repo) rows.push(el('p', { class: 'muted' }, 'From ', el('a', { href: u.repo.replace(/\.git$/, ''), target: '_blank' }, u.repo.replace(/^https:\/\/github.com\//, '').replace(/\.git$/, ''))));
   box.replaceChildren(...rows);
 }

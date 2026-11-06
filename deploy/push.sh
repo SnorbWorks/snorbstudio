@@ -1,9 +1,9 @@
 #!/bin/sh
 # Publish an update from the Mac:  commit, then  sh studio/deploy/push.sh
 #
-# Pushes master to GitHub.  The Pi checks GitHub every 6 hours (and 2 minutes
-# after it boots) and installs when the printer is idle; if the Pi is on
-# right now, this also asks it to install straight away.
+# Pushes master to GitHub.  The Pi checks GitHub each time it starts up (once
+# its services have settled) and installs when the printer is idle; if the
+# Pi is on right now, this also asks it to install straight away.
 set -e
 cd "$(dirname "$0")/../.."
 PI=${PI:-raspberrypi-1.local}
