@@ -53,10 +53,9 @@ export function initControl(app) {
   };
 
   // ---- filament
-  const filTemp = () => {
-    const t = mr.printer.extruder?.target || 0;
-    return t >= 180 ? t : (mats[pick.value]?.temp || 210);
-  };
+  // Always the picked filament's temperature: a leftover target (e.g. 210
+  // from unloading PLA) mustn't decide how hot PETG gets loaded.
+  const filTemp = () => mats[pick.value]?.temp || 210;
   $('#load-fil').onclick = async () => {
     if (!guardFilament()) return;
     if (await confirmBox('Load filament', `Heats the nozzle to ${filTemp()} °C, then feeds about 39 cm of filament through the tube. Push the new filament into the extruder until the gears grab it before pressing Start.`, 'Start')) {
