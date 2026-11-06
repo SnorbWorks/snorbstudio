@@ -285,7 +285,10 @@ def job_config(opts):
     cfg["start_gcode"] = (
         "SET_PRINT_STATS_INFO TOTAL_LAYER=[total_layer_count]\\n"
         "PRINT_START BED=[first_layer_bed_temperature] "
-        "HOTEND=[first_layer_temperature] MATERIAL=%s SQUISH=%.3f"
+        "HOTEND=[first_layer_temperature] MATERIAL=%s SQUISH=%.3f "
+        # first layer's box, so PRINT_START can purge right next to the part
+        "AREA={first_layer_print_min[0]},{first_layer_print_min[1]},"
+        "{first_layer_print_max[0]},{first_layer_print_max[1]}"
         % (key, mat["squish"]))
     sup = opts.get("supports", "none")
     cfg["support_material"] = int(sup != "none")
