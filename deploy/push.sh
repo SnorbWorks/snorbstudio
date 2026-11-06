@@ -20,5 +20,5 @@ curl -4 -s -m 120 -X POST "http://$PI/studio-api/update/check" >/dev/null
 curl -4 -s -m 30 -X POST "http://$PI/studio-api/update/install" | python3 -c '
 import json, sys
 r = json.load(sys.stdin)
-if "error" in r: print("Pushed. The Pi will install it later:", r["error"])
+if r.get("error") and "version" not in r: print("Pushed. The Pi will install it later:", r["error"])
 else: print("Pushed - the Pi is installing it now (Maintenance page shows the result).")'
