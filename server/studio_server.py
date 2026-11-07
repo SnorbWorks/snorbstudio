@@ -108,6 +108,9 @@ MATERIAL = {
             "min_fan_speed": 30, "max_fan_speed": 50,
             "disable_fan_first_layers": 3, "retract_length": 4,
             "retract_speed": 35, "deretract_speed": 30,
+            # PETG oozes and sticks to the nozzle: wipe as it retracts, and keep
+            # travel moves inside the part so strings don't cross open gaps
+            "wipe": 1, "avoid_crossing_perimeters": 1,
             "max_volumetric_speed": 8, "first_layer_speed": 20},
     "tpu": {"label": "TPU (flexible)", "squish": 0.03, "speed_pct": 40,
             "tower": (240, 215),
