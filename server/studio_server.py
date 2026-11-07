@@ -272,6 +272,11 @@ def slicer_version():
         return None
 
 
+# Infill patterns PrusaSlicer accepts at 100% density.
+SOLID_OK = ("rectilinear", "monotonic", "monotoniclines", "alignedrectilinear",
+            "concentric", "hilbertcurve", "archimedeanchords", "octagramspiral")
+
+
 def job_config(opts):
     """The per-job PrusaSlicer settings layered over profiles/ender3.ini."""
     cfg = {}
@@ -301,6 +306,10 @@ def job_config(opts):
     cfg["brim_width"] = brim
     cfg["skirts"] = 0 if brim > 0 else 1
     cfg.update(advanced_config(opts.get("advanced"), mat))
+    # PrusaSlicer refuses 100% with gyroid, honeycomb, cubic... ("not supposed
+    # to work at 100% density"); solid parts get the solid-capable pattern.
+    if cfg["fill_density"] == "100%" and cfg.get("fill_pattern", "gyroid") not in SOLID_OK:
+        cfg["fill_pattern"] = "rectilinear"
     return cfg
 
 
