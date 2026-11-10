@@ -129,3 +129,15 @@
 .ds-open-del.armed { font-size: 12px; }
 .ds-dialog { width: min(460px, calc(100vw - 32px)); }
 .ds-dialog .ds-field > .ds-seg { flex-wrap: wrap; }
+.ds-proj { stroke: #5b8def; stroke-width: 0.8; opacity: .45; }
+.ds-tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+.ds-tabs button { flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 0; cursor: pointer; font-size: 13px; }
+.ds-tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+.ds-views-pane .ds-check { margin: 6px 0; }
+.ds-lost { color: var(--bad); }
+/* the top bar stays one line: hints give way first */
+.ds-ctx { flex-wrap: nowrap; overflow: hidden; flex: 0 1 auto; }
+.ds-ctx-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.ds-ctx > * { flex-shrink: 0; }
+.ds-ctx > .ds-ctx-hint { flex-shrink: 1; }
+.ds-tools .btn { white-space: nowrap; }

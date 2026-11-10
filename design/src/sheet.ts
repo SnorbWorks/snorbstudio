@@ -124,7 +124,7 @@ export class Sheet {
     // round out to 5 mm so small edits don't shuffle the sheet
     if (min[0] === Infinity) { min.splice(0, 3, ...p.stock.min); max.splice(0, 3, ...p.stock.max); }
     for (let i = 0; i < 3; i++) { min[i] = Math.floor((min[i] + 0.01) / 5) * 5; max[i] = Math.ceil((max[i] - 0.01) / 5) * 5; }
-    this.placed = layout(min, max, new Set(p.views));
+    this.placed = layout(min, max, new Set(p.views), this.dimMargins(min, max));
   }
 
   toSheet(view: ViewName, u: number, v: number): [number, number] {
@@ -158,6 +158,15 @@ export class Sheet {
   fit() {
     const w = this.host.clientWidth, h = this.host.clientHeight;
     if (!w || !h) return;
+    // twice: dimension numbers are sized in screen pixels, so the room they need depends on the zoom
+    for (let pass = 0; pass < 2; pass++) this.fitOnce(w, h);
+    this.fitted = true;
+    this.userView = false;
+    this.render();
+    this.onZoom();
+  }
+
+  private fitOnce(w: number, h: number) {
     this.relayout();
     const boxes = [...this.st.p.views, ...this.ghosts()].map((v) => this.placed[v].box);
     let x0 = Math.min(...boxes.map((b) => b.x)), y0 = Math.min(...boxes.map((b) => b.y));
@@ -175,10 +184,6 @@ export class Sheet {
     this.zoom = z;
     this.panX = (w - (x1 - x0) * z) / 2 - x0 * z;
     this.panY = (h - 10 - (y1 - y0) * z) / 2 - y0 * z;
-    this.fitted = true;
-    this.userView = false;
-    this.render();
-    this.onZoom();
   }
 
   /** Re-fit after the model changes, unless the owner has zoomed or panned. */
@@ -845,6 +850,32 @@ export class Sheet {
     this.st.select([dm.id]);
   }
 
+  /** How far each view's dimensions (and their numbers) reach outside the part's box. */
+  private dimMargins(min: Vec3, max: Vec3): Partial<Record<ViewName, { l: number; r: number; t: number; b: number }>> {
+    const out: Partial<Record<ViewName, { l: number; r: number; t: number; b: number }>> = {};
+    const fs = 11 / this.zoom, th = fs * 0.9, gap = 6 / this.zoom;
+    for (const dm of this.st.p.dims || []) {
+      const g = this.dimGeom(dm);
+      if (!g) continue;
+      const V = VIEWS[dm.view];
+      // the part's box as this view sees it
+      const cs = [0, 1].flatMap((i) => [0, 1].flatMap((j) => [0, 1].map((k) => V.toView([[min[0], max[0]][i], [min[1], max[1]][j], [min[2], max[2]][k]]))));
+      const u0 = Math.min(...cs.map((c) => c[0])), u1 = Math.max(...cs.map((c) => c[0]));
+      const v0 = Math.min(...cs.map((c) => c[1])), v1 = Math.max(...cs.map((c) => c[1]));
+      const label = (dm.axis === 'dia' ? 'Ø' : '') + fmtLen(g.value, this.st.p);
+      const tw = (label.length * fs * 0.62 + 6 / this.zoom) / 2;
+      const pts: P2[] = [g.a, g.b, ...g.ext.flat(), [g.text[0] - tw, g.text[1] - th], [g.text[0] + tw, g.text[1] + th]];
+      const m = out[dm.view] || (out[dm.view] = { l: 0, r: 0, t: 0, b: 0 });
+      for (const [u, v] of pts) {
+        m.l = Math.max(m.l, u0 - u + gap * (u < u0 ? 1 : 0));
+        m.r = Math.max(m.r, u - u1 + gap * (u > u1 ? 1 : 0));
+        m.t = Math.max(m.t, v - v1 + gap * (v > v1 ? 1 : 0));
+        m.b = Math.max(m.b, v0 - v + gap * (v < v0 ? 1 : 0));
+      }
+    }
+    return out;
+  }
+
   /** A dimension's measured size, its line ends and where its number goes, in view (u, v). */
   dimGeom(dm: Dim): { value: number; a: P2; b: P2; ext: [P2, P2][]; text: P2; vertical: boolean } | null {
     const it = itemFor(this.st, dm.target);
@@ -998,6 +1029,44 @@ export class Sheet {
 
   // ------------------------------------------------------------ drawing
 
+  /** Faint lines joining a selected shape's extremes in views that share an axis (third-angle projectors). */
+  private projectionLines(): string[] {
+    const shown = new Set(this.st.p.views);
+    const column = (['top', 'front', 'bottom'] as ViewName[]).filter((v) => shown.has(v));
+    const row = (['left', 'front', 'right', 'back'] as ViewName[]).filter((v) => shown.has(v));
+    const out: string[] = [];
+    const rect = (view: ViewName, id: string) => {
+      const poly = this.outline(view, id);
+      if (!poly || !poly.length) return null;
+      const pts = poly.map(([u, v]) => this.toSheet(view, u, v));
+      const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+      return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
+    };
+    const seen = new Set<string>();
+    const line = (x1: number, y1: number, x2: number, y2: number) => {
+      const k = [x1, y1, x2, y2].map((n) => n.toFixed(3)).join();
+      if (seen.has(k) || Math.hypot(x2 - x1, y2 - y1) < 1e-6) return;
+      seen.add(k);
+      out.push(`<line class="ds-proj" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`);
+    };
+    for (const id of this.st.sels) {
+      if (id !== 'stock' && !this.st.feature(id)) continue;
+      // down a column: vertical lines at the shape's left and right
+      for (let i = 0; i + 1 < column.length; i++) {
+        const a = rect(column[i], id), b = rect(column[i + 1], id);
+        if (!a || !b) continue;
+        for (const x of new Set([a.x0, a.x1, b.x0, b.x1].map((n) => +n.toFixed(4)))) line(x, a.y1, x, b.y0);
+      }
+      // along the row: horizontal lines at the shape's top and bottom
+      for (let i = 0; i + 1 < row.length; i++) {
+        const a = rect(row[i], id), b = rect(row[i + 1], id);
+        if (!a || !b) continue;
+        for (const y of new Set([a.y0, a.y1, b.y0, b.y1].map((n) => +n.toFixed(4)))) line(a.x1, y, b.x0, y);
+      }
+    }
+    return out;
+  }
+
   private hideBox(v: ViewName): Box2 {
     const b = this.placed[v].box;
     const fs = 12 / this.zoom;
@@ -1050,7 +1119,7 @@ export class Sheet {
       parts.push(`<rect class="ds-viewbox" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"/>`);
       const ve = built?.views[view];
       if (ve) {
-        if (ve.hidden.length) parts.push(`<path class="ds-hidden" stroke-dasharray="6 4" d="${ve.hidden.map((l) => path(view, l)).join('')}"/>`);
+        if (ve.hidden.length && st.viewOpts.hidden) parts.push(`<path class="ds-hidden" stroke-dasharray="6 4" d="${ve.hidden.map((l) => path(view, l)).join('')}"/>`);
         parts.push(`<path class="ds-visible" d="${ve.visible.map((l) => path(view, l)).join('')}"/>`);
       }
       // features that aren't plain geometry: sketches, ones that do nothing, ones that failed
@@ -1088,6 +1157,9 @@ export class Sheet {
         parts.push(`<text class="ds-hide" x="${hb.x + hb.w / 2}" y="${hb.y + hb.h * 0.8}" font-size="${fs}"><title>Hide this view</title>×</text>`);
       }
     }
+
+    // projection lines: the selected shapes' outer edges carried across to the next view in line
+    if (st.viewOpts.projLines && st.sels.length) parts.push(...this.projectionLines());
 
     // the selection, in every view; handles when it's just one thing
     const sideSel = st.sides;

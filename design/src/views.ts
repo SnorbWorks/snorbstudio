@@ -65,6 +65,9 @@ export function parallel(a: ViewName, b: ViewName): boolean {
 
 export interface Box2 { x: number; y: number; w: number; h: number }
 
+/** Extra room a view needs round the part (mm): its dimensions sit there. */
+export interface Margin { l: number; r: number; t: number; b: number }
+
 /**
  * Where each view sits on the sheet (sheet coordinates in mm, y down).
  * Views share columns and rows so they stay projection-aligned: top, front
@@ -72,7 +75,7 @@ export interface Box2 { x: number; y: number; w: number; h: number }
  * with no shown view in it is only as big as a ghost box, so the shown views
  * get the room.
  */
-export function layout(bmin: Vec3, bmax: Vec3, shown: Set<ViewName>): Record<ViewName, { box: Box2; ou: number; ov: number }> {
+export function layout(bmin: Vec3, bmax: Vec3, shown: Set<ViewName>, margins: Partial<Record<ViewName, Margin>> = {}): Record<ViewName, { box: Box2; ou: number; ov: number }> {
   const sx = bmax[0] - bmin[0], sy = bmax[1] - bmin[1], sz = bmax[2] - bmin[2];
   const full = Math.max(sx, sy, sz);
   const gap = Math.max(3, 0.28 * full);
@@ -81,14 +84,24 @@ export function layout(bmin: Vec3, bmax: Vec3, shown: Set<ViewName>): Record<Vie
   const has = (...v: ViewName[]) => v.some((x) => shown.has(x));
   const colW = [has('left') ? sy : ghost, has('top', 'front', 'bottom') ? sx : ghost, has('right') ? sy : ghost, has('back') ? sx : ghost];
   const rowH = [has('top') ? sy : ghost, has('front', 'left', 'right', 'back') ? sz : ghost, has('bottom') ? sy : ghost];
+  // a column (row) makes room for the biggest margin of the views in it, so views never overlap
+  const cols: ViewName[][] = [['left'], ['top', 'front', 'bottom'], ['right'], ['back']];
+  const rows: ViewName[][] = [['top'], ['left', 'front', 'right', 'back'], ['bottom']];
+  const mg = (v: ViewName): Margin => (shown.has(v) && margins[v]) || { l: 0, r: 0, t: 0, b: 0 };
+  const colL = cols.map((vs) => Math.max(0, ...vs.map((v) => mg(v).l)));
+  const colR = cols.map((vs) => Math.max(0, ...vs.map((v) => mg(v).r)));
+  const rowT = rows.map((vs) => Math.max(0, ...vs.map((v) => mg(v).t)));
+  const rowB = rows.map((vs) => Math.max(0, ...vs.map((v) => mg(v).b)));
   const colX: number[] = [];
   let x = 0;
-  for (const w of colW) { colX.push(x); x += w + gap; }
+  colW.forEach((w, c) => { x += colL[c]; colX.push(x); x += w + colR[c] + gap; });
   const rowY: number[] = [];
   let y = 0;
-  for (const h of rowH) { rowY.push(y); y += h + gap; }
+  rowH.forEach((h, r) => { y += rowT[r]; rowY.push(y); y += h + rowB[r] + gap; });
   const cell = (v: ViewName, c: number, r: number): Box2 => {
-    if (shown.has(v)) return { x: colX[c] - pad, y: rowY[r] - pad, w: colW[c] + 2 * pad, h: rowH[r] + 2 * pad };
+    // the view's box takes in its own dimensions
+    const m = mg(v);
+    if (shown.has(v)) return { x: colX[c] - pad - m.l, y: rowY[r] - pad - m.t, w: colW[c] + 2 * pad + m.l + m.r, h: rowH[r] + 2 * pad + m.t + m.b };
     // a ghost: a small box in the middle of its slot
     const w = Math.min(colW[c], ghost), h = Math.min(rowH[r], ghost);
     return { x: colX[c] + (colW[c] - w) / 2, y: rowY[r] + (rowH[r] - h) / 2, w, h };

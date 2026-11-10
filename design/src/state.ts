@@ -9,6 +9,10 @@ export type Tool = 'select' | 'rect' | 'circle' | 'polygon' | 'line' | 'gear' | 
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
+const VIEW_KEY = 'studio.design.viewOpts';
+
+/** How the sheet is drawn (the Views tab): the owner's, not saved with the part. */
+export interface ViewOpts { projLines: boolean; hidden: boolean }
 
 export class State {
   p: Project = newProject();
@@ -19,6 +23,8 @@ export class State {
   farFace = false;                    // the hidden-line tool: new shapes go on the far face, seen through the part
   edges: Vec3[] = [];                 // the edge tool: picked edges (a point on each)
   polygonSides = 6;                   // the polygon tool's last choice
+  repick: string | null = null;       // the edge tool is re-picking this fillet's edges
+  viewOpts: ViewOpts = { projLines: true, hidden: true };
   built: BuildResult | null = null;
   buildError = '';
   private undoStack: string[] = [];
@@ -26,6 +32,7 @@ export class State {
   private listeners = new Set<Listener>();
 
   constructor() {
+    try { this.viewOpts = { ...this.viewOpts, ...JSON.parse(localStorage.getItem(VIEW_KEY) || '{}') }; } catch { /* defaults */ }
     try {
       const raw = localStorage.getItem(KEY);
       if (raw) this.p = { ...newProject(), ...JSON.parse(raw) };
@@ -34,6 +41,12 @@ export class State {
 
   on(fn: Listener) { this.listeners.add(fn); }
   emit(what: Parameters<Listener>[0]) { for (const fn of this.listeners) fn(what); }
+
+  setViewOpt<K extends keyof ViewOpts>(k: K, v: ViewOpts[K]) {
+    this.viewOpts[k] = v;
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(this.viewOpts)); } catch { /* private mode */ }
+    this.emit('select');
+  }
 
   save() { try { localStorage.setItem(KEY, JSON.stringify(this.p)); } catch { /* private mode */ } }
 
@@ -100,7 +113,7 @@ export class State {
     });
     this.select([]);
   }
-  setTool(t: Tool) { this.tool = t; if (t !== 'edge') this.edges = []; this.emit('tool'); }
+  setTool(t: Tool) { this.tool = t; if (t !== 'edge') { this.edges = []; this.repick = null; } this.emit('tool'); }
 
   feature(id: string | null): Feature | undefined { return this.p.features.find((f) => f.id === id); }
   dim(id: string | null) { return (this.p.dims || []).find((d) => d.id === id); }
@@ -126,6 +139,7 @@ export function itemFor(st: State, id: string): Item | null {
       id, movable: false,
       extents: () => [[...s.min] as Vec3, [...s.max] as Vec3],
       setEdge(axis, side, value) {
+        if (st.p.base) return;                  // a library model's size is its own
         if (side === 0) s.min[axis] = Math.min(value, s.max[axis] - 0.1);
         else s.max[axis] = Math.max(value, s.min[axis] + 0.1);
       },

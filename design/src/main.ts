@@ -2,7 +2,7 @@
 // solid. Studio loads this module the first time the tab is opened.
 
 import type { Feature, Project } from './model.js';
-import { newProject, newId, isShape } from './model.js';
+import { newProject, newId, isShape, findRef } from './model.js';
 import { State, align, distribute, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
@@ -57,6 +57,7 @@ const html = `
   <button class="btn sm ghost" id="ds-open" title="Open a part saved on the printer">Open…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
   <button class="btn sm ghost" id="ds-stl" title="Download the STL">STL</button>
+  <button class="btn sm ghost" id="ds-lib" title="Keep the STL in the model library on the Pi (Files tab)">Send to Library</button>
   <button class="btn sm primary" id="ds-send" title="Put it on the plate in Prepare">Send to Prepare</button>
 </div>
 <div class="ds-body">
@@ -80,7 +81,9 @@ const html = `
   <div class="ds-splitter" id="ds-splitter" title="Drag to resize the panel (double-click to reset)"></div>
   <aside class="ds-side" id="ds-side">
     <div class="ds-3d" id="ds-3d"></div>
+    <div class="ds-tabs" id="ds-tabs"><button data-tab="props" class="active">Properties</button><button data-tab="views">Views</button></div>
     <div class="ds-panel" id="ds-panel"></div>
+    <div class="ds-panel ds-views-pane hidden" id="ds-views"></div>
   </aside>
 </div>
 <div class="ds-status"><span id="ds-status"></span><span class="spacer"></span>
@@ -99,7 +102,47 @@ export function mount(root: HTMLElement, studio: Studio) {
     gear: (id) => editGear(id, false),
     dimValue: (dm) => sheet.dimGeom(dm)?.value ?? null,
     dimSize: (dm, size) => sheet.resizeTo(dm, size),
+    repick: (id) => repick(id),
+    unbase: () => st.change((p) => { delete p.base; p.stock.off = false; }),
   });
+  // the side panel's tabs: the selection's properties, or how the views are drawn
+  const showTab = (t: string) => {
+    root.querySelectorAll<HTMLButtonElement>('#ds-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+    $('#ds-panel').classList.toggle('hidden', t !== 'props');
+    $('#ds-views').classList.toggle('hidden', t !== 'views');
+    if (t === 'views') renderViews();
+  };
+  root.querySelectorAll<HTMLButtonElement>('#ds-tabs button').forEach((b) => { b.onclick = () => showTab(b.dataset.tab!); });
+  function renderViews() {
+    const el = $('#ds-views');
+    const kids: HTMLElement[] = [];
+    const h = (t: string, cls = 'ds-h') => { const d = document.createElement('div'); d.className = cls; d.textContent = t; return d; };
+    const check = (label: string, on: boolean, set: (v: boolean) => void, title = '') => {
+      const l = document.createElement('label');
+      l.className = 'ds-check';
+      if (title) l.title = title;
+      const c = document.createElement('input');
+      c.type = 'checkbox'; c.checked = on;
+      c.onchange = () => set(c.checked);
+      l.append(c, document.createTextNode(` ${label}`));
+      return l;
+    };
+    kids.push(h('Drawing'));
+    kids.push(check('Projection lines for the selection', st.viewOpts.projLines, (v) => st.setViewOpt('projLines', v),
+      'Faint lines carrying the selected shapes’ edges across to the views in line with it'));
+    kids.push(check('Hidden lines (dashed)', st.viewOpts.hidden, (v) => st.setViewOpt('hidden', v)));
+    kids.push(h('Views'));
+    kids.push(h('Third-angle: top above the front, right to its right. Hidden views show as small + boxes on the sheet.', 'ds-note'));
+    for (const v of ['top', 'front', 'right', 'left', 'back', 'bottom'] as const) {
+      const on = st.p.views.includes(v);
+      kids.push(check(VIEWS[v].label, on, (want) => {
+        if (!want && st.p.views.length <= 1) { renderViews(); return; }
+        st.change((p) => { p.views = want ? [...p.views, v] : p.views.filter((w) => w !== v); });
+        st.emit('view');
+      }));
+    }
+    el.replaceChildren(...kids);
+  }
   const preview = new Preview3D($('#ds-3d'));
   (window as any).__design = { st, sheet };     // for poking at from the console
   // the panel on the right: drag its edge to make it narrower or wider (remembered)
@@ -181,11 +224,22 @@ export function mount(root: HTMLElement, studio: Studio) {
     inFlight = true;
     $('#ds-busy').classList.remove('hidden');
     const project: Project = JSON.parse(JSON.stringify(st.p));
+    // re-picking a fillet's edges: show the part without it, so its edges are there to click
+    if (st.repick) project.features = project.features.filter((f) => f.id !== st.repick);
     try {
-      const r = await call({ type: 'build', project, views: ['top', 'front', 'right', 'left', 'back', 'bottom'] });
+      const r = await call({ type: 'build', project, views: ['top', 'front', 'right', 'left', 'back', 'bottom'], edges: st.tool === 'edge' });
       if (r) {
         st.built = r;
         st.buildError = '';
+        followFillets(r);
+        if (r.baseBox && st.p.base) {
+          const [a, b] = r.baseBox as [number[], number[]];
+          const s = st.p.stock;
+          if ([0, 1, 2].some((i) => Math.abs(s.min[i] - a[i]) > 1e-4 || Math.abs(s.max[i] - b[i]) > 1e-4)) {
+            s.min = [a[0], a[1], a[2]]; s.max = [b[0], b[1], b[2]]; s.off = false; st.save();
+          }
+        }
+        if (r.errors?.base) $('#ds-status').textContent = `The body didn't load: ${r.errors.base}`;
         // text: the font decides its size, so take the measured box (not an undo step)
         for (const [id, wh] of Object.entries(r.textSize || {}) as [string, [number, number]][]) {
           const f = st.feature(id);
@@ -207,10 +261,39 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (pending) { pending = false; requestBuild(); }
   };
 
+  /** Fillets follow their edges: keep each edge's last known spot and reference up to date (not an undo step). */
+  function followFillets(r: any) {
+    let touched = false;
+    st.p.features.forEach((f, idx) => {
+      const fl = f.fillet;
+      const now = r.fillets?.[f.id] as ([number, number, number] | null)[] | undefined;
+      if (!fl) return;
+      if (!fl.refs || fl.refs.length !== fl.edges.length) { fl.refs = fl.edges.map((pt) => findRef(pt, st.p, idx)); touched = true; }
+      if (!now) return;
+      now.forEach((pt, i) => {
+        if (!pt) return;
+        const old = fl.edges[i];
+        if (Math.hypot(pt[0] - old[0], pt[1] - old[1], pt[2] - old[2]) > 1e-6) {
+          fl.edges[i] = pt;
+          fl.refs![i] = findRef(pt, st.p, idx);
+          touched = true;
+        }
+      });
+    });
+    if (touched) st.save();
+  }
+
+  let wasRepick = false;
   st.on((w) => {
     if (w === 'model') { requestBuild(); sheet.relayout(); }
-    if (w === 'view') sheet.fit();
-    if (w === 'tool') sheet.cancelLine();
+    if (w === 'view') { sheet.fit(); if (!$('#ds-views').classList.contains('hidden')) renderViews(); }
+    if (w === 'tool') {
+      sheet.cancelLine();
+      if (st.tool === 'edge' && st.built && !st.built.edges.length) requestBuild();
+      // leaving a re-pick without applying: the part with its fillet again
+      if (st.tool !== 'edge' && wasRepick) requestBuild();
+      wasRepick = !!st.repick;
+    }
     sheet.render();
     syncToolbar();
   });
@@ -234,21 +317,56 @@ export function mount(root: HTMLElement, studio: Studio) {
     st.load(newProject());
     sheet.fit();
   };
+  // ---------------------------------------------------------- library
+  $('#ds-lib').onclick = async () => {
+    const b = $('#ds-lib') as HTMLButtonElement;
+    b.disabled = true;
+    try {
+      const buf = await getSTL();
+      const name = fileName();
+      const r = await fetch(`/studio-api/models/${encodeURIComponent(name)}`, { method: 'PUT', body: buf });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      // keep the design too, under the same name, so Send to Design brings back every shape
+      await save(true);
+      $('#ds-status').textContent = `“${name}” is in the model library (Files tab), with its design saved alongside.`;
+    } catch (e: any) { $('#ds-status').textContent = `Couldn't send it to the library: ${e.message}`; }
+    finally { b.disabled = false; }
+  };
+
+  /** Open a library model: its saved design if there is one (every shape editable), else the STL as the body. */
+  async function openModel(name: string) {
+    const stem = name.replace(/\.(stl|3mf|obj)$/i, '');
+    try {
+      const r = await fetch(`${API}${encodeURIComponent(stem)}.json`);
+      if (r.ok) { st.load(await r.json()); st.select([]); sheet.fit(); flash(`Opened the design of “${name}”: every shape can be changed.`); return; }
+    } catch { /* no saved design */ }
+    const p = newProject();
+    p.name = stem;
+    p.base = { model: name };
+    p.views = ['top', 'front', 'right'];
+    st.load(p);
+    st.select([]);
+    sheet.fit();
+    flash(`“${name}” is the body. Add or cut shapes on it, round its edges; its own walls keep their size (an STL has no shapes to change).`);
+  }
+
   // ---------------------------------------------------------- save / open on the printer
   const API = '/studio-api/designs/';
   const flash = (t: string) => { $('#ds-status').textContent = t; };
-  const save = async () => {
+  const save = async (quiet = false) => {
     const nm = (st.p.name || 'part').trim();
     try {
       const r = await fetch(`${API}${encodeURIComponent(nm)}.json`, { method: 'PUT', body: JSON.stringify(st.p), headers: { 'Content-Type': 'application/json' } });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-      flash(`Saved “${nm}” on the printer.`);
-    } catch (e: any) { flash(`Couldn't save: ${e.message}`); }
+      if (!quiet) flash(`Saved “${nm}” on the printer.`);
+    } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; }
   };
-  $('#ds-save').onclick = save;
+  $('#ds-save').onclick = () => save();
   $('#ds-open').onclick = async () => {
     let list: { name: string; modified: number }[] = [];
+    let lib: { name: string; size: number }[] = [];
     try { list = (await (await fetch(API.slice(0, -1))).json()).designs || []; } catch (e: any) { flash(`Couldn't list saved parts: ${e.message}`); return; }
+    try { lib = ((await (await fetch('/studio-api/models')).json()).models || []).filter((m: any) => /\.stl$/i.test(m.name)); } catch { /* no library */ }
     const box = document.createElement('div');
     box.className = 'ds-modal';
     const card = document.createElement('div');
@@ -286,6 +404,26 @@ export function mount(root: HTMLElement, studio: Studio) {
       ul.appendChild(row);
     }
     card.appendChild(ul);
+    const designs = new Set(list.map((d) => d.name));
+    const libOnly = lib.filter((m) => !designs.has(m.name.replace(/\.stl$/i, '')));
+    if (libOnly.length) {
+      const h = document.createElement('div');
+      h.className = 'ds-h';
+      h.textContent = 'From the model library (STL)';
+      const note = document.createElement('p');
+      note.className = 'ds-note';
+      note.textContent = 'Opens as the body: add or cut shapes on it and round its edges.';
+      const ul2 = document.createElement('div');
+      ul2.className = 'ds-list ds-open-list';
+      for (const m of libOnly) {
+        const b = document.createElement('button');
+        b.textContent = m.name;
+        b.title = `${Math.round(m.size / 1024)} KB`;
+        b.onclick = () => { close(); openModel(m.name); };
+        ul2.appendChild(b);
+      }
+      card.append(h, note, ul2);
+    }
     const foot = document.createElement('div');
     foot.className = 'ds-dialog-foot';
     const cancel = document.createElement('button');
@@ -336,10 +474,26 @@ export function mount(root: HTMLElement, studio: Studio) {
   let edgeMode: 'fillet' | 'chamfer' = 'fillet', edgeSize = 1;
   const applyEdges = () => {
     if (!st.edges.length || !(edgeSize > 0)) return;
+    const again = st.repick ? st.feature(st.repick) : undefined;
+    if (again?.fillet) {
+      // re-picked: the same fillet, its edges replaced
+      const idx = st.p.features.indexOf(again);
+      st.change(() => {
+        again.fillet!.edges = st.edges.map((e) => [...e] as [number, number, number]);
+        again.fillet!.refs = again.fillet!.edges.map((pt) => findRef(pt, st.p, idx));
+        again.fillet!.mode = edgeMode; again.fillet!.size = edgeSize;
+      });
+      st.edges = [];
+      st.setTool('select');
+      st.select([again.id]);
+      requestBuild();
+      return;
+    }
     const f: Feature = {
       id: newId(), type: 'fillet', view: st.activeView, cu: 0, cv: 0, w: 0, h: 0, r: 0, corner: 0, d0: 0, d1: 0, op: 'add', through: false,
       fillet: { mode: edgeMode, size: edgeSize, edges: st.edges.map((e) => [...e] as [number, number, number]) },
     };
+    f.fillet!.refs = f.fillet!.edges.map((pt) => findRef(pt, st.p));
     st.change((p) => { p.features.push(f); });
     st.edges = [];
     st.emit('select');
@@ -370,13 +524,37 @@ export function mount(root: HTMLElement, studio: Studio) {
     return g;
   };
 
+  /** Fillets with edges that are gone, and how many. */
+  function lostFillets() {
+    const out: { id: string; n: number }[] = [];
+    for (const f of st.p.features) {
+      const now = st.built?.fillets?.[f.id];
+      const n = now ? now.filter((q) => !q).length : 0;
+      if (f.fillet && n) out.push({ id: f.id, n });
+    }
+    return out;
+  }
+
+  /** Pick a fillet's edges again: the edge tool, starting from the ones still there. */
+  function repick(id: string) {
+    const f = st.feature(id);
+    if (!f?.fillet) return;
+    edgeMode = f.fillet.mode; edgeSize = f.fillet.size;
+    st.setTool('edge');
+    st.repick = id;
+    wasRepick = true;
+    requestBuild();
+    st.edges = (st.built?.fillets?.[id] || []).filter((q): q is [number, number, number] => !!q).map((q) => [...q] as [number, number, number]);
+    st.emit('select');
+  }
+
   function renderCtx() {
     const kids: HTMLElement[] = [];
     const feats = st.sels.filter((id) => id !== 'stock');
     const view = VIEWS[st.activeView].label;
     const fmt = (mm: number) => fmtLen(mm, st.p);
     if (st.tool === 'edge') {
-      kids.push(label(st.edges.length ? `${st.edges.length} edge${st.edges.length > 1 ? 's' : ''}` : 'Edges'));
+      kids.push(label(`${st.repick ? 'Re-pick: ' : ''}${st.edges.length ? `${st.edges.length} edge${st.edges.length > 1 ? 's' : ''}` : 'Edges'}`));
       const seg = mk('div', 'ds-seg ds-small');
       for (const [v, t] of [['fillet', 'Fillet'], ['chamfer', 'Chamfer']] as const) {
         const b = mk('button', edgeMode === v ? 'active' : '', t) as HTMLButtonElement;
@@ -446,9 +624,17 @@ export function mount(root: HTMLElement, studio: Studio) {
       kids.push(alignGroup('part'));
       kids.push(mk('span', 'ds-ctx-hint', `in ${view}`));
       kids.push(group(iconBtn(ICONS.trash, 'Delete (⌫)', () => st.deleteSelected())));
+    } else if (!st.sels.length && lostFillets().length) {
+      const lost = lostFillets();
+      const n = lost.reduce((a, x) => a + x.n, 0);
+      kids.push(mk('span', 'ds-ctx-label ds-lost', `${lost.length === 1 ? 'A fillet' : `${lost.length} fillets`} lost ${n} edge${n > 1 ? 's' : ''}`));
+      kids.push(mk('span', 'ds-ctx-hint', 'Those edges are no longer on the part.'));
+      const b = mk('button', 'btn sm primary', 'Re-pick') as HTMLButtonElement;
+      b.onclick = () => repick(lost[0].id);
+      kids.push(b);
     } else {
       const s = st.p.stock;
-      kids.push(label('Body'));
+      kids.push(label(st.p.base ? `Body: ${st.p.base.model}` : 'Body'));
       kids.push(mk('span', 'ds-ctx-hint', `${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
       kids.push(mk('span', 'ds-ctx-hint', st.sels.length ? 'Drag its handles to resize it. Shift-click shapes to line them up to it.' : 'Pick a tool on the left and draw on a view.'));
     }
@@ -481,4 +667,5 @@ export function mount(root: HTMLElement, studio: Studio) {
   studio.onPage((p) => { preview.active = p === 'design'; if (p === 'design') { preview.resize(); sheet.render(); } });
   syncToolbar();
   requestBuild();
+  return { openModel };
 }

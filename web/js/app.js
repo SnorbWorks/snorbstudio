@@ -131,6 +131,12 @@ function init() {
       .then((m) => m.mount($('#design-root'), app))
       .catch((e) => { design = null; toast(`The Design tab failed to load: ${e.message}`, 'err', 10000); });
   });
+  // the library's "Send to Design": open that model in the Design tab
+  app.openInDesign = async (name) => {
+    app.show('design');
+    const api = await design;
+    if (api) await api.openModel(name);
+  };
 
   mr.on('status', updateHeader);
   mr.on('klippy', () => { updateHeader(); updateBanner(); });

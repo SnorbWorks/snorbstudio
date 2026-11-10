@@ -17,7 +17,13 @@ export interface Stock {
 export type ShapeType = 'rect' | 'circle' | 'polygon' | 'poly' | 'gear' | 'text';
 
 export interface TextSpec { s: string; size: number; bold: boolean }
-export interface FilletSpec { mode: 'fillet' | 'chamfer'; size: number; edges: Vec3[] }
+/**
+ * Which edge a fillet means, so it can follow the edge when shapes change:
+ * the shape (or body) whose box the edge lies on, which copy of it, and where
+ * in that box (0..1 along each world axis).
+ */
+export interface EdgeRef { owner: string; inst: number; rel: Vec3 }
+export interface FilletSpec { mode: 'fillet' | 'chamfer'; size: number; edges: Vec3[]; refs?: (EdgeRef | null)[] }
 
 /** Repeat a feature: in a row (step each time) or round a centre. World coordinates. */
 export interface Pattern {
@@ -69,6 +75,7 @@ export interface Dim {
 
 export interface Project {
   version: 1;
+  base?: { model: string };   // the body is a model from the library (an STL) instead of a block
   name: string;
   units: 'mm' | 'in';
   precision: number;  // decimals shown
@@ -380,4 +387,75 @@ export function rotateAbout(p: Vec3, c: Vec3, ax: Vec3, deg: number): Vec3 {
   const kd = dot(k, v);
   const kx: Vec3 = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
   return [0, 1, 2].map((i) => c[i] + v[i] * cs + kx[i] * sn + k[i] * kd * (1 - cs)) as Vec3;
+}
+
+// ------------------------------------------------------------ boxes and edge references
+
+/** A feature's box in world coordinates (a through cut stops at the part's far side). */
+export function featureExtents(f: Feature, p: Project): [Vec3, Vec3] {
+  const [u0, v0, u1, v1] = bounds2d(f);
+  const dr = depthExtent(f, p);
+  if (f.op === 'cut' && f.through) {
+    if (f.far) dr[1] = Math.max(nearDepth(f.view, p), dr[0]);
+    else dr[0] = Math.min(farDepth(f.view, p), dr[1]);
+  }
+  const V = VIEWS[f.view];
+  const min: Vec3 = [Infinity, Infinity, Infinity], max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (const u of [u0, u1]) for (const v of [v0, v1]) for (const d of dr) {
+    const w = V.toWorld(u, v, d);
+    for (let i = 0; i < 3; i++) { min[i] = Math.min(min[i], w[i]); max[i] = Math.max(max[i], w[i]); }
+  }
+  return [min, max];
+}
+
+/** The box of the body or a shape. */
+export function ownerExtents(id: string, p: Project): [Vec3, Vec3] | null {
+  if (id === 'stock') return p.stock.off && !p.base ? null : [p.stock.min, p.stock.max];
+  const f = p.features.find((q) => q.id === id);
+  return f && isShape(f) ? featureExtents(f, p) : null;
+}
+
+/** Undo a copy's moves (for finding where on the original a point of a copy is). */
+export function invertOps(ops: Op[]): Op[] {
+  return [...ops].reverse().map((o) => ('t' in o ? { t: [-o.t[0], -o.t[1], -o.t[2]] as Vec3 } : 'mir' in o ? o : { ...o, rot: -o.rot }));
+}
+
+const ON = 0.01;   // mm: how close counts as on a box face
+
+/** The best reference for a point on an edge: the shape whose box it sits on in the most directions (later shapes win ties). */
+export function findRef(pt: Vec3, p: Project, before = p.features.length): EdgeRef | null {
+  let best: EdgeRef | null = null, bestScore = -1;
+  const consider = (owner: string, inst: number, q: Vec3, ext: [Vec3, Vec3], order: number) => {
+    const [mn, mx] = ext;
+    let faces = 0;
+    for (let i = 0; i < 3; i++) {
+      if (q[i] < mn[i] - ON || q[i] > mx[i] + ON) return;
+      if (Math.abs(q[i] - mn[i]) < ON || Math.abs(q[i] - mx[i]) < ON) faces++;
+    }
+    if (!faces) return;
+    const score = faces * 1e4 + order;
+    if (score <= bestScore) return;
+    bestScore = score;
+    best = { owner, inst, rel: [0, 1, 2].map((i) => (mx[i] - mn[i] > 1e-9 ? (q[i] - mn[i]) / (mx[i] - mn[i]) : 0)) as Vec3 };
+  };
+  const se = ownerExtents('stock', p);
+  if (se) consider('stock', 0, pt, se, 0);
+  p.features.slice(0, before).forEach((f, idx) => {
+    if (!isShape(f)) return;
+    const ext = featureExtents(f, p);
+    instances(f).forEach((ops, k) => consider(f.id, k, k ? applyOps(pt, invertOps(ops)) : pt, ext, idx + 1));
+  });
+  return best;
+}
+
+/** Where a reference says its edge is now. */
+export function fromRef(ref: EdgeRef, p: Project): Vec3 | null {
+  const ext = ownerExtents(ref.owner, p);
+  if (!ext) return null;
+  const [mn, mx] = ext;
+  const q = [0, 1, 2].map((i) => mn[i] + ref.rel[i] * (mx[i] - mn[i])) as Vec3;
+  if (ref.owner === 'stock' || !ref.inst) return q;
+  const f = p.features.find((x) => x.id === ref.owner)!;
+  const ops = instances(f)[ref.inst];
+  return ops ? applyOps(q, ops) : null;
 }

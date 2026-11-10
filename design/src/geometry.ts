@@ -2,11 +2,11 @@
 // node for the tests. Nothing here touches the DOM.
 
 import {
-  getOC, makeBaseBox, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
+  cast, getOC, makeBaseBox, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
-import { cornerRadii, depthRange, gearProfile, instances, isShape, roundCorner, verts } from './model.js';
+import { cornerRadii, depthRange, fromRef, gearProfile, instances, isShape, roundCorner, verts } from './model.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
 
@@ -23,6 +23,8 @@ export interface BuildResult {
   volume: number;
   bbox: [number[], number[]] | null;
   errors: Record<string, string>;
+  fillets: Record<string, (Vec3 | null)[]>;   // fillet id -> where each of its edges is now (null: gone)
+  baseBox: [Vec3, Vec3] | null;               // the library model's box, when the body is one
 }
 
 type Solid = any;
@@ -180,7 +182,47 @@ export function featureTool(f: Feature, p: Project): Solid | null {
   return tool;
 }
 
+/** Library models used as bodies, loaded by whoever runs the builds (worker or tests), by name. */
+export const bases: Record<string, Solid> = {};
+
+/**
+ * An STL (a skin of triangles) as a solid OpenCASCADE can cut and fillet:
+ * the triangles sewn into one shell, flat neighbours merged into faces.
+ */
+export function importMesh(bytes: Uint8Array): Solid {
+  const n = bytes.length >= 84 ? new DataView(bytes.buffer, bytes.byteOffset).getUint32(80, true) : 0;
+  if (n > 60000 && bytes.length === 84 + 50 * n) throw new Error(`It has ${n.toLocaleString()} triangles; the most the Design tab can work with is 60,000`);
+  const oc = getOC();
+  const file = `/mesh${Date.now()}.stl`;
+  oc.FS.writeFile(file, bytes);
+  try {
+    const raw = new oc.TopoDS_Shell();
+    if (!new oc.StlAPI_Reader().Read(raw, file.slice(1))) throw new Error('Not an STL file');
+    const sew = new oc.BRepBuilderAPI_Sewing(1e-4, true, true, true, false);
+    sew.Add(raw);
+    sew.Perform(new oc.Message_ProgressRange());
+    const u = new oc.ShapeUpgrade_UnifySameDomain(sew.SewedShape(), true, true, false);
+    u.Build();
+    const mk = new oc.BRepBuilderAPI_MakeSolid();
+    const ex = new oc.TopExp_Explorer(u.Shape(), oc.TopAbs_ShapeEnum.TopAbs_SHELL, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+    let shells = 0;
+    for (; ex.More(); ex.Next()) { mk.Add(oc.TopoDS.Shell(ex.Current())); shells++; }
+    if (!shells) throw new Error("Couldn't make a closed solid from it");
+    let solid: Solid = cast(mk.Solid());
+    // the triangles' winding decides inside from outside: turn it out the right way
+    if (measureVolume(solid) < 0) solid = cast(solid.wrapped.Reversed());
+    return solid;
+  } finally {
+    try { oc.FS.unlink(file); } catch { /* gone */ }
+  }
+}
+
 export function stockSolid(p: Project): Solid | null {
+  if (p.base) {
+    const b = bases[p.base.model];
+    if (!b) throw new Error(`The library model “${p.base.model}” isn't loaded`);
+    return b.clone();
+  }
   if (p.stock.off) return null;
   const [a, b] = [p.stock.min, p.stock.max];
   return makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2])
@@ -197,8 +239,10 @@ function edgeNear(e: any, pt: Vec3, tol = 0.05): boolean {
 }
 
 /** The finished part, plus which features actually changed it. */
-export function buildSolid(p: Project): { solid: Solid | null; effect: Record<string, boolean>; errors: Record<string, string> } {
-  let solid: Solid | null = stockSolid(p);
+export function buildSolid(p: Project): { solid: Solid | null; effect: Record<string, boolean>; errors: Record<string, string>; fillets: Record<string, (Vec3 | null)[]> } {
+  const fillets: Record<string, (Vec3 | null)[]> = {};
+  let solid: Solid | null = null;
+  try { solid = stockSolid(p); } catch (e: any) { (fillets as any).__baseError = String(e?.message || e); }
   let vol = solid ? measureVolume(solid) : 0;
   const effect: Record<string, boolean> = {};
   const errors: Record<string, string> = {};
@@ -207,9 +251,20 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
       let next: Solid | null = null;
       if (f.type === 'fillet' && f.fillet) {
         if (!solid) { effect[f.id] = false; continue; }
-        const { mode, size, edges } = f.fillet;
-        if (!(size > 0) || !edges.length) { effect[f.id] = false; continue; }
-        const pick = (e: any) => (edges.some((pt) => edgeNear(e, pt)) ? size : 0);
+        const { mode, size, edges, refs } = f.fillet;
+        // each edge: where its reference says it is now, else where it was
+        const polys: number[][] = solid.edges.map((e: any) => edgePoints(e, 24));
+        const onEdge = (pt: Vec3) => polys.some((poly) => nearPoly(poly, pt));
+        const found = edges.map((pt, i) => {
+          const r = refs?.[i];
+          const viaRef = r ? fromRef(r, p) : null;
+          if (viaRef && onEdge(viaRef)) return viaRef;
+          return onEdge(pt) ? pt : null;
+        });
+        fillets[f.id] = found;
+        const live = found.filter((q): q is Vec3 => !!q);
+        if (!(size > 0) || !live.length) { effect[f.id] = false; continue; }
+        const pick = (e: any) => (live.some((pt) => edgeNear(e, pt)) ? size : 0);
         next = mode === 'chamfer' ? solid.chamfer(pick as any) : solid.fillet(pick as any);
       } else {
         const tool = featureTool(f, p);
@@ -227,7 +282,14 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
       errors[f.id] = String(e?.message || e);
     }
   }
-  return { solid, effect, errors };
+  return { solid, effect, errors, fillets };
+}
+
+function nearPoly(poly: number[], pt: Vec3, tol = 0.05): boolean {
+  for (let k = 0; k + 5 < poly.length; k += 3) {
+    if (segDist3(pt, [poly[k], poly[k + 1], poly[k + 2]], [poly[k + 3], poly[k + 4], poly[k + 5]]) < tol) return true;
+  }
+  return false;
 }
 
 /** Points along an edge, flat [x,y,z, ...]. */
@@ -378,9 +440,14 @@ function segDist(px: number, py: number, x0: number, y0: number, x1: number, y1:
   return Math.hypot(px - (x0 + t * dx), py - (y0 + t * dy));
 }
 
-export function build(p: Project, views: ViewName[] = VIEW_ORDER, withMesh = true): BuildResult {
-  const { solid, effect, errors } = buildSolid(p);
-  const out: BuildResult = { views: {}, effect, errors, mesh: null, edges: [], textSize: {}, volume: 0, bbox: null };
+export function build(p: Project, views: ViewName[] = VIEW_ORDER, withMesh = true, withEdges = true): BuildResult {
+  const { solid, effect, errors, fillets } = buildSolid(p);
+  const baseErr = (fillets as any).__baseError;
+  delete (fillets as any).__baseError;
+  if (baseErr) errors.base = baseErr;
+  let baseBox: [Vec3, Vec3] | null = null;
+  if (p.base && bases[p.base.model]) { const bb = bases[p.base.model].boundingBox.bounds; baseBox = [bb[0], bb[1]]; }
+  const out: BuildResult = { views: {}, effect, errors, fillets, baseBox, mesh: null, edges: [], textSize: {}, volume: 0, bbox: null };
   for (const f of p.features) {
     try { const ts = textSize(f); if (ts) out.textSize[f.id] = ts; } catch (e: any) { errors[f.id] = String(e?.message || e); }
   }
@@ -391,7 +458,8 @@ export function build(p: Project, views: ViewName[] = VIEW_ORDER, withMesh = tru
     const m = solid.mesh({ tolerance: 0.05, angularTolerance: 0.2 });
     out.mesh = { vertices: m.vertices, triangles: m.triangles };
   }
-  out.edges = solid.edges.map((e: any) => edgePoints(e, 24));
+  // every edge in 3D, for the edge tool (skipped otherwise: on a big STL body it takes a while)
+  if (withEdges) out.edges = solid.edges.map((e: any) => edgePoints(e, 24));
   const bb = solid.boundingBox.bounds;
   out.bbox = [bb[0], bb[1]];
   return out;

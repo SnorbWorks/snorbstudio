@@ -125,6 +125,7 @@ async function loadModels() {
       el('span', { class: 'nm' }, m.name),
       el('span', { class: 'sz' }, `${fmtBytes(m.size)} · ${fmtDate(m.modified)}`),
       el('button', { class: 'btn sm primary', onclick: () => app.prepare.loadFromLibrary(m.name) }, 'Put on bed'),
+      /\.stl$/i.test(m.name) ? el('button', { class: 'btn sm ghost', title: 'Open it in the Design tab to change it', onclick: () => app.openInDesign(m.name) }, 'Send to Design') : '',
       el('a', { class: 'btn sm ghost', href: `/studio-api/models/${encodeURIComponent(m.name)}`, download: m.name }, '⤓'),
       el('button', { class: 'btn sm ghost danger', onclick: async () => {
         if (await confirmBox('Delete model?', `Remove ${m.name} from the library?`, 'Delete', true)) {

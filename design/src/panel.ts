@@ -12,6 +12,8 @@ export interface PanelHooks {
   gear(id: string): void;                       // open the gear dialog
   dimValue(dm: Dim): number | null;
   dimSize(dm: Dim, size: number): void;
+  repick(id: string): void;                     // pick a fillet's edges again
+  unbase(): void;                               // the body back to a plain block
 }
 
 const NAMES: Record<string, string> = {
@@ -132,6 +134,17 @@ export class Panel {
     const s = st.p.stock;
     const out: HTMLElement[] = [this.h('Body')];
     if (none) out.push(this.h('Nothing selected. Draw on a view, or click a shape.', 'ds-note'));
+    if (st.p.base) {
+      out.push(this.h(`From the library: ${st.p.base.model}`, 'ds-note'));
+      if (st.built?.errors.base) out.push(this.h(st.built.errors.base, 'ds-note ds-err'));
+      out.push(this.h('An STL is only a skin of triangles, so its own walls keep their size; add or cut shapes on it, round its edges.', 'ds-note'));
+      const fmt = (mm: number) => `${this.toUnits(mm).toFixed(st.p.precision)}`;
+      out.push(this.h(`${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])} ${st.p.units}`, 'ds-note'));
+      out.push(this.button('Use a plain block instead', () => this.hooks.unbase(), 'btn ghost sm'));
+      if (!none) return out;
+      out.push(...this.history());
+      return out;
+    }
     out.push(this.check('Start from a block', !s.off, (on) => { s.off = !on; },
       'Off: no block, the shapes you add stand on their own (a gear, say). Cuts then only cut those shapes.'));
     if (!s.off) {
@@ -423,10 +436,15 @@ export class Panel {
     const out: HTMLElement[] = [this.h(featureName(f))];
     const err = st.built?.errors[f.id];
     if (err) out.push(this.h(`Couldn't round these edges: ${err}. Try a smaller size.`, 'ds-note ds-err'));
-    else if (st.built && st.built.effect[f.id] === false) out.push(this.h('None of its edges are on the part any more, so it does nothing.', 'ds-note'));
+    const now = st.built?.fillets?.[f.id];
+    const lost = now ? now.filter((q) => !q).length : 0;
+    if (lost) {
+      out.push(this.h(`${lost} of its ${fl.edges.length} edges ${lost === 1 ? 'is' : 'are'} no longer on the part (a shape changed too much to follow).`, 'ds-note ds-err'));
+      out.push(this.button('Re-pick its edges', () => this.hooks.repick(f.id), 'btn sm primary'));
+    } else out.push(this.h('Its edges follow when shapes change size or move.', 'ds-note'));
     out.push(this.labelled('Kind', this.seg([['fillet', 'Fillet'], ['chamfer', 'Chamfer']], fl.mode, (v) => st.change(() => { fl.mode = v as 'fillet' | 'chamfer'; }))));
     out.push(this.num(fl.mode === 'fillet' ? 'Radius' : 'Size', fl.size, (v) => { fl.size = v; }, { min: 0.01 }));
-    out.push(this.h('To change which edges, delete this and pick them again with the edge tool (E).', 'ds-note'));
+    if (!lost) out.push(this.button('Change which edges', () => this.hooks.repick(f.id), 'btn ghost sm'));
     out.push(this.button('Delete', () => st.deleteSelected()));
     return out;
   }
