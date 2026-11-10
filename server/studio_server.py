@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ender Studio helper: model library + slicing (PrusaSlicer CLI) for the web UI.
+"""SnorbStudio helper: model library + slicing (PrusaSlicer CLI) for the web UI.
 
 Everything printer-related goes straight from the browser to Moonraker; this
 only does what Moonraker can't: keep the original model files and slice.
@@ -366,7 +366,7 @@ def boxes_stl(path, boxes):
                (0, -1, 0), (1, 0, 0), (1, 0, 0), (0, 1, 0), (0, 1, 0),
                (-1, 0, 0), (-1, 0, 0)]
     with open(path, "wb") as f:
-        f.write(b"Ender Studio calibration".ljust(80, b" "))
+        f.write(b"SnorbStudio calibration".ljust(80, b" "))
         f.write(struct.pack("<I", 12 * len(boxes)))
         for x0, y0, z0, x1, y1, z1 in boxes:
             v = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
@@ -474,7 +474,7 @@ def run_slice(job_id, stl_paths, opts, workdir):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "EnderStudio/1"
+    server_version = "SnorbStudio/1"
 
     def log_message(self, fmt, *args):
         pass
@@ -788,7 +788,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 8091), Handler)
     srv.slicer_version = slicer_version()
     UPDATER.start()
-    print("Ender Studio server on 127.0.0.1:8091, slicer:",
+    print("SnorbStudio server on 127.0.0.1:8091, slicer:",
           srv.slicer_version, flush=True)
     srv.serve_forever()
 

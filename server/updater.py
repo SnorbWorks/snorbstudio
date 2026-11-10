@@ -1,13 +1,13 @@
-"""Ender Studio self-updater: follows the GitHub repo the Pi's copy came from.
+"""SnorbStudio self-updater: follows the GitHub repo the Pi's copy came from.
 
-The Pi keeps a git checkout (~/ender3-pi, with ~/studio pointing into it).
+The Pi keeps a git checkout (~/snorbstudio, with ~/studio pointing at it).
 It looks for updates once per start-up, after the printer services have
 settled (and when asked: the page's "Check now", or push.sh).  When there
 are new commits and the printer is idle (not printing, heaters off, not
 slicing) it fast-forwards
-and runs studio/deploy/install.sh in its own systemd unit, so restarting
+and runs deploy/install.sh in its own systemd unit, so restarting
 this service doesn't kill the install.  install.sh checks the result and
-rolls back to the previous commit if Ender Studio or Klipper won't start.
+rolls back to the previous commit if SnorbStudio or Klipper won't start.
 
 Publishing an update = push to the repo's master branch.
 """
@@ -22,14 +22,14 @@ import time
 import urllib.request
 
 HOME = os.path.expanduser("~")
-REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 BRANCH = "master"
 DATA = os.path.join(HOME, "printer_data")
 SETTINGS = os.path.join(DATA, "studio_settings.json")
 LAST_RESULT = os.path.join(DATA, "studio_update.json")    # written by install.sh
 LOG = os.path.join(DATA, "logs", "studio_update.log")
 MOONRAKER = "http://127.0.0.1:7125"
-SERVICES = ["klipper", "moonraker", "nginx", "ender-studio"]
+SERVICES = ["klipper", "moonraker", "nginx", "snorbstudio"]
 STABLE_FOR = 60              # services must stay up this long before checking
 STABLE_MAX = 15 * 60         # ...but check anyway after this long
 FETCH_TRIES = 10             # Wi-Fi can come up late: retry a failed fetch
@@ -180,16 +180,16 @@ class Updater:
             git("merge", "--ff-only", "--quiet", "origin/" + BRANCH)
             # Run a copy of install.sh: the rollback rewrites the checkout,
             # and a shell script being edited while it runs misbehaves.
-            fd, script = tempfile.mkstemp(prefix="ender-studio-install-", suffix=".sh")
+            fd, script = tempfile.mkstemp(prefix="snorbstudio-install-", suffix=".sh")
             os.close(fd)
-            shutil.copy(os.path.join(REPO, "studio", "deploy", "install.sh"), script)
+            shutil.copy(os.path.join(REPO, "deploy", "install.sh"), script)
             os.makedirs(os.path.dirname(LOG), exist_ok=True)
             with open(LOG, "a") as f:
                 f.write("\n==== %s update %s -> %s\n" % (
                     time.strftime("%Y-%m-%d %H:%M:%S"), prev[:7], git("rev-parse", "--short", "HEAD")))
             user = pwd.getpwuid(os.getuid()).pw_name
             cmd = ["sudo", "-n", "systemd-run", "--quiet", "--collect",
-                   "--unit=ender-studio-update-%d" % int(time.time()),
+                   "--unit=snorbstudio-update-%d" % int(time.time()),
                    "-p", "User=" + user,
                    "-p", "StandardOutput=append:" + LOG,
                    "-p", "StandardError=append:" + LOG,

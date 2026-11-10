@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ender Studio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='22' width='26' height='6' rx='2' fill='%23ff8a3d'/%3E%3Cpath d='M10 20 16 6l6 14z' fill='%23ffd0a8'/%3E%3C/svg%3E">
+<title>SnorbStudio</title>
+<link rel="icon" type="image/png" href="img/snorb-64.png">
+<link rel="apple-touch-icon" href="img/snorb.png">
+<meta name="theme-color" content="#211427">
 <link rel="stylesheet" href="css/app.css">
 <link rel="stylesheet" href="css/design.css">
 <script type="importmap">
@@ -16,9 +18,9 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="logo"></span>Ender Studio</div>
+  <div class="brand"><img class="logo" src="img/snorb.png" alt="">SnorbStudio</div>
   <nav class="tabs" id="tabs">
-    <button data-page="design">Design</button>
+    <button data-page="design">SnorbCAD</button>
     <button data-page="prepare" class="active">Prepare</button>
     <button data-page="print">Print</button>
     <button data-page="control">Control</button>
@@ -42,7 +44,7 @@
 </div>
 
 <div class="banner update hidden" id="update-banner">
-  <div><b>Ender Studio was updated</b><span id="ub-msg"></span></div>
+  <div><b>SnorbStudio was updated</b><span id="ub-msg"></span></div>
   <div class="row"><button class="btn primary" id="ub-reload">Reload page</button></div>
 </div>
 

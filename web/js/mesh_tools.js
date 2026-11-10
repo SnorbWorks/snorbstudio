@@ -311,7 +311,7 @@ export function toSTL(mesh) {
   const nf = pos.length / 9;
   const buf = new ArrayBuffer(84 + 50 * nf);
   const dv = new DataView(buf);
-  const head = 'Ender Studio plate';
+  const head = 'SnorbStudio plate';
   for (let i = 0; i < head.length; i++) dv.setUint8(i, head.charCodeAt(i));
   dv.setUint32(80, nf, true);
   const m = mesh.matrixWorld;

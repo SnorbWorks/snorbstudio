@@ -1,20 +1,20 @@
 #!/bin/sh
-# Install or update Ender Studio on the Pi from its git checkout.
+# Install or update SnorbStudio on the Pi from its git checkout.
 #
 # First time (on the Pi):
-#   git clone https://github.com/SnorbWorks/ender3-pi ~/ender3-pi
-#   sh ~/ender3-pi/studio/deploy/install.sh
+#   git clone https://github.com/SnorbWorks/snorbstudio ~/snorbstudio
+#   sh ~/snorbstudio/deploy/install.sh
 #
-# Updates: studio/server/updater.py pulls the new commits, then runs a copy
+# Updates: server/updater.py pulls the new commits, then runs a copy
 # of this script with REPO=<checkout> and PREV=<commit before the pull>.
-# If Ender Studio or Klipper doesn't come back, it resets to PREV and
+# If SnorbStudio or Klipper doesn't come back, it resets to PREV and
 # installs that again.  The outcome goes to ~/printer_data/studio_update.json.
 #
 # Only things that changed are copied/restarted, so running it twice is safe.
 
-REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}
+REPO=${REPO:-$(cd "$(dirname "$0")/.." && pwd)}
 PREV=${PREV:-}
-D=$REPO/studio/deploy
+D=$REPO/deploy
 CFG=$HOME/printer_data/config
 RESULT=$HOME/printer_data/studio_update.json
 MR=http://127.0.0.1:7125
@@ -25,11 +25,11 @@ changed() { ! cmp -s "$1" "$2"; }      # changed <new> <installed>
 apply() {
   KLIPPER=none
   # nginx serves ~/studio/web and the service runs ~/studio/server, so
-  # ~/studio points into the checkout (an older copied-in folder is kept).
+  # ~/studio points at the checkout (an older copied-in folder is kept).
   if [ -d "$HOME/studio" ] && [ ! -L "$HOME/studio" ]; then
     mv "$HOME/studio" "$HOME/studio.old-$(date +%Y%m%d-%H%M%S)"
   fi
-  ln -sfn "$REPO/studio" "$HOME/studio"
+  ln -sfn "$REPO" "$HOME/studio"
 
   # Klipper macros + the include that loads them
   if changed "$D/studio_macros.cfg" "$CFG/studio_macros.cfg"; then
@@ -51,13 +51,19 @@ apply() {
   fi
 
   # The helper service
-  if changed "$D/ender-studio.service" /etc/systemd/system/ender-studio.service; then
-    sudo cp "$D/ender-studio.service" /etc/systemd/system/
+  if changed "$D/snorbstudio.service" /etc/systemd/system/snorbstudio.service; then
+    sudo cp "$D/snorbstudio.service" /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable ender-studio
+    sudo systemctl enable snorbstudio
+  fi
+  # the old name (SnorbStudio) goes away
+  if [ -f /etc/systemd/system/ender-studio.service ]; then
+    sudo systemctl disable --now ender-studio 2>/dev/null
+    sudo rm -f /etc/systemd/system/ender-studio.service
+    sudo systemctl daemon-reload
   fi
 
-  # nginx: Ender Studio on port 80, Mainsail kept on 8080 as a fallback
+  # nginx: SnorbStudio on port 80, Mainsail kept on 8080 as a fallback
   NGINX=no
   if grep -q "listen 80 default_server;" /etc/nginx/sites-available/mainsail 2>/dev/null; then
     sudo sed -i "s/listen 80 default_server;/listen 8080;/; s/listen \[::\]:80 default_server;/listen [::]:8080;/" /etc/nginx/sites-available/mainsail
@@ -73,18 +79,18 @@ apply() {
   fi
   if [ $NGINX = yes ]; then sudo nginx -t && sudo systemctl reload nginx; fi
 
-  sudo systemctl restart ender-studio
+  sudo systemctl restart snorbstudio
   case $KLIPPER in
     restart) sudo systemctl restart klipper ;;
     reload)  curl -s -X POST $MR/printer/restart >/dev/null ;;
   esac
 }
 
-# 0 = Ender Studio answers and Klipper (if restarted) loaded its config.
+# 0 = SnorbStudio answers and Klipper (if restarted) loaded its config.
 verify() {
   i=0
   until curl -sf http://127.0.0.1:8091/studio-api/update >/dev/null; do
-    i=$((i + 1)); [ $i -ge 30 ] && { WHY="Ender Studio didn't start"; return 1; }
+    i=$((i + 1)); [ $i -ge 30 ] && { WHY="SnorbStudio didn't start"; return 1; }
     sleep 1
   done
   [ $KLIPPER = none ] && return 0
@@ -141,5 +147,5 @@ main() {
 }
 
 main "$@"; RC=$?
-case $0 in */ender-studio-install-*.sh) rm -f "$0" ;; esac    # the updater's temp copy
+case $0 in */snorbstudio-install-*.sh|*/ender-studio-install-*.sh) rm -f "$0" ;; esac    # the updater's temp copy
 exit $RC

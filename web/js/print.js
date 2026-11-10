@@ -290,8 +290,8 @@ class TempChart {
     const top = Math.max(60, ...this.n, ...this.nt, ...this.b, ...this.bt) * 1.08;
     const ymax = Math.ceil(top / 50) * 50;
     g.font = '11px -apple-system, sans-serif';
-    g.fillStyle = '#8d959e';
-    g.strokeStyle = '#2a3036';
+    g.fillStyle = '#a893ab';
+    g.strokeStyle = '#3a2741';
     g.lineWidth = 1;
     for (let v = 0; v <= ymax; v += 50) {
       const y = 6 + H - (v / ymax) * H;

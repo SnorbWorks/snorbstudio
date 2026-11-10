@@ -17,13 +17,13 @@ export class Viewer extends EventTarget {
     this.active = true;
     const r = this.renderer = new THREE.WebGLRenderer({ antialias: true });
     r.setPixelRatio(Math.min(devicePixelRatio, 2));
-    r.setClearColor(0x0d0f12);
+    r.setClearColor(0x100a13);
     container.prepend(r.domElement);
 
     const scene = this.scene = new THREE.Scene();
     const cam = this.camera = new THREE.PerspectiveCamera(38, 1, 1, 6000);
     scene.add(cam);
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x30343a, 1.6));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a2a40, 1.6));
     const key = new THREE.DirectionalLight(0xffffff, 2.2);
     key.position.set(-0.6, 0.5, 1);       // follows the camera
     cam.add(key);
@@ -80,7 +80,7 @@ export class Viewer extends EventTarget {
     const g = this.bed = new THREE.Group();
     const plate = new THREE.Mesh(
       new THREE.PlaneGeometry(BED.x, BED.y),
-      new THREE.MeshStandardMaterial({ color: 0x1c2025, roughness: 0.95 }));
+      new THREE.MeshStandardMaterial({ color: 0x22152a, roughness: 0.95 }));
     plate.position.copy(CENTER).setZ(-0.05);
     g.add(plate);
     const minor = [], major = [];
@@ -91,16 +91,16 @@ export class Viewer extends EventTarget {
       geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
       return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color }));
     };
-    g.add(lines(minor, 0x262b31), lines(major, 0x343a42));
+    g.add(lines(minor, 0x33213a), lines(major, 0x40304a));
     // Front edge marker so you can tell which way the printer faces.
     const front = new THREE.Mesh(new THREE.PlaneGeometry(BED.x, 4),
-      new THREE.MeshBasicMaterial({ color: 0xff8a3d, transparent: true, opacity: 0.55 }));
+      new THREE.MeshBasicMaterial({ color: 0xd9a3d8, transparent: true, opacity: 0.55 }));
     front.position.set(BED.x / 2, -4, 0);
     g.add(front);
     const box = new THREE.BoxGeometry(BED.x, BED.y, BED.z);
     box.translate(BED.x / 2, BED.y / 2, BED.z / 2);
     const vol = new THREE.LineSegments(new THREE.EdgesGeometry(box),
-      new THREE.LineBasicMaterial({ color: 0x3a4048, transparent: true, opacity: 0.6 }));
+      new THREE.LineBasicMaterial({ color: 0x473552, transparent: true, opacity: 0.6 }));
     g.add(vol);
     // X/Y axis hints at the origin corner.
     g.add(lines([0, 0, 0.1, 25, 0, 0.1], 0xef5350), lines([0, 0, 0.1, 0, 25, 0.1], 0x43c47a));

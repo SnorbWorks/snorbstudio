@@ -191,7 +191,7 @@ export const bases: Record<string, Solid> = {};
  */
 export function importMesh(bytes: Uint8Array): Solid {
   const n = bytes.length >= 84 ? new DataView(bytes.buffer, bytes.byteOffset).getUint32(80, true) : 0;
-  if (n > 60000 && bytes.length === 84 + 50 * n) throw new Error(`It has ${n.toLocaleString()} triangles; the most the Design tab can work with is 60,000`);
+  if (n > 60000 && bytes.length === 84 + 50 * n) throw new Error(`It has ${n.toLocaleString()} triangles; the most SnorbCAD can work with is 60,000`);
   const oc = getOC();
   const file = `/mesh${Date.now()}.stl`;
   oc.FS.writeFile(file, bytes);

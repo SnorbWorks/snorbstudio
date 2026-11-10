@@ -69,7 +69,7 @@ test('an edge that is really gone is reported, not silently dropped', () => {
 
 test('a library STL (the Pi 5 tray) as the body, with a hole cut and an edge rounded', () => {
   const name = 'pi5_case_tray.stl';
-  bases[name] = importMesh(new Uint8Array(readFileSync(new URL('../../../models/' + name, import.meta.url))));
+  bases[name] = importMesh(new Uint8Array(readFileSync(new URL('./fixtures/' + name, import.meta.url))));
   const p = { ...newProject(), base: { model: name }, features: [] };
   const r0 = build(p, ['top', 'front']);
   assert.ok(Math.abs(r0.volume - 19004) < 2, `${r0.volume}`);

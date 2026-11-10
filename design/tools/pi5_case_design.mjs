@@ -1,9 +1,9 @@
 // The Pi 5 case (models/pi5_case.py) as Design-tab projects: every wall,
 // cut-out, standoff and vent is a shape that can be selected and changed.
 //
-//   cd studio/design && node build.mjs && node tools/pi5_case_design.mjs
+//   cd design && node build.mjs && node tools/pi5_case_design.mjs [out-dir]
 //
-// Writes models/pi5_case_tray.design.json and models/pi5_case_lid.design.json
+// Writes pi5_case_tray.design.json and pi5_case_lid.design.json into out-dir (default .)
 // and checks each builds to the same volume as the script's STL. Put them on
 // the Pi as designs named like the STLs (pi5_case_tray, pi5_case_lid) and the
 // library's "Send to Design" opens them instead of the bare STL.
@@ -91,5 +91,5 @@ for (const [name, features, stlVolume] of [['pi5_case_tray', tray(), 19004], ['p
   const bad = Object.entries(r.effect).filter(([, e]) => !e).map(([id]) => id);
   console.log(name, `${features.length} shapes, volume ${r.volume.toFixed(0)} mm³ (STL ${stlVolume})`, bad.length ? `NO EFFECT: ${bad}` : '', Object.keys(r.errors).length ? r.errors : '');
   if (Math.abs(r.volume - stlVolume) / stlVolume > 0.01) throw new Error(`${name}: volume off by more than 1%`);
-  writeFileSync(new URL(`../../../models/${name}.design.json`, import.meta.url), JSON.stringify(p, null, 1));
+  writeFileSync(`${process.argv[2] || '.'}/${name}.design.json`, JSON.stringify(p, null, 1));
 }

@@ -167,7 +167,7 @@ function wireDrop() {
 function select(mesh) {
   if (selected) selected.material.emissive.setHex(0x000000);
   selected = mesh;
-  if (mesh) mesh.material.emissive.setHex(0x2a1606);
+  if (mesh) mesh.material.emissive.setHex(0x2a1030);
   viewer.attach(mesh && !viewer.preview.visible ? mesh : null);
   refreshList();
   refreshSelection();

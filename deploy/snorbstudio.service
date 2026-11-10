@@ -1,5 +1,5 @@
 [Unit]
-Description=Ender Studio helper (model library + slicing)
+Description=SnorbStudio helper (model library + slicing)
 After=network.target moonraker.service
 
 [Service]

@@ -263,7 +263,7 @@ function buildExtras() {
 }
 
 // --------------------------------------------------------------- updates
-// Ender Studio updates itself from GitHub (studio/server/updater.py): it
+// SnorbStudio updates itself from GitHub (studio/server/updater.py): it
 // checks once per start-up (after the services settle) and installs when
 // the printer is idle.
 
@@ -323,7 +323,7 @@ function renderUpdate() {
   const rows = [el('p', {}, 'Installed: ', el('b', {}, v.subject || '?'),
     el('span', { class: 'muted' }, ` (${v.sha || '?'}${v.date ? ', ' + isoDate(v.date) : ''})`))];
   if (u.installing) {
-    rows.push(el('p', { class: 'upd-note' }, 'Installing the update… Ender Studio restarts by itself, then this page reconnects.'));
+    rows.push(el('p', { class: 'upd-note' }, 'Installing the update… SnorbStudio restarts by itself, then this page reconnects.'));
     followInstall();
   } else if (u.behind) {
     rows.push(el('p', { class: 'upd-note' }, `${u.behind} update${u.behind > 1 ? 's' : ''} ready:`),
@@ -351,7 +351,7 @@ function renderUpdate() {
   box.replaceChildren(...rows);
 }
 
-// Ender Studio restarts mid-install, so keep asking (failures included)
+// SnorbStudio restarts mid-install, so keep asking (failures included)
 // until it answers as not installing - for up to 3 minutes.
 let following = false;
 async function followInstall() {
@@ -366,7 +366,7 @@ async function followInstall() {
 
 async function installUpdate() {
   if (mr.busy) return toast('Not while a print is running.', 'err');
-  if (!await confirmBox('Install the update?', 'Ender Studio restarts (about 10 seconds). If the update changes the printer macros, Klipper restarts too. If anything fails to start, it goes back to the current version by itself.', 'Install')) return;
+  if (!await confirmBox('Install the update?', 'SnorbStudio restarts (about 10 seconds). If the update changes the printer macros, Klipper restarts too. If anything fails to start, it goes back to the current version by itself.', 'Install')) return;
   attempt(() => updAction('/install'), 'Installing…');
 }
 

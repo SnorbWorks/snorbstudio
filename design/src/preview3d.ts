@@ -22,7 +22,7 @@ export class Preview3D {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.addEventListener('change', () => this.draw());
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8890a0, 1.6));
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x9a88a6, 1.6));
     const sun = new THREE.DirectionalLight(0xffffff, 1.4);
     sun.position.set(1, -1.5, 2);
     this.camera.add(sun);
@@ -51,7 +51,7 @@ export class Preview3D {
     g.setIndex(m.triangles);
     g.computeVertexNormals();
     this.mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.7, metalness: 0.05, flatShading: false }));
-    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), new THREE.LineBasicMaterial({ color: 0x23272d }));
+    this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), new THREE.LineBasicMaterial({ color: 0x2b1a33 }));
     this.scene.add(this.mesh, this.edges);
     // frame it again when the part has moved off or changed size a lot (another part opened)
     const box = new THREE.Box3().setFromObject(this.mesh);

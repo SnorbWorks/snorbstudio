@@ -35,7 +35,7 @@ export class Moonraker extends EventTarget {
       this.emit('connection', true);
       try {
         await this.call('server.connection.identify', {
-          client_name: 'Ender Studio', version: '1.0', type: 'web', url: location.href });
+          client_name: 'SnorbStudio', version: '1.0', type: 'web', url: location.href });
       } catch (e) { /* older Moonraker */ }
       this.refreshKlippy();
     };

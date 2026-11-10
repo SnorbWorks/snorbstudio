@@ -1,4 +1,4 @@
-// Ender Studio: tabs, the always-visible header (state, temps, STOP),
+// SnorbStudio: tabs, the always-visible header (state, temps, STOP),
 // the Klipper-not-ready banner and starting prints.
 
 import { mr } from './moonraker.js';
@@ -30,7 +30,7 @@ async function startPrint(file) {
   try { meta = await mr.call('server.files.metadata', { filename: file }); } catch (e) { /* ignore */ }
   const th = bestThumb(meta.thumbnails);
   const body = el('div', {},
-    th ? el('img', { src: mr.fileUrl('gcodes', dirOf(file) + th.relative_path), style: 'width:140px;float:right;margin-left:12px;border-radius:8px;background:#15181b' }) : null,
+    th ? el('img', { src: mr.fileUrl('gcodes', dirOf(file) + th.relative_path), style: 'width:140px;float:right;margin-left:12px;border-radius:8px;background:#1b111e' }) : null,
     el('p', {}, el('b', {}, file)),
     el('p', { class: 'muted small' }, [meta.estimated_time && `About ${fmtDuration(meta.estimated_time)}`,
       meta.filament_weight_total && `${meta.filament_weight_total.toFixed(0)} g of filament`].filter(Boolean).join(' · ')),
@@ -71,7 +71,7 @@ function updateHeader() {
   const busy = mr.busy;
   const printTab = $('#tabs [data-page="print"]');
   printTab.innerHTML = busy ? 'Print <span class="badge">●</span>' : 'Print';
-  document.title = busy ? `${text} · Ender Studio` : 'Ender Studio';
+  document.title = busy ? `${text} · SnorbStudio` : 'SnorbStudio';
 }
 
 function updateBanner() {
@@ -129,7 +129,7 @@ function init() {
     if (p !== 'design' || design) return;
     design = import('../design/design.js')
       .then((m) => m.mount($('#design-root'), app))
-      .catch((e) => { design = null; toast(`The Design tab failed to load: ${e.message}`, 'err', 10000); });
+      .catch((e) => { design = null; toast(`SnorbCAD failed to load: ${e.message}`, 'err', 10000); });
   });
   // the library's "Send to Design": open that model in the Design tab
   app.openInDesign = async (name) => {
