@@ -54,6 +54,7 @@ const html = `
   <button class="btn sm ghost" id="ds-fit" title="Fit the sheet (F)">Fit</button>
   <input class="ds-name" id="ds-name" title="Part name" spellcheck="false">
   <button class="btn sm ghost" id="ds-new" title="Start a new part">New</button>
+  <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
   <button class="btn sm ghost" id="ds-open" title="Open a part saved on the printer">Open…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
   <button class="btn sm ghost" id="ds-stl" title="Download the STL">STL</button>
@@ -318,7 +319,67 @@ export function mount(root: HTMLElement, studio: Studio) {
   const setSavedAs = (v: string | null) => {
     savedAs = v;
     try { if (v) localStorage.setItem(SAVED_KEY, v); else localStorage.removeItem(SAVED_KEY); } catch { /* private mode */ }
+    markClean();
   };
+
+  // ---------------------------------------------------------- unsaved changes
+  // What the part looked like when it was last opened, saved or started.
+  // Leaves out what the app keeps up to date by itself (fillet edges following
+  // their shapes, a library body's size), so only real edits count.
+  const CLEAN_KEY = 'studio.design.cleanSig';
+  const sig = (p: typeof st.p) => JSON.stringify(p.base ? { ...p, stock: null } : p, (k, v) => (k === 'refs' || k === 'edges' ? undefined : v));
+  let cleanSig: string | null = null;
+  try { cleanSig = localStorage.getItem(CLEAN_KEY); } catch { /* private mode */ }
+  function markClean() {
+    cleanSig = sig(st.p);
+    try { localStorage.setItem(CLEAN_KEY, cleanSig); } catch { /* too big or private mode */ }
+  }
+  const blank = (p: typeof st.p) => !p.features.length && !p.base;
+  const unsaved = () => !blank(st.p) && sig(st.p) !== cleanSig;
+
+  /** Ask before the current part is put away: save it, drop it, or stay. */
+  const askSave = () => new Promise<'save' | 'discard' | 'cancel'>((done) => {
+    const box = document.createElement('div');
+    box.className = 'ds-modal';
+    const card = document.createElement('div');
+    card.className = 'ds-dialog';
+    const nm = (name.value.trim() || st.p.name || 'part');
+    card.innerHTML = `<h3></h3><p class="ds-note">If you don't save, the changes are dropped (Undo can still bring them back for now).</p>`;
+    card.querySelector('h3')!.textContent = `Would you like to save “${nm}”?`;
+    const foot = document.createElement('div');
+    foot.className = 'ds-dialog-foot';
+    const btn = (t: string, cls: string, v: 'save' | 'discard' | 'cancel') => {
+      const b = document.createElement('button');
+      b.className = `btn sm ${cls}`;
+      b.textContent = t;
+      b.onclick = () => finish(v);
+      return b;
+    };
+    const yes = btn('Save', 'primary', 'save');
+    foot.append(btn('Cancel', 'ghost', 'cancel'), btn("Don't save", 'ghost', 'discard'), yes);
+    card.appendChild(foot);
+    box.appendChild(card);
+    box.onclick = (e) => { if (e.target === box) finish('cancel'); };
+    root.appendChild(box);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); finish('cancel'); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); finish('save'); }
+    };
+    window.addEventListener('keydown', onKey, true);
+    yes.focus();
+    function finish(v: 'save' | 'discard' | 'cancel') { box.remove(); window.removeEventListener('keydown', onKey, true); done(v); }
+  });
+
+  /** true when it's fine to put the current part away (saved, dropped on purpose, or nothing to lose). */
+  async function okToLeave() {
+    commitName();
+    if (!unsaved()) return true;
+    const a = await askSave();
+    if (a === 'cancel') return false;
+    if (a === 'discard') return true;
+    return await save();
+  }
+
   const name = $('#ds-name') as HTMLInputElement;
   // the name being typed counts straight away: Save (button or ⌘S) and Send to Library use it
   const commitName = () => {
@@ -331,12 +392,16 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (e.key === 'Enter') name.blur();
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
   };
-  $('#ds-new').onclick = () => {
-    if (st.p.features.length && !confirm('Start a new part? (Undo brings this one back.)')) return;
+  const startBlank = async (msg: string) => {
+    if (!await okToLeave()) return;
     st.load(newProject());
     setSavedAs(null);
+    name.classList.remove('ds-name-taken');
     sheet.fit();
+    flash(msg);
   };
+  $('#ds-new').onclick = () => startBlank('A new part.');
+  $('#ds-close').onclick = () => startBlank('Closed. Here is a blank part.');
   // ---------------------------------------------------------- library
   $('#ds-lib').onclick = async () => {
     const b = $('#ds-lib') as HTMLButtonElement;
@@ -357,6 +422,7 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   /** Open a library model: its saved design if there is one (every shape editable), else the STL as the body. */
   async function openModel(name: string) {
+    if (!await okToLeave()) return;
     const stem = name.replace(/\.(stl|3mf|obj)$/i, '');
     try {
       const r = await fetch(`${API}${encodeURIComponent(stem)}.json`);
@@ -403,14 +469,14 @@ export function mount(root: HTMLElement, studio: Studio) {
   };
   name.addEventListener('input', () => { name.classList.remove('ds-name-taken'); replaceArmed = null; });
   let saving = false;
-  const save = async (quiet = false, checked = false) => {
-    if (saving && !quiet) return;          // ⌘S can arrive twice (field + page)
+  async function save(quiet = false, checked = false): Promise<boolean> {
+    if (saving && !quiet) return false;    // ⌘S can arrive twice (field + page)
     saving = true;
-    try { await saveNow(quiet, checked); } finally { saving = false; }
-  };
-  const saveNow = async (quiet: boolean, checked: boolean) => {
+    try { return await saveNow(quiet, checked); } finally { saving = false; }
+  }
+  const saveNow = async (quiet: boolean, checked: boolean): Promise<boolean> => {
     commitName();
-    if (!checked && !await nameFree()) { if (quiet) throw new Error('that name is taken'); return; }
+    if (!checked && !await nameFree()) { if (quiet) throw new Error('that name is taken'); return false; }
     const nm = (st.p.name || 'part').trim();
     try {
       const r = await fetch(`${API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(st.p), headers: { 'Content-Type': 'application/json' } });
@@ -418,7 +484,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       setSavedAs(nm);
       name.classList.remove('ds-name-taken');
       if (!quiet) flash(`Saved “${nm}” on the printer.`);
-    } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; }
+      return true;
+    } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; return false; }
   };
   $('#ds-save').onclick = () => save();
   $('#ds-open').onclick = async () => {
@@ -440,6 +507,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       b.textContent = d.name;
       b.title = new Date(d.modified * 1000).toLocaleString();
       b.onclick = async () => {
+        close();
+        if (!await okToLeave()) return;
         try {
           const p = await (await fetch(`${API}${encodeURIComponent(d.name)}.json`)).json();
           st.load(p);
