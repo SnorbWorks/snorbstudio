@@ -53,9 +53,14 @@ export class Preview3D {
     this.mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.7, metalness: 0.05, flatShading: false }));
     this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), new THREE.LineBasicMaterial({ color: 0x23272d }));
     this.scene.add(this.mesh, this.edges);
-    if (!this.fitted) this.fit();
+    // frame it again when the part has moved off or changed size a lot (another part opened)
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2 || 10;
+    if (!this.fitted || c.distanceTo(this.fitC) > this.fitR * 0.75 || r > this.fitR * 1.8 || r < this.fitR * 0.4) this.fit();
     this.draw();
   }
+  private fitC = new THREE.Vector3();
+  private fitR = 10;
 
   fit() {
     if (!this.mesh) return;
@@ -67,6 +72,7 @@ export class Preview3D {
     this.camera.near = r / 50; this.camera.far = r * 50;
     this.camera.updateProjectionMatrix();
     this.fitted = true;
+    this.fitC.copy(c); this.fitR = r;
     this.draw();
   }
 

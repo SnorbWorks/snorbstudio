@@ -237,6 +237,7 @@ export function mount(root: HTMLElement, studio: Studio) {
           const s = st.p.stock;
           if ([0, 1, 2].some((i) => Math.abs(s.min[i] - a[i]) > 1e-4 || Math.abs(s.max[i] - b[i]) > 1e-4)) {
             s.min = [a[0], a[1], a[2]]; s.max = [b[0], b[1], b[2]]; s.off = false; st.save();
+            st.emit('select');      // the panel and bar show the model's size
           }
         }
         if (r.errors?.base) $('#ds-status').textContent = `The body didn't load: ${r.errors.base}`;
@@ -634,8 +635,9 @@ export function mount(root: HTMLElement, studio: Studio) {
       kids.push(b);
     } else {
       const s = st.p.stock;
-      kids.push(label(st.p.base ? `Body: ${st.p.base.model}` : 'Body'));
-      kids.push(mk('span', 'ds-ctx-hint', `${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
+      kids.push(label(st.p.base ? `Body: ${st.p.base.model}` : s.off ? 'No block' : 'Body'));
+      if (s.off && !st.p.base) kids.push(mk('span', 'ds-ctx-hint', 'The shapes stand on their own.'));
+      else kids.push(mk('span', 'ds-ctx-hint', `${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
       kids.push(mk('span', 'ds-ctx-hint', st.sels.length ? 'Drag its handles to resize it. Shift-click shapes to line them up to it.' : 'Pick a tool on the left and draw on a view.'));
     }
     ctx.replaceChildren(...kids);
