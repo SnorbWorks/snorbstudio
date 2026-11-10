@@ -2,11 +2,12 @@
 // node for the tests. Nothing here touches the DOM.
 
 import {
-  getOC, makeBaseBox, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
-  draw, drawCircle, drawRectangle, drawRoundedRectangle,
+  getOC, makeBaseBox, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
+  draw, drawCircle, drawText,
 } from 'replicad';
-import type { Feature, Project, ViewName } from './model.js';
-import { cornerRadii, depthRange } from './model.js';
+import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
+import { cornerRadii, depthRange, gearProfile, instances, isShape, roundCorner, verts } from './model.js';
+import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
 
 export type Line = number[];         // flat [u0, v0, u1, v1, ...]
@@ -17,6 +18,8 @@ export interface BuildResult {
   views: Partial<Record<ViewName, ViewEdges>>;
   effect: Record<string, boolean>;   // feature id -> does it change the part
   mesh: { vertices: number[]; triangles: number[] } | null;
+  edges: number[][];                 // the part's edges in 3D, flat [x,y,z, ...], for picking edges to round
+  textSize: Record<string, [number, number]>;   // text features: measured width and height
   volume: number;
   bbox: [number[], number[]] | null;
   errors: Record<string, string>;
@@ -24,59 +27,197 @@ export interface BuildResult {
 
 type Solid = any;
 
-export function featureSolid(f: Feature, p: Project): Solid | null {
-  const [lo, hi] = depthRange(f, p);
-  if (hi - lo < 1e-6) return null;
-  if (f.type === 'circle' && f.r <= 1e-6) return null;
-  if (f.type === 'rect' && (f.w <= 1e-6 || f.h <= 1e-6)) return null;
-  const v = VIEWS[f.view];
-  const plane = new Plane(v.toWorld(0, 0, lo), v.uDir, v.eye);
-  let d;
-  if (f.type === 'circle') d = drawCircle(f.r);
-  else {
-    const r = cornerRadii(f).map((x) => Math.min(x, Math.min(f.w, f.h) / 2 - 1e-4)).map((x) => (x > 1e-4 ? x : 0));
-    if (r.every((x) => x === 0)) d = drawRectangle(f.w, f.h);
-    else if (r.every((x) => x === r[0])) d = drawRoundedRectangle(f.w, f.h, r[0]);
-    else d = roundedRect(f.w / 2, f.h / 2, r);
-  }
-  return d.translate(f.cu, f.cv).sketchOnPlane(plane).extrude(hi - lo);
-}
+/** Fonts for the text tool, loaded by whoever runs the builds (worker or tests). */
+export const fonts = { sans: false, bold: false };
 
-/** A rectangle centred on 0,0 with its own radius on each corner (0 bl, 1 br, 2 tr, 3 tl). */
-function roundedRect(hw: number, hh: number, r: number[]) {
-  const arc = (cx: number, cy: number, rr: number, a0: number): [[number, number], [number, number]] => {
-    const m = ((a0 + 45) * Math.PI) / 180, e = ((a0 + 90) * Math.PI) / 180;
-    return [[cx + rr * Math.cos(e), cy + rr * Math.sin(e)], [cx + rr * Math.cos(m), cy + rr * Math.sin(m)]];
-  };
-  let pen = draw([-hw + r[0], -hh]).lineTo([hw - r[1], -hh]);
-  if (r[1]) { const [e, m] = arc(hw - r[1], -hh + r[1], r[1], -90); pen = pen.threePointsArcTo(e, m); }
-  pen = pen.lineTo([hw, hh - r[2]]);
-  if (r[2]) { const [e, m] = arc(hw - r[2], hh - r[2], r[2], 0); pen = pen.threePointsArcTo(e, m); }
-  pen = pen.lineTo([-hw + r[3], hh]);
-  if (r[3]) { const [e, m] = arc(-hw + r[3], hh - r[3], r[3], 90); pen = pen.threePointsArcTo(e, m); }
-  pen = pen.lineTo([-hw, -hh + r[0]]);
-  if (r[0]) { const [e, m] = arc(-hw + r[0], -hh + r[0], r[0], 180); pen = pen.threePointsArcTo(e, m); }
+/** A closed outline with its own radius at each corner. */
+function roundedPolygon(v: P2[], r: number[]) {
+  const n = v.length;
+  const start = roundCorner(v[n - 1], v[0], v[1], r[0]);
+  let pen = draw(start ? start.t2 : v[0]);
+  for (let k = 1; k <= n; k++) {
+    const i = k % n;
+    const rc = roundCorner(v[(i + n - 1) % n], v[i], v[(i + 1) % n], r[i]);
+    if (!rc) { if (i !== 0) pen = pen.lineTo(v[i]); continue; }
+    pen = pen.lineTo(rc.t1).threePointsArcTo(rc.t2, rc.mid);
+  }
   return pen.close();
 }
 
-export function stockSolid(p: Project): Solid {
+function polyline(pts: P2[]) {
+  let pen = draw(pts[0]);
+  for (let i = 1; i < pts.length; i++) pen = pen.lineTo(pts[i]);
+  return pen.close();
+}
+
+/** A closed outline of lines, Béziers and arcs. */
+function smooth(path: Path) {
+  let pen = draw(path.start);
+  const n = path.segs.length;
+  path.segs.forEach((g, i) => {
+    if (i === n - 1 && g.t === 'L') return;          // close() draws the last line
+    const end = i === n - 1 ? path.start : g.p;
+    if (g.t === 'L') pen = pen.lineTo(end);
+    else if (g.t === 'C') pen = pen.cubicBezierCurveTo(end, g.c1, g.c2);
+    else pen = pen.threePointsArcTo(end, g.m);
+  });
+  return pen.close();
+}
+
+/** The feature's 2D drawing in its own view (u, v). */
+function drawing(f: Feature) {
+  if (f.type === 'circle') return f.r > 1e-6 ? drawCircle(f.r).translate(f.cu, f.cv) : null;
+  if (f.type === 'gear' && f.gear) {
+    const g = f.gear, rot = f.rot || 0;
+    if (g.kind === 'rack') return polyline(gearProfile(f).outer);
+    if (g.kind === 'ring') {
+      const R = outerRadius(g);
+      return drawCircle(R).translate(f.cu, f.cv).cut(smooth(placePath(gearPath(g.module, g.teeth, g.pa, 1.25, 1, -g.backlash), f.cu, f.cv, rot)));
+    }
+    return smooth(placePath(gearPath(g.module, g.teeth, g.pa, 1, 1.25, g.backlash), f.cu, f.cv, rot));
+  }
+  if (f.type === 'text' && f.text) {
+    if (!f.text.s.trim()) return null;
+    const fam = f.text.bold && fonts.bold ? 'bold' : 'sans';
+    let d = drawText(f.text.s, { fontSize: f.text.size, fontFamily: fam });
+    const bb = d.boundingBox;
+    const [[x0, y0], [x1, y1]] = bb.bounds;
+    d = d.translate(f.cu - (x0 + x1) / 2, f.cv - (y0 + y1) / 2);
+    if (f.rot) d = d.rotate(f.rot, [f.cu, f.cv]);
+    return d;
+  }
+  const v = verts(f);
+  if (!v) return null;
+  if (f.type === 'rect' && (f.w <= 1e-6 || f.h <= 1e-6)) return null;
+  return roundedPolygon(v, cornerRadii(f));
+}
+
+/** Measured size of a text feature (before turning). */
+export function textSize(f: Feature): [number, number] | null {
+  if (f.type !== 'text' || !f.text || !f.text.s.trim()) return null;
+  const fam = f.text.bold && fonts.bold ? 'bold' : 'sans';
+  const [[x0, y0], [x1, y1]] = drawText(f.text.s, { fontSize: f.text.size, fontFamily: fam }).boundingBox.bounds;
+  return [x1 - x0, y1 - y0];
+}
+
+/** The feature's own solid (one copy), before patterns and mirrors. */
+export function featureSolid(f: Feature, p: Project): Solid | null {
+  if (!isShape(f)) return null;
+  const [lo, hi] = depthRange(f, p);
+  if (hi - lo < 1e-6) return null;
+  const d = drawing(f);
+  if (!d) return null;
+  const v = VIEWS[f.view];
+  const plane = new Plane(v.toWorld(0, 0, lo), v.uDir, v.eye);
+  const g = f.gear;
+  let solid: Solid;
+  if (g && g.kind === 'helical') {
+    // teeth twist round the axis: the helix angle measured at the pitch circle
+    const twist = (((hi - lo) * Math.tan((g.helix * Math.PI) / 180)) / pitchRadius(g)) * (180 / Math.PI);
+    solid = d.sketchOnPlane(plane).extrude(hi - lo, { twistAngle: twist, origin: v.toWorld(f.cu, f.cv, lo) });
+  } else solid = d.sketchOnPlane(plane).extrude(hi - lo);
+  if (g && g.kind !== 'rack') solid = gearExtras(f, solid);
+  return solid;
+}
+
+/** A gear's hub, bore and set screw. */
+function gearExtras(f: Feature, solid: Solid): Solid {
+  const g = f.gear!, V = VIEWS[f.view];
+  const out = f.d1 >= f.d0 ? -1 : 1;                   // the hub sticks out the other way from the teeth
+  const axisW = (d: number) => V.toWorld(f.cu, f.cv, d);
+  const dir: Vec3 = [V.eye[0] * out, V.eye[1] * out, V.eye[2] * out];
+  if (g.hubD > 0 && g.hubLen > 0) solid = solid.fuse(makeCylinder(g.hubD / 2, g.hubLen, axisW(f.d0), dir));
+  const span = Math.abs(f.d1 - f.d0) + g.hubLen + 2;
+  const startD = f.d0 + out * (g.hubLen + 1);
+  const back: Vec3 = [-dir[0], -dir[1], -dir[2]];
+  if (g.bore !== 'none' && g.boreD > 0) {
+    const r = g.boreD / 2;
+    let hole = makeCylinder(r, span, axisW(startD), back);
+    if (g.bore === 'd') {
+      // a flat on the -u side: the shaft's flat face sits flat_x from the centre
+      const flatX = g.flat - r;
+      // a block covering everything past the flat on the -u side, removed from the hole
+      const blockPlane = new Plane(V.toWorld(0, 0, Math.min(startD, startD - out * span)), V.uDir, V.eye);
+      const block = drawRectFrom(f.cu - 3 * r, f.cu - flatX, f.cv - 2 * r, f.cv + 2 * r).sketchOnPlane(blockPlane).extrude(span);
+      hole = (hole as any).cut(block);
+    }
+    solid = solid.cut(hole);
+  }
+  if (g.screw > 0) {
+    // radial, along +u, through the middle of the hub (or of the gear without one)
+    const mid = g.hubLen > 0 ? f.d0 + out * g.hubLen / 2 : (f.d0 + f.d1) / 2;
+    const R = Math.max(g.hubD / 2, pitchRadius(g) + g.module * 2);
+    solid = solid.cut(makeCylinder(g.screw / 2, R + 1, V.toWorld(f.cu, f.cv, mid), V.uDir));
+  }
+  return solid;
+}
+
+function drawRectFrom(u0: number, u1: number, v0: number, v1: number) {
+  return draw([u0, v0]).lineTo([u1, v0]).lineTo([u1, v1]).lineTo([u0, v1]).close();
+}
+
+/** Move a copy of a solid by a list of moves (see model.instances). */
+function applyOpsSolid(s: Solid, ops: Op[]): Solid {
+  for (const o of ops) {
+    if ('t' in o) s = s.translate(o.t[0], o.t[1], o.t[2]);
+    else if ('mir' in o) { const n: Vec3 = [0, 0, 0]; n[o.mir] = 1; const c: Vec3 = [0, 0, 0]; c[o.mir] = o.at; s = s.mirror(n, c); }
+    else s = s.rotate(o.rot, o.c, o.ax);
+  }
+  return s;
+}
+
+/** Every copy of a feature (pattern, mirror) as one tool. */
+export function featureTool(f: Feature, p: Project): Solid | null {
+  const base = featureSolid(f, p);
+  if (!base) return null;
+  const list = instances(f);
+  if (list.length === 1) return base;
+  let tool: Solid = null;
+  for (const ops of list) {
+    const c = applyOpsSolid(base.clone(), ops);
+    tool = tool ? tool.fuse(c) : c;
+  }
+  return tool;
+}
+
+export function stockSolid(p: Project): Solid | null {
+  if (p.stock.off) return null;
   const [a, b] = [p.stock.min, p.stock.max];
   return makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2])
     .translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, a[2]);
 }
 
+/** Does an edge pass within tol of a point? (Rounds and chamfers find their edges this way.) */
+function edgeNear(e: any, pt: Vec3, tol = 0.05): boolean {
+  const poly = edgePoints(e, 24);
+  for (let k = 0; k + 5 < poly.length; k += 3) {
+    if (segDist3(pt, [poly[k], poly[k + 1], poly[k + 2]], [poly[k + 3], poly[k + 4], poly[k + 5]]) < tol) return true;
+  }
+  return false;
+}
+
 /** The finished part, plus which features actually changed it. */
-export function buildSolid(p: Project): { solid: Solid; effect: Record<string, boolean>; errors: Record<string, string> } {
-  let solid = stockSolid(p);
-  let vol = measureVolume(solid);
+export function buildSolid(p: Project): { solid: Solid | null; effect: Record<string, boolean>; errors: Record<string, string> } {
+  let solid: Solid | null = stockSolid(p);
+  let vol = solid ? measureVolume(solid) : 0;
   const effect: Record<string, boolean> = {};
   const errors: Record<string, string> = {};
   for (const f of p.features) {
-    let tool: Solid | null = null;
-    try { tool = featureSolid(f, p); } catch (e: any) { errors[f.id] = String(e?.message || e); }
-    if (!tool) { effect[f.id] = false; continue; }
     try {
-      const next = f.op === 'add' ? solid.fuse(tool) : solid.cut(tool);
+      let next: Solid | null = null;
+      if (f.type === 'fillet' && f.fillet) {
+        if (!solid) { effect[f.id] = false; continue; }
+        const { mode, size, edges } = f.fillet;
+        if (!(size > 0) || !edges.length) { effect[f.id] = false; continue; }
+        const pick = (e: any) => (edges.some((pt) => edgeNear(e, pt)) ? size : 0);
+        next = mode === 'chamfer' ? solid.chamfer(pick as any) : solid.fillet(pick as any);
+      } else {
+        const tool = featureTool(f, p);
+        if (!tool) { effect[f.id] = false; continue; }
+        if (f.op === 'add') next = solid ? solid.fuse(tool) : tool;
+        else if (solid) next = solid.cut(tool);
+        else { effect[f.id] = false; continue; }
+      }
       const nv = measureVolume(next);
       effect[f.id] = Math.abs(nv - vol) > 1e-6 * Math.max(1, vol);
       solid = next;
@@ -87,6 +228,30 @@ export function buildSolid(p: Project): { solid: Solid; effect: Record<string, b
     }
   }
   return { solid, effect, errors };
+}
+
+/** Points along an edge, flat [x,y,z, ...]. */
+function edgePoints(e: any, nCurve = 24): number[] {
+  const oc = getOC();
+  const c = new oc.BRepAdaptor_Curve(e.wrapped);
+  const a = c.FirstParameter(), b = c.LastParameter();
+  const n = c.GetType() === oc.GeomAbs_CurveType.GeomAbs_Line ? 1 : nCurve;
+  const out: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const q = c.Value(a + ((b - a) * i) / n);
+    out.push(q.X(), q.Y(), q.Z());
+    q.delete();
+  }
+  c.delete();
+  return out;
+}
+
+function segDist3(p: Vec3, a: Vec3, b: Vec3): number {
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const L = d[0] ** 2 + d[1] ** 2 + d[2] ** 2;
+  let t = L > 0 ? ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / L : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1], p[2] - a[2] - t * d[2]);
 }
 
 function edgePolyline(e: any, view: ViewName): Line {
@@ -215,18 +380,24 @@ function segDist(px: number, py: number, x0: number, y0: number, x1: number, y1:
 
 export function build(p: Project, views: ViewName[] = VIEW_ORDER, withMesh = true): BuildResult {
   const { solid, effect, errors } = buildSolid(p);
-  const out: BuildResult = { views: {}, effect, errors, mesh: null, volume: measureVolume(solid), bbox: null };
+  const out: BuildResult = { views: {}, effect, errors, mesh: null, edges: [], textSize: {}, volume: 0, bbox: null };
+  for (const f of p.features) {
+    try { const ts = textSize(f); if (ts) out.textSize[f.id] = ts; } catch (e: any) { errors[f.id] = String(e?.message || e); }
+  }
+  if (!solid) return out;
+  out.volume = measureVolume(solid);
   for (const v of views) out.views[v] = projectView(solid, v);
   if (withMesh) {
     const m = solid.mesh({ tolerance: 0.05, angularTolerance: 0.2 });
     out.mesh = { vertices: m.vertices, triangles: m.triangles };
   }
+  out.edges = solid.edges.map((e: any) => edgePoints(e, 24));
   const bb = solid.boundingBox.bounds;
   out.bbox = [bb[0], bb[1]];
   return out;
 }
 
-export function stl(p: Project): Blob {
+export function stl(p: Project): Blob | null {
   const { solid } = buildSolid(p);
-  return solid.blobSTL({ tolerance: 0.01, angularTolerance: 0.1, binary: true });
+  return solid ? solid.blobSTL({ tolerance: 0.01, angularTolerance: 0.1, binary: true }) : null;
 }

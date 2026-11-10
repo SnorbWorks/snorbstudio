@@ -18,7 +18,10 @@ const dst = `${out}/replicad_single.wasm`;
 let same = false;
 try { same = statSync(dst).size === statSync(wasm).size; } catch { /* first build */ }
 if (!same) copyFileSync(wasm, dst);
+mkdirSync(`${out}/fonts`, { recursive: true });
+for (const f of ['DejaVuSans.ttf', 'DejaVuSans-Bold.ttf']) copyFileSync(`node_modules/dejavu-fonts-ttf/ttf/${f}`, `${out}/fonts/${f}`);
+copyFileSync('node_modules/dejavu-fonts-ttf/LICENSE', `${out}/fonts/LICENSE`);
 
-await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts'],
+await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts'],
   outdir: 'test/build', platform: 'node', outExtension: { '.js': '.mjs' }, external: ['replicad', 'replicad-opencascadejs'] });
 console.log('built', out);

@@ -1,11 +1,11 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { depthRange, farDepth, newProject } from './model.js';
+import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newProject, type P2 } from './model.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rect' | 'circle' | 'zoom';
+export type Tool = 'select' | 'rect' | 'circle' | 'polygon' | 'line' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
@@ -16,6 +16,9 @@ export class State {
   sides: { id: string; sides: number[] } | null = null;   // Option-clicked sides of one rectangle
   activeView: ViewName = 'top';       // the view last worked in: alignment goes by its left/right/top/bottom
   tool: Tool = 'select';
+  farFace = false;                    // the hidden-line tool: new shapes go on the far face, seen through the part
+  edges: Vec3[] = [];                 // the edge tool: picked edges (a point on each)
+  polygonSides = 6;                   // the polygon tool's last choice
   built: BuildResult | null = null;
   buildError = '';
   private undoStack: string[] = [];
@@ -72,7 +75,7 @@ export class State {
 
   /** Drop selected things that no longer exist. */
   prune() {
-    this.sels = this.sels.filter((id) => id === 'stock' || this.feature(id));
+    this.sels = this.sels.filter((id) => id === 'stock' || this.feature(id) || this.dim(id));
     if (this.sides && !this.feature(this.sides.id)) this.sides = null;
   }
 
@@ -90,12 +93,17 @@ export class State {
   deleteSelected() {
     const del = new Set(this.sels.filter((id) => id !== 'stock'));
     if (!del.size) return;
-    this.change((p) => { p.features = p.features.filter((f) => !del.has(f.id)); });
+    this.change((p) => {
+      p.features = p.features.filter((f) => !del.has(f.id));
+      // dimensions go with what they measure
+      p.dims = (p.dims || []).filter((d) => !del.has(d.id) && !del.has(d.target));
+    });
     this.select([]);
   }
-  setTool(t: Tool) { this.tool = t; this.emit('tool'); }
+  setTool(t: Tool) { this.tool = t; if (t !== 'edge') this.edges = []; this.emit('tool'); }
 
   feature(id: string | null): Feature | undefined { return this.p.features.find((f) => f.id === id); }
+  dim(id: string | null) { return (this.p.dims || []).find((d) => d.id === id); }
 }
 
 // ------------------------------------------------------------ items
@@ -108,6 +116,7 @@ export interface Item {
   setEdge(axis: number, side: 0 | 1, value: number): void;
   move(delta: Vec3): void;
   movable: boolean;
+  resizable?(axis: number): boolean;
 }
 
 export function itemFor(st: State, id: string): Item | null {
@@ -124,7 +133,7 @@ export function itemFor(st: State, id: string): Item | null {
     };
   }
   const f = st.feature(id);
-  if (!f) return null;
+  if (!f || !isShape(f)) return null;
   return featureItem(f, st.p);
 }
 
@@ -139,15 +148,18 @@ function featAxis(f: Feature, worldAxis: number): [number, number] {
 export function featureItem(f: Feature, p: Project): Item {
   const v = VIEWS[f.view];
   const ranges = (): [number, number][] => {
-    const hu = f.type === 'circle' ? f.r : f.w / 2;
-    const hv = f.type === 'circle' ? f.r : f.h / 2;
-    const dr = depthRange(f, p);
-    // a through cut reaches just past the part to be sure; show it ending at the far side
-    if (f.op === 'cut' && f.through) dr[0] = Math.min(farDepth(f.view, p), dr[1]);
-    return [[f.cu - hu, f.cu + hu], [f.cv - hv, f.cv + hv], dr];
+    const [u0, v0, u1, v1] = bounds2d(f);
+    const dr = depthExtent(f, p);
+    // a through cut reaches just past the part to be sure; show it ending at the part's far side
+    if (f.op === 'cut' && f.through) {
+      if (f.far) dr[1] = Math.max(nearDepth(f.view, p), dr[0]);
+      else dr[0] = Math.min(farDepth(f.view, p), dr[1]);
+    }
+    return [[u0, u1], [v0, v1], dr];
   };
   return {
     id: f.id, movable: true,
+    resizable(axis) { const [a] = featAxis(f, axis); return a === 2 || (f.type !== 'gear'); },
     extents() {
       const r = ranges();
       const min: Vec3 = [0, 0, 0], max: Vec3 = [0, 0, 0];
@@ -164,23 +176,40 @@ export function featureItem(f: Feature, p: Project): Item {
       const fv = s * value;
       const fside = s > 0 ? side : 1 - side;
       if (a < 2) {
-        const c = a === 0 ? f.cu : f.cv;
-        if (f.type === 'circle') {
-          f.r = Math.max(0, fside === 1 ? fv - c : c - fv);
-        } else {
-          const half = (a === 0 ? f.w : f.h) / 2;
-          let lo = c - half, hi = c + half;
-          if (fside === 0) lo = Math.min(fv, hi); else hi = Math.max(fv, lo);
+        const b = bounds2d(f);
+        const lo0 = b[a], hi0 = b[a + 2];
+        let lo = lo0, hi = hi0;
+        if (fside === 0) lo = Math.min(fv, hi); else hi = Math.max(fv, lo);
+        const k = hi0 - lo0 > 1e-9 ? (hi - lo) / (hi0 - lo0) : 1;
+        if (f.type === 'rect') {
           if (a === 0) { f.cu = (lo + hi) / 2; f.w = hi - lo; } else { f.cv = (lo + hi) / 2; f.h = hi - lo; }
+        } else if (f.type === 'circle') {
+          const c = a === 0 ? f.cu : f.cv;
+          f.r = Math.max(0, fside === 1 ? fv - c : c - fv);
+        } else if (f.type === 'poly' && f.pts) {
+          // stretch along this axis, the opposite side staying put
+          const c0 = a === 0 ? f.cu : f.cv;
+          f.pts = f.pts.map((pt) => { const q = [...pt] as P2; q[a] = lo + (c0 + pt[a] - lo0) * k - c0; return q; });
+        } else if (f.type === 'polygon' || f.type === 'text') {
+          // grow evenly, the opposite side staying put
+          const c = a === 0 ? f.cu : f.cv;
+          const anchor = fside === 0 ? hi0 : lo0;
+          const nc = anchor + (c - anchor) * k;
+          if (a === 0) f.cu = nc; else f.cv = nc;
+          if (f.type === 'polygon') f.r *= k; else if (f.text) { f.text.size *= k; f.w *= k; f.h *= k; }
         }
         return;
       }
       // depth: move whichever end sits on that side
-      if (f.through) { f.d1 = depthRange(f, p)[0]; f.through = false; }
+      if (f.through) {
+        const dr = depthRange(f, p);
+        f.d1 = f.far ? dr[1] : dr[0];
+        f.through = false;
+      }
       if (Math.abs(f.d0 - f.d1) < 1e-9) {
-        // a sketch getting its depth: pulled out it adds, pushed in it cuts
+        // a sketch getting its depth: pushed into the material it cuts, pulled out it adds
         f.d1 = fv;
-        f.op = fv < f.d0 ? 'cut' : 'add';
+        f.op = (fv - f.d0) * into(f) > 0 ? 'cut' : 'add';
         return;
       }
       const d0IsLo = f.d0 <= f.d1;

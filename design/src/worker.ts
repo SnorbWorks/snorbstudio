@@ -4,11 +4,17 @@
 
 import opencascade from 'replicad-opencascadejs';
 import { setOC } from 'replicad';
-import { build, stl } from './geometry.js';
+import { loadFont } from 'replicad';
+import { build, fonts, stl } from './geometry.js';
 
 const ready = (async () => {
   const OC = await (opencascade as any)({ locateFile: () => new URL('./replicad_single.wasm', import.meta.url).href });
   setOC(OC);
+  // the text tool's fonts (DejaVu, free licence)
+  await Promise.all([
+    loadFont(new URL('./fonts/DejaVuSans.ttf', import.meta.url).href, 'sans').then(() => { fonts.sans = true; }),
+    loadFont(new URL('./fonts/DejaVuSans-Bold.ttf', import.meta.url).href, 'bold').then(() => { fonts.bold = true; }),
+  ]).catch(() => { /* text shapes report an error instead */ });
 })();
 
 // Only the newest build matters: older ones still queued are skipped.
@@ -26,6 +32,7 @@ self.onmessage = async (ev: MessageEvent) => {
       (self as any).postMessage({ id: msg.id, ok: true, result });
     } else if (msg.type === 'stl') {
       const blob = stl(msg.project);
+      if (!blob) throw new Error('There is nothing to export yet.');
       const buf = await blob.arrayBuffer();
       (self as any).postMessage({ id: msg.id, ok: true, result: buf }, [buf]);
     } else if (msg.type === 'ping') {

@@ -1,30 +1,70 @@
-// The project: a stock block plus an ordered list of features. Every view,
-// the 3D preview and the STL are made from this and nothing else.
+// The project: a body (stock block) plus an ordered list of features. Every
+// view, the 3D preview and the STL are made from this and nothing else.
+
+import { VIEWS } from './views.js';
+import { type GearSpec, gearOutline, rackOutline, outerRadius, pitchRadius, place } from './gears.js';
 
 export type ViewName = 'top' | 'front' | 'right' | 'left' | 'back' | 'bottom';
 export type Vec3 = [number, number, number];
+export type P2 = [number, number];
 
 export interface Stock {
   min: Vec3;          // mm, world coordinates (X right, Y back, Z up)
   max: Vec3;
+  off?: boolean;      // no body: the shapes stand on their own (e.g. a gear)
 }
+
+export type ShapeType = 'rect' | 'circle' | 'polygon' | 'poly' | 'gear' | 'text';
+
+export interface TextSpec { s: string; size: number; bold: boolean }
+export interface FilletSpec { mode: 'fillet' | 'chamfer'; size: number; edges: Vec3[] }
+
+/** Repeat a feature: in a row (step each time) or round a centre. World coordinates. */
+export interface Pattern {
+  kind: 'linear' | 'circular';
+  count: number;
+  step: Vec3;         // linear
+  center: Vec3;       // circular
+  axis: Vec3;         // circular: turn about this direction
+  angle: number;      // circular: degrees from the first copy to the last (360 = all the way round)
+}
+
+/** A mirrored copy across the plane where world axis `axis` = `at`. */
+export interface Mirror { axis: 0 | 1 | 2; at: number }
 
 export interface Feature {
   id: string;
-  type: 'rect' | 'circle';
+  type: ShapeType | 'fillet';
   view: ViewName;     // the view it was drawn in: its profile lives in that view's (u, v)
   cu: number;         // centre, in the view's u/v (mm)
   cv: number;
-  w: number;          // rect width/height (u/v)
+  w: number;          // rect width/height (u/v); text: its measured size
   h: number;
-  r: number;          // circle radius
-  corner: number;     // rect corner radius (0 = sharp), all four corners
-  corners?: [number, number, number, number];   // per corner, overriding corner:
-                      // 0 (-u,-v) 1 (+u,-v) 2 (+u,+v) 3 (-u,+v)
+  r: number;          // circle radius; polygon: centre to corner
+  corner: number;     // corner radius for every corner (rect, polygon, poly)
+  corners?: number[]; // per corner, overriding corner (rect: 0 (-u,-v) 1 (+u,-v) 2 (+u,+v) 3 (-u,+v))
+  sides?: number;     // polygon
+  rot?: number;       // polygon / gear / text: turned this many degrees
+  pts?: P2[];         // poly: corners relative to (cu, cv)
+  gear?: GearSpec;
+  text?: TextSpec;
+  fillet?: FilletSpec;
   d0: number;         // start: the face it was drawn on, as depth toward the viewer
   d1: number;         // finish: the other end
   op: 'add' | 'cut';
-  through: boolean;   // cut: run right through the part, away from the viewer
+  through: boolean;   // cut: run right through the part
+  far?: boolean;      // drawn on the far face, seen through the part (the hidden-line tool)
+  pattern?: Pattern;
+  mirror?: Mirror;
+}
+
+/** A drafting dimension on a view: the size of a shape along one of the view's axes. */
+export interface Dim {
+  id: string;
+  target: string;     // feature id or 'stock'
+  view: ViewName;
+  axis: 'u' | 'v' | 'dia';
+  off: number;        // how far from the shape the dimension line sits (mm, outward)
 }
 
 export interface Project {
@@ -36,6 +76,7 @@ export interface Project {
   stock: Stock;
   views: ViewName[];  // shown views
   features: Feature[];
+  dims?: Dim[];
 }
 
 export function newProject(): Project {
@@ -48,6 +89,7 @@ export function newProject(): Project {
     stock: { min: [-10, -10, 0], max: [10, 10, 20] },
     views: ['top'],
     features: [],
+    dims: [],
   };
 }
 
@@ -57,28 +99,41 @@ export function newId(): string {
   return `f${Date.now().toString(36)}${seq}`;
 }
 
+export const isShape = (f: Feature) => f.type !== 'fillet';
+
+/** Which way is "into the material" for a feature, in its depth: -1 from the near face, +1 from the far face. */
+export const into = (f: Feature) => (f.far ? 1 : -1);
+
 /** The feature's extruded depth range [lo, hi] (depth toward its viewer). */
 export function depthRange(f: Feature, p: Project): [number, number] {
   if (f.op === 'cut' && f.through) {
-    const far = farDepth(f.view, p) - 1;
-    return [Math.min(far, f.d0), Math.max(f.d0, f.d1)];
+    if (f.far) return [Math.min(f.d0, f.d1), Math.max(nearDepth(f.view, p) + 1, f.d0)];
+    return [Math.min(farDepth(f.view, p) - 1, f.d0), Math.max(f.d0, f.d1)];
   }
   return [Math.min(f.d0, f.d1), Math.max(f.d0, f.d1)];
 }
 
-import { VIEWS } from './views.js';
-
 /** The depth (toward the viewer) of the far side of everything in the project. */
 export function farDepth(view: ViewName, p: Project): number {
+  return depthSpan(view, p)[0];
+}
+
+/** The depth of the near side of everything in the project. */
+export function nearDepth(view: ViewName, p: Project): number {
+  return depthSpan(view, p)[1];
+}
+
+function depthSpan(view: ViewName, p: Project): [number, number] {
   const v = VIEWS[view];
-  let lo = Infinity;
-  const corners = boxCorners(p.stock.min, p.stock.max);
-  for (const c of corners) lo = Math.min(lo, dot(c, v.eye));
+  let lo = Infinity, hi = -Infinity;
+  const take = (c: Vec3) => { const d = dot(c, v.eye); lo = Math.min(lo, d); hi = Math.max(hi, d); };
+  if (!p.stock.off) for (const c of boxCorners(p.stock.min, p.stock.max)) take(c);
   for (const f of p.features) {
-    if (f.op !== 'add') continue;
-    for (const c of featureCorners(f, p)) lo = Math.min(lo, dot(c, v.eye));
+    if (f.op !== 'add' || !isShape(f)) continue;
+    for (const c of featureCorners(f)) take(c);
   }
-  return lo;
+  if (lo === Infinity) return [0, 0];
+  return [lo, hi];
 }
 
 export function dot(a: Vec3, b: Vec3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -89,62 +144,240 @@ export function boxCorners(a: Vec3, b: Vec3): Vec3[] {
   return out;
 }
 
-/** The 2D profile outline in the feature's own view (u, v), closed. */
-export function profile(f: Feature, segs = 48): [number, number][] {
-  if (f.type === 'circle') {
-    const pts: [number, number][] = [];
-    for (let i = 0; i < segs; i++) {
-      const a = (i / segs) * Math.PI * 2;
-      pts.push([f.cu + f.r * Math.cos(a), f.cv + f.r * Math.sin(a)]);
-    }
-    return pts;
-  }
-  const hw = f.w / 2, hh = f.h / 2;
-  const r = cornerRadii(f);
-  if (r.every((x) => x <= 1e-6)) {
+// ------------------------------------------------------------ outlines
+
+/** The corners of a straight-sided shape, in its view's (u, v), going round anticlockwise. */
+export function verts(f: Feature): P2[] | null {
+  if (f.type === 'rect') {
+    const hw = f.w / 2, hh = f.h / 2;
     return [[f.cu - hw, f.cv - hh], [f.cu + hw, f.cv - hh], [f.cu + hw, f.cv + hh], [f.cu - hw, f.cv + hh]];
   }
-  const pts: [number, number][] = [];
-  const cs: [number, number, number, number, number][] = [   // corner x, y, sign u, sign v, start angle
-    [f.cu + hw, f.cv - hh, -1, 1, -90], [f.cu + hw, f.cv + hh, -1, -1, 0],
-    [f.cu - hw, f.cv + hh, 1, -1, 90], [f.cu - hw, f.cv - hh, 1, 1, 180],
-  ];
-  const order = [1, 2, 3, 0];
-  cs.forEach(([x, y, su, sv, a0], i) => {
-    const rr = r[order[i]];
-    if (rr <= 1e-6) { pts.push([x, y]); return; }
-    for (let k = 0; k <= 8; k++) {
-      const a = ((a0 + (k / 8) * 90) * Math.PI) / 180;
-      pts.push([x + su * rr + rr * Math.cos(a), y + sv * rr + rr * Math.sin(a)]);
-    }
+  if (f.type === 'polygon') {
+    const n = Math.max(3, Math.round(f.sides || 6));
+    // a flat side at the bottom, then turned by rot
+    const a0 = -Math.PI / 2 + Math.PI / n + ((f.rot || 0) * Math.PI) / 180;
+    return Array.from({ length: n }, (_, k) => [f.cu + f.r * Math.cos(a0 + (2 * Math.PI * k) / n), f.cv + f.r * Math.sin(a0 + (2 * Math.PI * k) / n)] as P2);
+  }
+  if (f.type === 'poly' && f.pts && f.pts.length >= 3) {
+    const pts = f.pts.map(([u, v]) => [f.cu + u, f.cv + v] as P2);
+    return signedArea(pts) < 0 ? pts.reverse() : pts;
+  }
+  return null;
+}
+
+export function signedArea(pts: P2[]): number {
+  let a = 0;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) a += (pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1]);
+  return a / 2;
+}
+
+/** Corner radius at each corner, each limited so neighbouring rounds fit on their side. */
+export function cornerRadii(f: Feature): number[] {
+  const v = verts(f);
+  if (!v) return [];
+  const n = v.length;
+  const want = Array.from({ length: n }, (_, i) => Math.max(0, (f.corners && f.corners[i] !== undefined ? f.corners[i] : f.corner) || 0));
+  return want.map((r, i) => {
+    if (r <= 0) return 0;
+    const P = v[i], A = v[(i + n - 1) % n], B = v[(i + 1) % n];
+    const la = Math.hypot(A[0] - P[0], A[1] - P[1]), lb = Math.hypot(B[0] - P[0], B[1] - P[1]);
+    const th = angleAt(A, P, B);
+    if (th < 1e-6 || th > Math.PI - 1e-6) return 0;
+    // the round may use at most half of each side next to it
+    const tmax = Math.min(la, lb) / 2;
+    return Math.min(r, tmax * Math.tan(th / 2));
   });
-  return pts;
 }
 
-/** The four corner radii of a rectangle (see Feature.corners), each limited to fit. */
-export function cornerRadii(f: Feature): [number, number, number, number] {
-  const lim = Math.max(0, Math.min(f.w, f.h) / 2);
-  const c = f.corners ?? [f.corner, f.corner, f.corner, f.corner];
-  return c.map((x) => Math.max(0, Math.min(x || 0, lim))) as [number, number, number, number];
+function angleAt(A: P2, P: P2, B: P2): number {
+  const ux = A[0] - P[0], uy = A[1] - P[1], vx = B[0] - P[0], vy = B[1] - P[1];
+  const c = (ux * vx + uy * vy) / (Math.hypot(ux, uy) * Math.hypot(vx, vy));
+  return Math.acos(Math.max(-1, Math.min(1, c)));
 }
 
-/** The corner two sides share (sides: 0 bottom, 1 right, 2 top, 3 left), or -1. */
-export function sharedCorner(a: number, b: number): number {
-  const s = new Set([a, b]);
-  if (s.has(0) && s.has(1)) return 1;
-  if (s.has(1) && s.has(2)) return 2;
-  if (s.has(2) && s.has(3)) return 3;
-  if (s.has(3) && s.has(0)) return 0;
+/**
+ * A rounded corner at P (coming from A, going to B): where the round starts
+ * and ends on the two sides, and a point half way round it.
+ */
+export function roundCorner(A: P2, P: P2, B: P2, r: number): { t1: P2; t2: P2; mid: P2 } | null {
+  if (r <= 1e-9) return null;
+  const th = angleAt(A, P, B);
+  if (th < 1e-6 || th > Math.PI - 1e-6) return null;
+  const ua = norm([A[0] - P[0], A[1] - P[1]]), ub = norm([B[0] - P[0], B[1] - P[1]]);
+  const t = r / Math.tan(th / 2);
+  const bis = norm([ua[0] + ub[0], ua[1] + ub[1]]);
+  const dc = r / Math.sin(th / 2);
+  const C: P2 = [P[0] + bis[0] * dc, P[1] + bis[1] * dc];
+  return { t1: [P[0] + ua[0] * t, P[1] + ua[1] * t], t2: [P[0] + ub[0] * t, P[1] + ub[1] * t], mid: [C[0] - bis[0] * r, C[1] - bis[1] * r] };
+}
+
+const norm = (v: P2): P2 => { const l = Math.hypot(v[0], v[1]) || 1; return [v[0] / l, v[1] / l]; };
+
+/** The straight part of each side (side k runs from corner k to corner k+1). */
+export function sideSegs(f: Feature): P2[][] {
+  const v = verts(f);
+  if (!v) return [];
+  const r = cornerRadii(f), n = v.length;
+  return v.map((P, k) => {
+    const Q = v[(k + 1) % n];
+    const rc0 = roundCorner(v[(k + n - 1) % n], P, Q, r[k]);
+    const rc1 = roundCorner(P, Q, v[(k + 2) % n], r[(k + 1) % n]);
+    return [rc0 ? rc0.t2 : P, rc1 ? rc1.t1 : Q];
+  });
+}
+
+/** The corner two sides share, or -1 (side k joins corners k and k+1). */
+export function sharedCorner(a: number, b: number, n = 4): number {
+  if ((a + 1) % n === b) return b;
+  if ((b + 1) % n === a) return a;
   return -1;
 }
 
-/** The 8 corners of the feature's bounding prism, in world coordinates. */
-export function featureCorners(f: Feature, p: Project): Vec3[] {
-  const v = VIEWS[f.view];
-  const [lo, hi] = f.op === 'cut' && f.through ? [Math.min(f.d0, f.d1), Math.max(f.d0, f.d1)] : depthRange(f, p);
-  const hu = f.type === 'circle' ? f.r : f.w / 2;
-  const hv = f.type === 'circle' ? f.r : f.h / 2;
-  const out: Vec3[] = [];
-  for (const u of [f.cu - hu, f.cu + hu]) for (const vv of [f.cv - hv, f.cv + hv]) for (const d of [lo, hi]) out.push(v.toWorld(u, vv, d));
+/** The outline in the feature's own view (u, v), closed. Rings and text use their outside. */
+export function profile(f: Feature, segs = 48): P2[] {
+  if (f.type === 'circle') {
+    return Array.from({ length: segs }, (_, i) => [f.cu + f.r * Math.cos((i / segs) * 2 * Math.PI), f.cv + f.r * Math.sin((i / segs) * 2 * Math.PI)] as P2);
+  }
+  if (f.type === 'gear' && f.gear) return gearProfile(f).outer;
+  if (f.type === 'text') {
+    const hw = f.w / 2, hh = f.h / 2;
+    return rotatePts([[f.cu - hw, f.cv - hh], [f.cu + hw, f.cv - hh], [f.cu + hw, f.cv + hh], [f.cu - hw, f.cv + hh]], f.cu, f.cv, f.rot || 0);
+  }
+  const v = verts(f);
+  if (!v) return [];
+  const r = cornerRadii(f), n = v.length;
+  const out: P2[] = [];
+  v.forEach((P, i) => {
+    const rc = roundCorner(v[(i + n - 1) % n], P, v[(i + 1) % n], r[i]);
+    if (!rc) { out.push(P); return; }
+    // the round, as a few points from t1 to t2 through mid
+    const arc = arcPoints(rc.t1, rc.mid, rc.t2, 8);
+    out.push(...arc);
+  });
   return out;
+}
+
+/** Points on the circle through a, m, b, from a to b. */
+export function arcPoints(a: P2, m: P2, b: P2, n: number): P2[] {
+  const [cx, cy, R] = circle3(a, m, b);
+  if (!Number.isFinite(R)) return [a, b];
+  const a0 = Math.atan2(a[1] - cy, a[0] - cx), am = Math.atan2(m[1] - cy, m[0] - cx), a1 = Math.atan2(b[1] - cy, b[0] - cx);
+  // go the way that passes through m
+  const norm2 = (x: number) => ((x % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const span = norm2(am - a0) < norm2(a1 - a0) ? norm2(a1 - a0) : -norm2(a0 - a1);
+  const out: P2[] = [];
+  for (let i = 0; i <= n; i++) { const t = a0 + (span * i) / n; out.push([cx + R * Math.cos(t), cy + R * Math.sin(t)]); }
+  return out;
+}
+
+function circle3(a: P2, b: P2, c: P2): [number, number, number] {
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-12) return [0, 0, Infinity];
+  const a2 = a[0] ** 2 + a[1] ** 2, b2 = b[0] ** 2 + b[1] ** 2, c2 = c[0] ** 2 + c[1] ** 2;
+  const x = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+  const y = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+  return [x, y, Math.hypot(a[0] - x, a[1] - y)];
+}
+
+export function rotatePts(pts: P2[], cu: number, cv: number, deg: number): P2[] {
+  if (!deg) return pts;
+  const c = Math.cos((deg * Math.PI) / 180), s = Math.sin((deg * Math.PI) / 180);
+  return pts.map(([x, y]) => [cu + (x - cu) * c - (y - cv) * s, cv + (x - cu) * s + (y - cv) * c]);
+}
+
+/** A gear's outline: outside, and for a ring the toothed hole. */
+export function gearProfile(f: Feature): { outer: P2[]; hole?: P2[] } {
+  const g = f.gear!;
+  const rot = f.rot || 0;
+  if (g.kind === 'rack') return { outer: place(rackOutline(g.module, g.teeth, g.pa, g.rim, g.backlash), f.cu, f.cv, rot) };
+  if (g.kind === 'ring') {
+    const R = outerRadius(g);
+    const outer = Array.from({ length: 96 }, (_, i) => [f.cu + R * Math.cos((i / 96) * 2 * Math.PI), f.cv + R * Math.sin((i / 96) * 2 * Math.PI)] as P2);
+    // the tooth spaces are the shape of an external gear's teeth, with the clearance the other way
+    return { outer, hole: place(gearOutline(g.module, g.teeth, g.pa, 1.25, 1, -g.backlash), f.cu, f.cv, rot) };
+  }
+  return { outer: place(gearOutline(g.module, g.teeth, g.pa, 1, 1.25, g.backlash), f.cu, f.cv, rot) };
+}
+
+/** The feature's extent in its own view: [u0, v0, u1, v1]. */
+export function bounds2d(f: Feature): [number, number, number, number] {
+  if (f.type === 'circle') return [f.cu - f.r, f.cv - f.r, f.cu + f.r, f.cv + f.r];
+  if (f.type === 'gear' && f.gear && f.gear.kind !== 'rack') {
+    const R = Math.max(outerRadius(f.gear), f.gear.hubD / 2);
+    return [f.cu - R, f.cv - R, f.cu + R, f.cv + R];
+  }
+  const pts = f.type === 'rect' || f.type === 'polygon' || f.type === 'poly' ? verts(f) || [] : profile(f);
+  if (!pts.length) return [f.cu, f.cv, f.cu, f.cv];
+  const us = pts.map((p) => p[0]), vs = pts.map((p) => p[1]);
+  return [Math.min(...us), Math.min(...vs), Math.max(...us), Math.max(...vs)];
+}
+
+/** The feature's depth extent including a gear's hub (which sits on the start side). */
+export function depthExtent(f: Feature, p: Project): [number, number] {
+  const [lo, hi] = depthRange(f, p);
+  if (f.type === 'gear' && f.gear && f.gear.hubLen > 0 && f.gear.hubD > 0) {
+    const out = f.d1 >= f.d0 ? -1 : 1;     // the hub sticks out the other way from the teeth
+    const end = f.d0 + out * f.gear.hubLen;
+    return [Math.min(lo, end), Math.max(hi, end)];
+  }
+  return [lo, hi];
+}
+
+/** The 8 corners of the feature's bounding prism, in world coordinates (through cuts: just their drawn depth). */
+export function featureCorners(f: Feature, p?: Project): Vec3[] {
+  const v = VIEWS[f.view];
+  const [lo, hi] = p ? depthExtent(f, p) : [Math.min(f.d0, f.d1), Math.max(f.d0, f.d1)];
+  const [u0, v0, u1, v1] = bounds2d(f);
+  const out: Vec3[] = [];
+  for (const u of [u0, u1]) for (const vv of [v0, v1]) for (const d of [lo, hi]) out.push(v.toWorld(u, vv, d));
+  return out;
+}
+
+export { pitchRadius, outerRadius };
+
+// ------------------------------------------------------------ copies (pattern, mirror)
+
+/** A rigid move of a copy: applied in order. */
+export type Op =
+  | { t: Vec3 }
+  | { rot: number; c: Vec3; ax: Vec3 }
+  | { mir: 0 | 1 | 2; at: number };
+
+/** Every copy of a feature as a list of moves; the first is the feature itself (no moves). */
+export function instances(f: Feature): Op[][] {
+  let list: Op[][] = [[]];
+  const pt = f.pattern;
+  if (pt && pt.count > 1) {
+    list = [];
+    for (let k = 0; k < pt.count; k++) {
+      if (pt.kind === 'linear') list.push(k ? [{ t: [pt.step[0] * k, pt.step[1] * k, pt.step[2] * k] }] : []);
+      else {
+        const full = Math.abs(Math.abs(pt.angle) - 360) < 1e-9;
+        const each = pt.angle / (full ? pt.count : Math.max(1, pt.count - 1));
+        list.push(k ? [{ rot: each * k, c: pt.center, ax: pt.axis }] : []);
+      }
+    }
+  }
+  if (f.mirror) list = [...list, ...list.map((ops) => [...ops, { mir: f.mirror!.axis, at: f.mirror!.at } as Op])];
+  return list;
+}
+
+export function applyOps(p: Vec3, ops: Op[]): Vec3 {
+  let q: Vec3 = [...p] as Vec3;
+  for (const o of ops) {
+    if ('t' in o) q = [q[0] + o.t[0], q[1] + o.t[1], q[2] + o.t[2]];
+    else if ('mir' in o) q[o.mir] = 2 * o.at - q[o.mir];
+    else q = rotateAbout(q, o.c, o.ax, o.rot);
+  }
+  return q;
+}
+
+export function rotateAbout(p: Vec3, c: Vec3, ax: Vec3, deg: number): Vec3 {
+  const l = Math.hypot(ax[0], ax[1], ax[2]) || 1;
+  const k: Vec3 = [ax[0] / l, ax[1] / l, ax[2] / l];
+  const a = (deg * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const v: Vec3 = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+  const kd = dot(k, v);
+  const kx: Vec3 = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+  return [0, 1, 2].map((i) => c[i] + v[i] * cs + kx[i] * sn + k[i] * kd * (1 - cs)) as Vec3;
 }

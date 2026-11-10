@@ -78,6 +78,8 @@ function updateBanner() {
   const b = $('#klippy-banner');
   const show = mr.connected && mr.klippy !== 'ready';
   b.classList.toggle('hidden', !show && mr.connected);
+  // designing doesn't need the printer: no banner taking up room on the Design tab
+  if (app.page === 'design') { b.classList.add('hidden'); return; }
   if (!mr.connected) {
     $('#kb-title').textContent = 'Can\'t reach the Pi';
     $('#kb-msg').textContent = 'Reconnecting…';
@@ -118,6 +120,8 @@ function init() {
   const files = initFiles(app);
   app.fileCard = files.fileCard;
   initMaint(app);
+
+  app.onPage(updateBanner);
 
   // Design (the CAD sheet) loads on first visit: it brings a 22 MB engine.
   let design = null;

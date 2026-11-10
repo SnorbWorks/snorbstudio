@@ -18,6 +18,10 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   POST   /studio-api/update/check         look for updates now
   POST   /studio-api/update/install       install the waiting update now
   POST   /studio-api/update/auto          {"auto": true|false}
+  GET    /studio-api/designs              saved Design-tab projects
+  GET    /studio-api/designs/<name>.json  one project
+  PUT    /studio-api/designs/<name>.json  save one (JSON body)
+  DELETE /studio-api/designs/<name>.json
 """
 import base64
 import json
@@ -42,6 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILES = os.path.join(os.path.dirname(HERE), "profiles")
 SLICER = shutil.which("prusa-slicer") or "/usr/bin/prusa-slicer"
 MODEL_EXT = (".stl", ".3mf", ".obj")
+DESIGNS = os.path.join(HOME, "printer_data", "design")
 
 # What the UI offers.  Values are PrusaSlicer config keys.
 QUALITY = {
@@ -539,6 +544,30 @@ class Handler(BaseHTTPRequestHandler):
                 with open(p, "rb") as f:
                     shutil.copyfileobj(f, self.wfile)
                 return
+            if parts == ["designs"]:
+                os.makedirs(DESIGNS, exist_ok=True)
+                out = []
+                for n in os.listdir(DESIGNS):
+                    p = os.path.join(DESIGNS, n)
+                    if n.lower().endswith(".json") and os.path.isfile(p):
+                        st = os.stat(p)
+                        out.append({"name": n[:-5], "size": st.st_size,
+                                    "modified": st.st_mtime})
+                out.sort(key=lambda m: -m["modified"])
+                return self.send_json({"designs": out})
+            if len(parts) == 2 and parts[0] == "designs":
+                p = os.path.join(DESIGNS, safe_name(parts[1], (".json",)))
+                if not os.path.isfile(p):
+                    return self.error("not found", 404)
+                with open(p, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if len(parts) == 2 and parts[0] == "jobs":
                 job = jobs.get(parts[1])
                 if not job:
@@ -564,6 +593,19 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(data)
                 os.replace(path + ".part", path)
                 return self.send_json({"name": name, "size": len(data)})
+            if len(parts) == 2 and parts[0] == "designs":
+                os.makedirs(DESIGNS, exist_ok=True)
+                name = safe_name(parts[1], (".json",))
+                data = self.body()
+                try:
+                    json.loads(data)
+                except ValueError:
+                    return self.error("not a project")
+                path = os.path.join(DESIGNS, name)
+                with open(path + ".part", "wb") as f:
+                    f.write(data)
+                os.replace(path + ".part", path)
+                return self.send_json({"name": name[:-5], "size": len(data)})
             return self.error("not found", 404)
         except ValueError as e:
             return self.error(str(e))
@@ -574,6 +616,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if len(parts) == 2 and parts[0] == "models":
                 p = os.path.join(MODELS, safe_name(parts[1], MODEL_EXT))
+                if os.path.isfile(p):
+                    os.remove(p)
+                return self.send_json({"ok": True})
+            if len(parts) == 2 and parts[0] == "designs":
+                p = os.path.join(DESIGNS, safe_name(parts[1], (".json",)))
                 if os.path.isfile(p):
                     os.remove(p)
                 return self.send_json({"ok": True})

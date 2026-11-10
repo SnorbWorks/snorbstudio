@@ -12,8 +12,9 @@
     "replicad-opencascadejs": "1.2.1"
   },
   "devDependencies": {
+    "@types/three": "0.160.0",
+    "dejavu-fonts-ttf": "^2.37.3",
     "esbuild": "0.28.2",
-    "typescript": "^5.9.0",
-    "@types/three": "0.160.0"
+    "typescript": "^5.9.0"
   }
 }

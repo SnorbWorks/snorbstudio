@@ -92,3 +92,40 @@
 .ds-side { min-width: 200px; }
 .ds-field { grid-template-columns: minmax(78px, 1fr) minmax(50px, 96px) 22px; }
 .ds-field > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* steps 4-7: edges, dimensions, dialogs, lists */
+.ds-toolbox { overflow-y: auto; }
+.ds-edge { stroke: #ffb27a; stroke-width: 3; stroke-linecap: round; opacity: .9; }
+.ds-edge-picked { stroke: #ff7a1a; stroke-width: 4; opacity: 1; }
+.ds-dim path { stroke: #2b7a3d; stroke-width: 0.9; }
+.ds-dim .ds-dim-head { fill: #2b7a3d !important; stroke: none; }
+.ds-dim-bg { fill: #fff !important; stroke: none; cursor: move; }
+.ds-dim text { fill: #2b7a3d; text-anchor: middle; font-family: -apple-system, sans-serif; cursor: move; }
+.ds-dim:hover text, .ds-dim-sel text { fill: #ff7a1a; font-weight: 600; }
+.ds-dim-sel path { stroke: #ff7a1a; }
+.ds-dim-sel .ds-dim-head { fill: #ff7a1a !important; }
+.ds-sheet-wrap { position: relative; }
+.ds-dim-input { position: absolute; transform: translate(-50%, -50%); width: 84px; z-index: 5; text-align: center; font-size: 13px;
+  padding: 3px 6px; border: 2px solid var(--accent); border-radius: 6px; background: #fff; color: #111; }
+.ds-ctx-num { width: 70px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; text-align: right; color: var(--text); }
+.ds-field.ds-text { grid-template-columns: minmax(78px, 1fr) minmax(90px, 2fr); }
+.ds-field.ds-text input { text-align: left; }
+.ds-field select { grid-column: 2 / 4; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+.ds-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.ds-list button { text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); padding: 4px 8px; font-size: 12px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-list button:hover { background: var(--card2); border-color: var(--line); }
+.ds-list button.ds-err { color: var(--bad); }
+.ds-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 50; }
+.ds-dialog { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 60px); overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+.ds-dialog h3 { margin: 0 0 10px; font-size: 16px; }
+.ds-dialog .ds-field { grid-template-columns: minmax(110px, 1fr) minmax(70px, 120px) 54px; }
+.ds-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.ds-open-row { display: flex; align-items: center; gap: 4px; }
+.ds-open-row > button:first-child { flex: 1; }
+.ds-open-del { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; padding: 2px 8px; border-radius: 6px; }
+.ds-open-del:hover, .ds-open-del.armed { color: var(--bad); background: var(--card2); }
+.ds-open-del.armed { font-size: 12px; }
+.ds-dialog { width: min(460px, calc(100vw - 32px)); }
+.ds-dialog .ds-field > .ds-seg { flex-wrap: wrap; }
