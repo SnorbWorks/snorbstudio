@@ -141,3 +141,4 @@
 .ds-ctx > * { flex-shrink: 0; }
 .ds-ctx > .ds-ctx-hint { flex-shrink: 1; }
 .ds-tools .btn { white-space: nowrap; }
+.ds-name.ds-name-taken { border-color: var(--bad) !important; box-shadow: 0 0 0 2px rgba(239,83,80,.25); }

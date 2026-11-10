@@ -8,7 +8,9 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
 
   GET    /studio-api/info                 slicer version, presets
   GET    /studio-api/models               model library
-  PUT    /studio-api/models/<name>        store a model (raw body)
+  PUT    /studio-api/models/<name>        store a model (raw body); a name
+                                           already used by a different model or
+                                           design gets " (2)" etc. unless ?replace=1
   GET    /studio-api/models/<name>        fetch a model
   DELETE /studio-api/models/<name>
   POST   /studio-api/slice                start a slice job (see read_slice_body)
@@ -20,7 +22,8 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   POST   /studio-api/update/auto          {"auto": true|false}
   GET    /studio-api/designs              saved Design-tab projects
   GET    /studio-api/designs/<name>.json  one project
-  PUT    /studio-api/designs/<name>.json  save one (JSON body)
+  PUT    /studio-api/designs/<name>.json  save one (JSON body); 409 if the name
+                                           is already used, unless ?replace=1
   DELETE /studio-api/designs/<name>.json
 """
 import base64
@@ -259,6 +262,18 @@ def safe_name(name, exts=None):
     if exts and not name.lower().endswith(exts):
         raise ValueError("unsupported file type")
     return name
+
+
+def name_taken(stem, model=None):
+    """A part name is one name: the design <stem>.json and the library's
+    <stem>.stl are the same part, so either one being there takes it."""
+    if os.path.isfile(os.path.join(DESIGNS, stem + ".json")):
+        return True
+    for ext in MODEL_EXT:
+        p = os.path.join(MODELS, stem + ext)
+        if os.path.isfile(p) and (model is None or os.path.basename(p) != model):
+            return True
+    return False
 
 
 def unique_path(folder, name):
@@ -502,6 +517,9 @@ class Handler(BaseHTTPRequestHandler):
             data -= len(c)
         return b"".join(chunks)
 
+    def query(self):
+        return self.path.split("?", 1)[1].split("&") if "?" in self.path else []
+
     def route(self):
         path = self.path.split("?")[0]
         if path.startswith("/studio-api"):
@@ -589,6 +607,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not data:
                     return self.error("empty file")
                 path = os.path.join(MODELS, name)
+                if "replace=1" not in self.query():
+                    if os.path.isfile(path):
+                        with open(path, "rb") as f:
+                            same = f.read() == data
+                        if same:
+                            return self.send_json({"name": name, "size": len(data), "same": True})
+                    base, ext = os.path.splitext(name)
+                    if os.path.isfile(path) or name_taken(base, name):
+                        n = 2
+                        while os.path.isfile(os.path.join(MODELS, "%s (%d)%s" % (base, n, ext))) or name_taken("%s (%d)" % (base, n)):
+                            n += 1
+                        name = "%s (%d)%s" % (base, n, ext)
+                        path = os.path.join(MODELS, name)
                 with open(path + ".part", "wb") as f:
                     f.write(data)
                 os.replace(path + ".part", path)
@@ -602,6 +633,8 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     return self.error("not a project")
                 path = os.path.join(DESIGNS, name)
+                if "replace=1" not in self.query() and name_taken(name[:-5]):
+                    return self.error("taken", 409)
                 with open(path + ".part", "wb") as f:
                     f.write(data)
                 os.replace(path + ".part", path)

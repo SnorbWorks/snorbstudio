@@ -310,25 +310,46 @@ export function mount(root: HTMLElement, studio: Studio) {
   $('#ds-undo').onclick = () => st.undo();
   $('#ds-redo').onclick = () => st.redo();
   $('#ds-fit').onclick = () => sheet.fit();
+  // the name this part was opened or last saved under (kept across reloads):
+  // saving under it again is replacing this part, not taking another's name
+  const SAVED_KEY = 'studio.design.savedAs';
+  let savedAs: string | null = null;
+  try { savedAs = localStorage.getItem(SAVED_KEY); } catch { /* private mode */ }
+  const setSavedAs = (v: string | null) => {
+    savedAs = v;
+    try { if (v) localStorage.setItem(SAVED_KEY, v); else localStorage.removeItem(SAVED_KEY); } catch { /* private mode */ }
+  };
   const name = $('#ds-name') as HTMLInputElement;
-  name.onchange = () => st.change((p) => { p.name = name.value.trim().replace(/[\\/]/g, '-') || 'part'; });
-  name.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') name.blur(); };
+  // the name being typed counts straight away: Save (button or ⌘S) and Send to Library use it
+  const commitName = () => {
+    const v = name.value.trim().replace(/[\\/]/g, '-') || 'part';
+    if (v !== st.p.name) st.change((p) => { p.name = v; });
+  };
+  name.onchange = commitName;
+  name.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') name.blur();
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+  };
   $('#ds-new').onclick = () => {
     if (st.p.features.length && !confirm('Start a new part? (Undo brings this one back.)')) return;
     st.load(newProject());
+    setSavedAs(null);
     sheet.fit();
   };
   // ---------------------------------------------------------- library
   $('#ds-lib').onclick = async () => {
     const b = $('#ds-lib') as HTMLButtonElement;
+    commitName();
+    if (!await nameFree()) return;
     b.disabled = true;
     try {
       const buf = await getSTL();
       const name = fileName();
-      const r = await fetch(`/studio-api/models/${encodeURIComponent(name)}`, { method: 'PUT', body: buf });
+      const r = await fetch(`/studio-api/models/${encodeURIComponent(name)}?replace=1`, { method: 'PUT', body: buf });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-      // keep the design too, under the same name, so Send to Design brings back every shape
-      await save(true);
+      // keep the design too, under the same name, so Send to SnorbCAD brings back every shape
+      await save(true, true);
       $('#ds-status').textContent = `“${name}” is in the model library (Files tab), with its design saved alongside.`;
     } catch (e: any) { $('#ds-status').textContent = `Couldn't send it to the library: ${e.message}`; }
     finally { b.disabled = false; }
@@ -339,13 +360,14 @@ export function mount(root: HTMLElement, studio: Studio) {
     const stem = name.replace(/\.(stl|3mf|obj)$/i, '');
     try {
       const r = await fetch(`${API}${encodeURIComponent(stem)}.json`);
-      if (r.ok) { st.load(await r.json()); st.select([]); sheet.fit(); flash(`Opened the design of “${name}”: every shape can be changed.`); return; }
+      if (r.ok) { st.load(await r.json()); setSavedAs(stem); st.select([]); sheet.fit(); flash(`Opened the design of “${name}”: every shape can be changed.`); return; }
     } catch { /* no saved design */ }
     const p = newProject();
     p.name = stem;
     p.base = { model: name };
     p.views = ['top', 'front', 'right'];
     st.load(p);
+    setSavedAs(stem);          // the same part as the library STL: saving under its name is fine
     st.select([]);
     sheet.fit();
     flash(`“${name}” is the body. Add or cut shapes on it, round its edges; its own walls keep their size (an STL has no shapes to change).`);
@@ -354,11 +376,47 @@ export function mount(root: HTMLElement, studio: Studio) {
   // ---------------------------------------------------------- save / open on the printer
   const API = '/studio-api/designs/';
   const flash = (t: string) => { $('#ds-status').textContent = t; };
-  const save = async (quiet = false) => {
+  /**
+   * One name, one part: a name already used on the printer (a saved part or a
+   * library model) can't be reused by a different part. Saving again under
+   * the name it was opened or saved as is fine. Pressing Save a second time
+   * on the warning replaces the other one on purpose.
+   */
+  let replaceArmed: string | null = null;
+  const nameFree = async () => {
+    const nm = (st.p.name || 'part').trim();
+    if (nm === savedAs) return true;
+    if (replaceArmed === nm) { replaceArmed = null; return true; }
+    let taken = false;
+    try {
+      const [d, m] = await Promise.all([fetch(API.slice(0, -1)).then((r) => r.json()), fetch('/studio-api/models').then((r) => r.json())]);
+      taken = (d.designs || []).some((x: any) => x.name === nm) ||
+        (m.models || []).some((x: any) => x.name.replace(/\.(stl|3mf|obj)$/i, '') === nm);
+    } catch { /* can't tell: the printer refuses a taken name anyway */ }
+    if (!taken) return true;
+    replaceArmed = nm;
+    flash(`“${nm}” is already the name of another part on the printer. Give this one a different name, or press it again to replace that one.`);
+    name.classList.add('ds-name-taken');
+    name.focus();
+    name.select();
+    return false;
+  };
+  name.addEventListener('input', () => { name.classList.remove('ds-name-taken'); replaceArmed = null; });
+  let saving = false;
+  const save = async (quiet = false, checked = false) => {
+    if (saving && !quiet) return;          // ⌘S can arrive twice (field + page)
+    saving = true;
+    try { await saveNow(quiet, checked); } finally { saving = false; }
+  };
+  const saveNow = async (quiet: boolean, checked: boolean) => {
+    commitName();
+    if (!checked && !await nameFree()) { if (quiet) throw new Error('that name is taken'); return; }
     const nm = (st.p.name || 'part').trim();
     try {
-      const r = await fetch(`${API}${encodeURIComponent(nm)}.json`, { method: 'PUT', body: JSON.stringify(st.p), headers: { 'Content-Type': 'application/json' } });
+      const r = await fetch(`${API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(st.p), headers: { 'Content-Type': 'application/json' } });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      setSavedAs(nm);
+      name.classList.remove('ds-name-taken');
       if (!quiet) flash(`Saved “${nm}” on the printer.`);
     } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; }
   };
@@ -385,6 +443,7 @@ export function mount(root: HTMLElement, studio: Studio) {
         try {
           const p = await (await fetch(`${API}${encodeURIComponent(d.name)}.json`)).json();
           st.load(p);
+          setSavedAs(d.name);
           sheet.fit();
           close();
           flash(`Opened “${d.name}”.`);

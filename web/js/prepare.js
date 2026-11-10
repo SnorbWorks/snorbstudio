@@ -59,12 +59,20 @@ async function addFiles(files, { saveToLibrary = true, fromLibrary = false, rest
       const geo = await parseModel(f.name, buffer);
       const mesh = T.makeMesh(geo, f.name);
       viewer.models.add(mesh);
+      // Library files can be reloaded later, so the plate can be restored.
+      mesh.userData.lib = fromLibrary ? f.name : null;
       if (saveToLibrary) {
+        // one name, one part: a different file with a name already in use is
+        // kept as "name (2)" rather than replacing the other one
         fetch(`/studio-api/models/${encodeURIComponent(f.name)}`, { method: 'PUT', body: buffer })
+          .then((r) => r.json())
+          .then((r) => {
+            if (!r.name) return;
+            mesh.userData.lib = r.name;
+            if (r.name !== f.name) toast(`Another part is already called “${f.name}”, so this one is in the library as “${r.name}”.`);
+          })
           .catch(() => {});
       }
-      // Library files can be reloaded later, so the plate can be restored.
-      mesh.userData.lib = saveToLibrary || fromLibrary ? f.name : null;
       if (restore) {
         mesh.position.fromArray(restore.p); mesh.quaternion.fromArray(restore.q); mesh.scale.fromArray(restore.s);
       } else {
