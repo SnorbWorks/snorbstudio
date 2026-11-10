@@ -119,6 +119,15 @@ function init() {
   app.fileCard = files.fileCard;
   initMaint(app);
 
+  // Design (the CAD sheet) loads on first visit: it brings a 22 MB engine.
+  let design = null;
+  app.onPage((p) => {
+    if (p !== 'design' || design) return;
+    design = import('../design/design.js')
+      .then((m) => m.mount($('#design-root'), app))
+      .catch((e) => { design = null; toast(`The Design tab failed to load: ${e.message}`, 'err', 10000); });
+  });
+
   mr.on('status', updateHeader);
   mr.on('klippy', () => { updateHeader(); updateBanner(); });
   mr.on('connection', () => { updateHeader(); updateBanner(); });
@@ -126,7 +135,7 @@ function init() {
 
   let start = location.hash.slice(1);
   try { start ||= localStorage.getItem('studio.page'); } catch (e) { /* ignore */ }
-  app.show(['prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
+  app.show(['design', 'prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
   window.addEventListener('hashchange', () => {
     const p = location.hash.slice(1);
     if (p && p !== app.page) app.show(p);

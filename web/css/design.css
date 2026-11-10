@@ -1,0 +1,55 @@
+/* Design tab: a white drafting sheet with black lines; colour only where it means something. */
+#page-design { flex-direction: column; }
+#page-design.active { display: flex; }
+#design-root { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.ds-tools { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg2); border-bottom: 1px solid var(--line); flex: none; }
+.ds-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.ds-seg button { background: var(--card); border: 0; padding: 6px 12px; cursor: pointer; color: var(--text); }
+.ds-seg button + button { border-left: 1px solid var(--line); }
+.ds-seg button.active { background: var(--accent); color: #1a1a1a; }
+.ds-seg button:disabled { opacity: .4; cursor: default; }
+.ds-name { width: 150px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; }
+.ds-busy { color: var(--muted); font-size: 12px; }
+.ds-body { flex: 1; display: flex; min-height: 0; }
+.ds-sheet-wrap { flex: 1; position: relative; background: #fff; min-width: 0; overflow: hidden; }
+.ds-sheet { position: absolute; inset: 0; width: 100%; height: 100%; display: block; user-select: none; touch-action: none; }
+.ds-loading { position: absolute; left: 16px; top: 12px; color: #666; font-size: 13px; z-index: 1; pointer-events: none; }
+.ds-side { width: 300px; flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg2); min-height: 0; }
+.ds-3d { height: 230px; flex: none; background: #f4f5f7; border-bottom: 1px solid var(--line); }
+.ds-3d canvas { display: block; }
+.ds-panel { flex: 1; overflow: auto; padding: 10px 14px 20px; }
+.ds-h { font-weight: 600; margin: 14px 0 6px; font-size: 13px; }
+.ds-h:first-child { margin-top: 2px; }
+.ds-note { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+.ds-note.ds-err { color: var(--bad); }
+.ds-note.ds-sk { color: #6ea8ff; }
+.ds-field { display: grid; grid-template-columns: 1fr 96px 22px; align-items: center; gap: 6px; margin: 4px 0; font-size: 13px; }
+.ds-field > .ds-seg { grid-column: 2 / 4; justify-self: start; }
+.ds-field input { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; text-align: right; }
+.ds-field i { font-style: normal; color: var(--muted); font-size: 11px; }
+.ds-check { display: block; margin: 8px 0; font-size: 13px; }
+.ds-del { margin-top: 18px; }
+.ds-status { flex: none; height: 24px; line-height: 24px; padding: 0 12px; font: 12px ui-monospace, Menlo, monospace; color: var(--muted); background: var(--bg2); border-top: 1px solid var(--line); white-space: pre; }
+
+/* the drawing (sheet units are mm; strokes stay crisp at any zoom) */
+.ds-sheet path, .ds-sheet line, .ds-sheet rect { vector-effect: non-scaling-stroke; fill: none; }
+.ds-visible { stroke: #111; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.ds-hidden { stroke: #111; stroke-width: 1; }
+.ds-viewbox { stroke: transparent; }
+.ds-label { fill: #777; text-anchor: middle; font-family: -apple-system, sans-serif; letter-spacing: .08em; }
+.ds-hide { fill: #bbb; text-anchor: middle; cursor: pointer; font-family: -apple-system, sans-serif; }
+.ds-hide:hover { fill: #d33; }
+.ds-ghost rect { stroke: #b9bec6; stroke-width: 1.2; fill: rgba(0,0,0,0.012); }
+.ds-ghost path { stroke: #b9bec6; stroke-width: 2; }
+.ds-ghost text { fill: #a3a8b0; text-anchor: middle; font-family: -apple-system, sans-serif; }
+.ds-ghost:hover rect { stroke: #6b9cff; fill: rgba(80,130,255,0.04); }
+.ds-ghost { cursor: pointer; }
+.ds-feat { stroke-width: 1.2; }
+.ds-sketch { stroke: #2f6fe0; stroke-width: 1.4; }
+.ds-faded { stroke: #c4c7cc; stroke-dasharray: none; }
+.ds-error { stroke: #e53935; stroke-width: 1.6; }
+.ds-hover { stroke: #ffb27a; stroke-width: 2; }
+.ds-selected { stroke: #ff7a1a; stroke-width: 2.2; fill: rgba(255,122,26,0.06) !important; }
+.ds-drawing { stroke: #2f6fe0; stroke-width: 1.4; fill: rgba(47,111,224,0.05) !important; }
+.ds-handle { fill: #fff !important; stroke: #ff7a1a; stroke-width: 1.5; }
+.ds-guide { stroke: #19b5d6; stroke-width: 0.8; stroke-dasharray: 2 3; opacity: .8; }
