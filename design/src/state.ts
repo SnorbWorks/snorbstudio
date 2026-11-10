@@ -1,6 +1,6 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
-import type { Feature, Project, Vec3 } from './model.js';
+import type { Feature, Project, Vec3, ViewName } from './model.js';
 import { depthRange, newProject } from './model.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
@@ -12,7 +12,9 @@ const KEY = 'studio.design.project';
 
 export class State {
   p: Project = newProject();
-  sel: string | null = null;          // 'stock' | feature id
+  sels: string[] = [];                // selected: 'stock' or feature ids
+  sides: { id: string; sides: number[] } | null = null;   // Option-clicked sides of one rectangle
+  activeView: ViewName = 'top';       // the view last worked in: alignment goes by its left/right/top/bottom
   tool: Tool = 'select';
   built: BuildResult | null = null;
   buildError = '';
@@ -55,7 +57,7 @@ export class State {
     if (!s) return;
     this.redoStack.push(JSON.stringify(this.p));
     this.p = JSON.parse(s);
-    if (this.sel && this.sel !== 'stock' && !this.feature(this.sel)) this.sel = null;
+    this.prune();
     this.changed();
   }
 
@@ -64,13 +66,33 @@ export class State {
     if (!s) return;
     this.undoStack.push(JSON.stringify(this.p));
     this.p = JSON.parse(s);
-    if (this.sel && this.sel !== 'stock' && !this.feature(this.sel)) this.sel = null;
+    this.prune();
     this.changed();
   }
 
-  load(p: Project) { this.snapshot(); this.p = { ...newProject(), ...p }; this.sel = null; this.changed(); }
+  /** Drop selected things that no longer exist. */
+  prune() {
+    this.sels = this.sels.filter((id) => id === 'stock' || this.feature(id));
+    if (this.sides && !this.feature(this.sides.id)) this.sides = null;
+  }
 
-  select(id: string | null) { this.sel = id; this.emit('select'); }
+  load(p: Project) { this.snapshot(); this.p = { ...newProject(), ...p }; this.sels = []; this.sides = null; this.changed(); }
+
+  /** The one selected thing, or null when none or several are selected. */
+  get one(): string | null { return this.sels.length === 1 ? this.sels[0] : null; }
+
+  select(ids: string[], sides: State['sides'] = null) {
+    this.sels = [...new Set(ids)];
+    this.sides = sides;
+    this.emit('select');
+  }
+
+  deleteSelected() {
+    const del = new Set(this.sels.filter((id) => id !== 'stock'));
+    if (!del.size) return;
+    this.change((p) => { p.features = p.features.filter((f) => !del.has(f.id)); });
+    this.select([]);
+  }
   setTool(t: Tool) { this.tool = t; this.emit('tool'); }
 
   feature(id: string | null): Feature | undefined { return this.p.features.find((f) => f.id === id); }
@@ -169,6 +191,65 @@ export function featureItem(f: Feature, p: Project): Item {
       f.d0 += dd; f.d1 += dd;
     },
   };
+}
+
+/** An item's extent across a view and up it: [u range, v range]. */
+export function viewRanges(view: ViewName, it: Item): [[number, number], [number, number]] {
+  const V = VIEWS[view];
+  const [min, max] = it.extents();
+  const rng = (dir: Vec3): [number, number] => {
+    const [a, s] = axisOf(dir);
+    return s > 0 ? [min[a], max[a]] : [-max[a], -min[a]];
+  };
+  return [rng(V.uDir), rng(V.vDir)];
+}
+
+export type AlignHow = 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'bottom';
+
+/**
+ * Line the selected shapes up, the way the active view sees them: left,
+ * right, top and bottom are that view's. To the selection's own bounds, or
+ * to the part (the stock block).
+ */
+export function align(st: State, how: AlignHow, to: 'selection' | 'part') {
+  const view = st.activeView;
+  const V = VIEWS[view];
+  const items = st.sels.filter((id) => id !== 'stock').map((id) => itemFor(st, id)).filter((x): x is Item => !!x);
+  if (!items.length) return;
+  const horiz = how === 'left' || how === 'hcenter' || how === 'right';
+  const k = horiz ? 0 : 1;
+  const span = (it: Item) => viewRanges(view, it)[k];
+  let lo: number, hi: number;
+  if (to === 'part') [lo, hi] = viewRanges(view, itemFor(st, 'stock')!)[k];
+  else { lo = Math.min(...items.map((it) => span(it)[0])); hi = Math.max(...items.map((it) => span(it)[1])); }
+  st.change(() => {
+    for (const it of items) {
+      const [a, b] = span(it);
+      let d = 0;
+      if (how === 'left' || how === 'bottom') d = lo - a;
+      else if (how === 'right' || how === 'top') d = hi - b;
+      else d = (lo + hi) / 2 - (a + b) / 2;
+      it.move(horiz ? V.toWorld(d, 0, 0) : V.toWorld(0, d, 0));
+    }
+  });
+}
+
+/** Space the selected shapes' centres evenly between the outermost two. */
+export function distribute(st: State, dir: 'h' | 'v') {
+  const view = st.activeView;
+  const V = VIEWS[view];
+  const k = dir === 'h' ? 0 : 1;
+  const items = st.sels.filter((id) => id !== 'stock').map((id) => itemFor(st, id)).filter((x): x is Item => !!x);
+  if (items.length < 3) return;
+  const mid = (it: Item) => { const [a, b] = viewRanges(view, it)[k]; return (a + b) / 2; };
+  const sorted = items.map((it) => ({ it, c: mid(it) })).sort((a, b) => a.c - b.c);
+  const first = sorted[0].c, last = sorted[sorted.length - 1].c;
+  st.change(() => {
+    sorted.forEach(({ it, c }, i) => {
+      const d = first + ((last - first) * i) / (sorted.length - 1) - c;
+      it.move(dir === 'h' ? V.toWorld(d, 0, 0) : V.toWorld(0, d, 0));
+    });
+  });
 }
 
 export { axisOf };

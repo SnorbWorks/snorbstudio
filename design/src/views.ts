@@ -68,39 +68,40 @@ export interface Box2 { x: number; y: number; w: number; h: number }
 /**
  * Where each view sits on the sheet (sheet coordinates in mm, y down).
  * Views share columns and rows so they stay projection-aligned: top, front
- * and bottom share X; left, front, right and back share Z.
- * bbox is the world box everything fits in.
+ * and bottom share X; left, front, right and back share Z. A column or row
+ * with no shown view in it is only as big as a ghost box, so the shown views
+ * get the room.
  */
-export function layout(bmin: Vec3, bmax: Vec3): Record<ViewName, { box: Box2; ou: number; ov: number }> {
+export function layout(bmin: Vec3, bmax: Vec3, shown: Set<ViewName>): Record<ViewName, { box: Box2; ou: number; ov: number }> {
   const sx = bmax[0] - bmin[0], sy = bmax[1] - bmin[1], sz = bmax[2] - bmin[2];
-  const gap = Math.max(12, 0.45 * Math.max(sx, sy, sz));
+  const full = Math.max(sx, sy, sz);
+  const gap = Math.max(10, 0.4 * full);
   const pad = gap * 0.25;
-  // column x positions (left edge of each column), row y positions (top edge)
-  const colW = [sy, sx, sy, sx];
-  const rowH = [sy, sz, sy];
+  const ghost = Math.max(10, 0.4 * full);
+  const has = (...v: ViewName[]) => v.some((x) => shown.has(x));
+  const colW = [has('left') ? sy : ghost, has('top', 'front', 'bottom') ? sx : ghost, has('right') ? sy : ghost, has('back') ? sx : ghost];
+  const rowH = [has('top') ? sy : ghost, has('front', 'left', 'right', 'back') ? sz : ghost, has('bottom') ? sy : ghost];
   const colX: number[] = [];
   let x = 0;
   for (const w of colW) { colX.push(x); x += w + gap; }
   const rowY: number[] = [];
   let y = 0;
   for (const h of rowH) { rowY.push(y); y += h + gap; }
-  const cell = (c: number, r: number) => ({ x: colX[c] - pad, y: rowY[r] - pad, w: colW[c] + 2 * pad, h: rowH[r] + 2 * pad });
-
-  // ou/ov: sheet position = (ou + u, ov - v)
+  const cell = (v: ViewName, c: number, r: number): Box2 => {
+    if (shown.has(v)) return { x: colX[c] - pad, y: rowY[r] - pad, w: colW[c] + 2 * pad, h: rowH[r] + 2 * pad };
+    // a ghost: a small box in the middle of its slot
+    const w = Math.min(colW[c], ghost), h = Math.min(rowH[r], ghost);
+    return { x: colX[c] + (colW[c] - w) / 2, y: rowY[r] + (rowH[r] - h) / 2, w, h };
+  };
   const cx = (c: number) => colX[c];
   const cy = (r: number) => rowY[r];
+  // ou/ov: sheet position = (ou + u, ov - v)
   return {
-    // u = X, v = Y
-    top: { box: cell(1, 0), ou: cx(1) - bmin[0], ov: cy(0) + bmax[1] },
-    // u = X, v = Z
-    front: { box: cell(1, 1), ou: cx(1) - bmin[0], ov: cy(1) + bmax[2] },
-    // u = -Y, v = Z  (u runs from -bmax.y to -bmin.y)
-    left: { box: cell(0, 1), ou: cx(0) + bmax[1], ov: cy(1) + bmax[2] },
-    // u = Y
-    right: { box: cell(2, 1), ou: cx(2) - bmin[1], ov: cy(1) + bmax[2] },
-    // u = -X
-    back: { box: cell(3, 1), ou: cx(3) + bmax[0], ov: cy(1) + bmax[2] },
-    // u = X, v = -Y (v runs from -bmax.y to -bmin.y; top of the box is v = -bmin.y)
-    bottom: { box: cell(1, 2), ou: cx(1) - bmin[0], ov: cy(2) - bmin[1] },
+    top: { box: cell('top', 1, 0), ou: cx(1) - bmin[0], ov: cy(0) + bmax[1] },        // u = X, v = Y
+    front: { box: cell('front', 1, 1), ou: cx(1) - bmin[0], ov: cy(1) + bmax[2] },    // u = X, v = Z
+    left: { box: cell('left', 0, 1), ou: cx(0) + bmax[1], ov: cy(1) + bmax[2] },      // u = -Y
+    right: { box: cell('right', 2, 1), ou: cx(2) - bmin[1], ov: cy(1) + bmax[2] },    // u = Y
+    back: { box: cell('back', 3, 1), ou: cx(3) + bmax[0], ov: cy(1) + bmax[2] },      // u = -X
+    bottom: { box: cell('bottom', 1, 2), ou: cx(1) - bmin[0], ov: cy(2) - bmin[1] },  // u = X, v = -Y
   };
 }

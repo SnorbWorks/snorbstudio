@@ -78,3 +78,13 @@ test('a hole drawn in the front view goes along Y', () => {
   const hid = r.views.top.hidden.filter((l) => l.length === 4 && Math.abs(l[0] - l[2]) < 1e-9);
   assert.equal(hid.length, 2);
 });
+
+test('a rectangle with one rounded corner', () => {
+  const r = build(cube([feat({ w: 20, h: 20, d0: 20, d1: 30, corners: [0, 0, 5, 0] })]));
+  near(r.volume, 8000 + (400 - (25 - Math.PI * 25 / 4)) * 10, 1e-4);
+});
+
+test('a rectangle with all four corners rounded the same', () => {
+  const r = build(cube([feat({ w: 20, h: 20, d0: 20, d1: 30, corner: 4 })]));
+  near(r.volume, 8000 + (400 - 4 * (16 - Math.PI * 4)) * 10, 1e-4);
+});

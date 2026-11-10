@@ -18,7 +18,9 @@ export interface Feature {
   w: number;          // rect width/height (u/v)
   h: number;
   r: number;          // circle radius
-  corner: number;     // rect corner radius (0 = sharp)
+  corner: number;     // rect corner radius (0 = sharp), all four corners
+  corners?: [number, number, number, number];   // per corner, overriding corner:
+                      // 0 (-u,-v) 1 (+u,-v) 2 (+u,+v) 3 (-u,+v)
   d0: number;         // start: the face it was drawn on, as depth toward the viewer
   d1: number;         // finish: the other end
   op: 'add' | 'cut';
@@ -98,22 +100,42 @@ export function profile(f: Feature, segs = 48): [number, number][] {
     return pts;
   }
   const hw = f.w / 2, hh = f.h / 2;
-  const r = Math.max(0, Math.min(f.corner, hw, hh));
-  if (r <= 1e-6) {
+  const r = cornerRadii(f);
+  if (r.every((x) => x <= 1e-6)) {
     return [[f.cu - hw, f.cv - hh], [f.cu + hw, f.cv - hh], [f.cu + hw, f.cv + hh], [f.cu - hw, f.cv + hh]];
   }
   const pts: [number, number][] = [];
-  const cs: [number, number, number][] = [
-    [f.cu + hw - r, f.cv - hh + r, -90], [f.cu + hw - r, f.cv + hh - r, 0],
-    [f.cu - hw + r, f.cv + hh - r, 90], [f.cu - hw + r, f.cv - hh + r, 180],
+  const cs: [number, number, number, number, number][] = [   // corner x, y, sign u, sign v, start angle
+    [f.cu + hw, f.cv - hh, -1, 1, -90], [f.cu + hw, f.cv + hh, -1, -1, 0],
+    [f.cu - hw, f.cv + hh, 1, -1, 90], [f.cu - hw, f.cv - hh, 1, 1, 180],
   ];
-  for (const [x, y, a0] of cs) {
-    for (let i = 0; i <= 8; i++) {
-      const a = ((a0 + (i / 8) * 90) * Math.PI) / 180;
-      pts.push([x + r * Math.cos(a), y + r * Math.sin(a)]);
+  const order = [1, 2, 3, 0];
+  cs.forEach(([x, y, su, sv, a0], i) => {
+    const rr = r[order[i]];
+    if (rr <= 1e-6) { pts.push([x, y]); return; }
+    for (let k = 0; k <= 8; k++) {
+      const a = ((a0 + (k / 8) * 90) * Math.PI) / 180;
+      pts.push([x + su * rr + rr * Math.cos(a), y + sv * rr + rr * Math.sin(a)]);
     }
-  }
+  });
   return pts;
+}
+
+/** The four corner radii of a rectangle (see Feature.corners), each limited to fit. */
+export function cornerRadii(f: Feature): [number, number, number, number] {
+  const lim = Math.max(0, Math.min(f.w, f.h) / 2);
+  const c = f.corners ?? [f.corner, f.corner, f.corner, f.corner];
+  return c.map((x) => Math.max(0, Math.min(x || 0, lim))) as [number, number, number, number];
+}
+
+/** The corner two sides share (sides: 0 bottom, 1 right, 2 top, 3 left), or -1. */
+export function sharedCorner(a: number, b: number): number {
+  const s = new Set([a, b]);
+  if (s.has(0) && s.has(1)) return 1;
+  if (s.has(1) && s.has(2)) return 2;
+  if (s.has(2) && s.has(3)) return 3;
+  if (s.has(3) && s.has(0)) return 0;
+  return -1;
 }
 
 /** The 8 corners of the feature's bounding prism, in world coordinates. */

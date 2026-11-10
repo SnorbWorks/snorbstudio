@@ -3,10 +3,10 @@
 
 import {
   getOC, makeBaseBox, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
-  drawCircle, drawRectangle, drawRoundedRectangle,
+  draw, drawCircle, drawRectangle, drawRoundedRectangle,
 } from 'replicad';
 import type { Feature, Project, ViewName } from './model.js';
-import { depthRange } from './model.js';
+import { cornerRadii, depthRange } from './model.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
 
 export type Line = number[];         // flat [u0, v0, u1, v1, ...]
@@ -34,10 +34,29 @@ export function featureSolid(f: Feature, p: Project): Solid | null {
   let d;
   if (f.type === 'circle') d = drawCircle(f.r);
   else {
-    const r = Math.max(0, Math.min(f.corner, f.w / 2 - 1e-4, f.h / 2 - 1e-4));
-    d = r > 1e-4 ? drawRoundedRectangle(f.w, f.h, r) : drawRectangle(f.w, f.h);
+    const r = cornerRadii(f).map((x) => Math.min(x, Math.min(f.w, f.h) / 2 - 1e-4)).map((x) => (x > 1e-4 ? x : 0));
+    if (r.every((x) => x === 0)) d = drawRectangle(f.w, f.h);
+    else if (r.every((x) => x === r[0])) d = drawRoundedRectangle(f.w, f.h, r[0]);
+    else d = roundedRect(f.w / 2, f.h / 2, r);
   }
   return d.translate(f.cu, f.cv).sketchOnPlane(plane).extrude(hi - lo);
+}
+
+/** A rectangle centred on 0,0 with its own radius on each corner (0 bl, 1 br, 2 tr, 3 tl). */
+function roundedRect(hw: number, hh: number, r: number[]) {
+  const arc = (cx: number, cy: number, rr: number, a0: number): [[number, number], [number, number]] => {
+    const m = ((a0 + 45) * Math.PI) / 180, e = ((a0 + 90) * Math.PI) / 180;
+    return [[cx + rr * Math.cos(e), cy + rr * Math.sin(e)], [cx + rr * Math.cos(m), cy + rr * Math.sin(m)]];
+  };
+  let pen = draw([-hw + r[0], -hh]).lineTo([hw - r[1], -hh]);
+  if (r[1]) { const [e, m] = arc(hw - r[1], -hh + r[1], r[1], -90); pen = pen.threePointsArcTo(e, m); }
+  pen = pen.lineTo([hw, hh - r[2]]);
+  if (r[2]) { const [e, m] = arc(hw - r[2], hh - r[2], r[2], 0); pen = pen.threePointsArcTo(e, m); }
+  pen = pen.lineTo([-hw + r[3], hh]);
+  if (r[3]) { const [e, m] = arc(-hw + r[3], hh - r[3], r[3], 90); pen = pen.threePointsArcTo(e, m); }
+  pen = pen.lineTo([-hw, -hh + r[0]]);
+  if (r[0]) { const [e, m] = arc(-hw + r[0], -hh + r[0], r[0], 180); pen = pen.threePointsArcTo(e, m); }
+  return pen.close();
 }
 
 export function stockSolid(p: Project): Solid {
