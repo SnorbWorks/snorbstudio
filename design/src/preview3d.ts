@@ -50,7 +50,7 @@ export class Preview3D {
     g.setAttribute('position', new THREE.Float32BufferAttribute(m.vertices, 3));
     g.setIndex(m.triangles);
     g.computeVertexNormals();
-    this.mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd9dde3, roughness: 0.7, metalness: 0.05, flatShading: false }));
+    this.mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xeadcec, roughness: 0.7, metalness: 0.05, flatShading: false }));
     this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(g, 25), new THREE.LineBasicMaterial({ color: 0x2b1a33 }));
     this.scene.add(this.mesh, this.edges);
     // frame it again when the part has moved off or changed size a lot (another part opened)
