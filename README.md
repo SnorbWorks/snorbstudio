@@ -34,3 +34,8 @@ Commit on the Mac, then run `sh deploy/push.sh`. The Pi installs the update when
 the printer is idle, and rolls back if SnorbStudio or Klipper doesn't come back up.
 
 The built `web/design/` is committed, because the Pi never builds anything.
+
+## License
+
+MIT, see `LICENSE`. The Klipper add-ons in `klipper_extras/` are GPL-3.0, like
+Klipper itself. Bundled third-party code is listed in `THIRD_PARTY.md`.
