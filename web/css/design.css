@@ -85,3 +85,10 @@
 .ds-zfit { font-size: 12px; }
 .ds-zpct { min-width: 48px; }
 .ds-zbtn:hover, .ds-zpct:hover { background: var(--card2); color: var(--text); }
+/* the panel's draggable edge */
+.ds-splitter { width: 6px; margin-right: -6px; flex: none; cursor: col-resize; position: relative; z-index: 2; touch-action: none; }
+.ds-splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .15s; }
+.ds-splitter:hover::after, .ds-splitter.dragging::after { background: var(--accent); }
+.ds-side { min-width: 200px; }
+.ds-field { grid-template-columns: minmax(78px, 1fr) minmax(50px, 96px) 22px; }
+.ds-field > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

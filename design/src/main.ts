@@ -58,7 +58,8 @@ const html = `
     <button data-tool="zoom" title="Zoom (Z)&#10;Click to zoom in, Option-click to zoom out,&#10;drag a box to zoom to it.">${ICONS.zoom}</button>
   </nav>
   <div class="ds-sheet-wrap" id="ds-sheet"><div class="ds-loading" id="ds-loading">Loading the CAD engine…</div></div>
-  <aside class="ds-side">
+  <div class="ds-splitter" id="ds-splitter" title="Drag to resize the panel (double-click to reset)"></div>
+  <aside class="ds-side" id="ds-side">
     <div class="ds-3d" id="ds-3d"></div>
     <div class="ds-panel" id="ds-panel"></div>
   </aside>
@@ -78,6 +79,28 @@ export function mount(root: HTMLElement, studio: Studio) {
   new Panel($('#ds-panel'), st);
   const preview = new Preview3D($('#ds-3d'));
   (window as any).__design = { st, sheet };     // for poking at from the console
+  // the panel on the right: drag its edge to make it narrower or wider (remembered)
+  const side = $('#ds-side'), split = $('#ds-splitter');
+  const PANEL_KEY = 'studio.design.panelWidth', PANEL_DEFAULT = 300;
+  const setPanel = (w: number) => { side.style.width = `${Math.round(Math.max(200, Math.min(640, w)))}px`; };
+  try { const w = +(localStorage.getItem(PANEL_KEY) || 0); if (w) setPanel(w); } catch { /* default */ }
+  split.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    split.setPointerCapture(e.pointerId);
+    split.classList.add('dragging');
+    const x0 = e.clientX, w0 = side.getBoundingClientRect().width;
+    const move = (ev: PointerEvent) => setPanel(w0 - (ev.clientX - x0));
+    const up = () => {
+      split.classList.remove('dragging');
+      split.removeEventListener('pointermove', move);
+      split.removeEventListener('pointerup', up);
+      try { localStorage.setItem(PANEL_KEY, String(side.getBoundingClientRect().width)); } catch { /* ignore */ }
+    };
+    split.addEventListener('pointermove', move);
+    split.addEventListener('pointerup', up);
+  });
+  split.addEventListener('dblclick', () => { setPanel(PANEL_DEFAULT); try { localStorage.removeItem(PANEL_KEY); } catch { /* ignore */ } });
+
   sheet.onStatus = (t) => { $('#ds-status').textContent = t; };
   sheet.onZoom = () => { $('#ds-zpct').textContent = `${Math.round(sheet.zoomPct)}%`; };
   $('#ds-zin').onclick = () => sheet.zoomBy(1.5);
