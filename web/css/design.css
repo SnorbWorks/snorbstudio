@@ -78,3 +78,10 @@
 .ds-corner { fill: #fff; stroke: #ff7a1a; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .ds-marquee { stroke: #2f6fe0; stroke-width: 1; stroke-dasharray: 4 3; fill: rgba(47,111,224,0.06) !important; }
 .ds-label.ds-active { fill: #ff7a1a; font-weight: 600; }
+.ds-tool-sep { width: 24px; height: 1px; background: var(--line); margin: 4px 0; }
+.ds-status { display: flex; align-items: center; gap: 4px; }
+.ds-zbtn, .ds-zpct { background: none; border: 0; color: var(--muted); font: 12px ui-monospace, Menlo, monospace; cursor: pointer; padding: 0 6px; height: 22px; border-radius: 4px; }
+.ds-zbtn { font-size: 15px; }
+.ds-zfit { font-size: 12px; }
+.ds-zpct { min-width: 48px; }
+.ds-zbtn:hover, .ds-zpct:hover { background: var(--card2); color: var(--text); }

@@ -75,9 +75,9 @@ export interface Box2 { x: number; y: number; w: number; h: number }
 export function layout(bmin: Vec3, bmax: Vec3, shown: Set<ViewName>): Record<ViewName, { box: Box2; ou: number; ov: number }> {
   const sx = bmax[0] - bmin[0], sy = bmax[1] - bmin[1], sz = bmax[2] - bmin[2];
   const full = Math.max(sx, sy, sz);
-  const gap = Math.max(10, 0.4 * full);
-  const pad = gap * 0.25;
-  const ghost = Math.max(10, 0.4 * full);
+  const gap = Math.max(3, 0.28 * full);
+  const pad = gap * 0.15;
+  const ghost = Math.max(4, 0.26 * full);
   const has = (...v: ViewName[]) => v.some((x) => shown.has(x));
   const colW = [has('left') ? sy : ghost, has('top', 'front', 'bottom') ? sx : ghost, has('right') ? sy : ghost, has('back') ? sx : ghost];
   const rowH = [has('top') ? sy : ghost, has('front', 'left', 'right', 'back') ? sz : ghost, has('bottom') ? sy : ghost];

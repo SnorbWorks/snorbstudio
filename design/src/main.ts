@@ -22,6 +22,7 @@ const ICONS = {
   select: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="currentColor" stroke-width="1.2"/>'),
   rect: ico('<rect x="4" y="6" width="16" height="12" rx="0.5"/>'),
   circle: ico('<circle cx="12" cy="12" r="8"/>'),
+  zoom: ico('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5 5M7.5 10.5h6M10.5 7.5v6"/>'),
   left: ico('<path d="M4 3v18"/><rect x="7" y="6" width="12" height="4"/><rect x="7" y="14" width="7" height="4"/>'),
   hcenter: ico('<path d="M12 3v18"/><rect x="5" y="6" width="14" height="4"/><rect x="8" y="14" width="8" height="4"/>'),
   right: ico('<path d="M20 3v18"/><rect x="5" y="6" width="12" height="4"/><rect x="10" y="14" width="7" height="4"/>'),
@@ -53,6 +54,8 @@ const html = `
     <button data-tool="select" title="Select (V)&#10;Shift-click or drag a box to select several.&#10;Option-click a side of a rectangle.">${ICONS.select}</button>
     <button data-tool="rect" title="Rectangle (R)">${ICONS.rect}</button>
     <button data-tool="circle" title="Circle (C): drag out from the centre">${ICONS.circle}</button>
+    <span class="ds-tool-sep"></span>
+    <button data-tool="zoom" title="Zoom (Z)&#10;Click to zoom in, Option-click to zoom out,&#10;drag a box to zoom to it.">${ICONS.zoom}</button>
   </nav>
   <div class="ds-sheet-wrap" id="ds-sheet"><div class="ds-loading" id="ds-loading">Loading the CAD engine…</div></div>
   <aside class="ds-side">
@@ -60,7 +63,12 @@ const html = `
     <div class="ds-panel" id="ds-panel"></div>
   </aside>
 </div>
-<div class="ds-status" id="ds-status"></div>`;
+<div class="ds-status"><span id="ds-status"></span><span class="spacer"></span>
+  <button class="ds-zbtn" id="ds-zout" title="Zoom out (⌘−)">−</button>
+  <button class="ds-zpct" id="ds-zpct" title="Actual size (⌘1)">100%</button>
+  <button class="ds-zbtn" id="ds-zin" title="Zoom in (⌘+)">+</button>
+  <button class="ds-zbtn ds-zfit" id="ds-zfit" title="Fit the sheet (⌘0 or F)">Fit</button>
+</div>`;
 
 export function mount(root: HTMLElement, studio: Studio) {
   root.innerHTML = html;
@@ -71,6 +79,11 @@ export function mount(root: HTMLElement, studio: Studio) {
   const preview = new Preview3D($('#ds-3d'));
   (window as any).__design = { st, sheet };     // for poking at from the console
   sheet.onStatus = (t) => { $('#ds-status').textContent = t; };
+  sheet.onZoom = () => { $('#ds-zpct').textContent = `${Math.round(sheet.zoomPct)}%`; };
+  $('#ds-zin').onclick = () => sheet.zoomBy(1.5);
+  $('#ds-zout').onclick = () => sheet.zoomBy(1 / 1.5);
+  $('#ds-zpct').onclick = () => sheet.zoomBy(100 / sheet.zoomPct);
+  $('#ds-zfit').onclick = () => sheet.fit();
 
   // ---------------------------------------------------------- the worker
   const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -104,6 +117,7 @@ export function mount(root: HTMLElement, studio: Studio) {
         $('#ds-loading').classList.add('hidden');
         preview.setMesh(r.mesh);
         sheet.relayout();
+        sheet.autoFit();
         st.emit('built');
       }
     } catch (e: any) {
@@ -201,16 +215,20 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (st.sides) {
       kids.push(label(st.sides.sides.length === 2 ? 'Corner of a rectangle' : 'Side of a rectangle'));
       kids.push(mk('span', 'ds-ctx-hint', st.sides.sides.length === 2 ? 'Set its radius on the right.' : 'Option-Shift-click a side next to it to pick their corner.'));
-    } else if (feats.length > 1) {
-      kids.push(label(`${feats.length} shapes`));
-      kids.push(alignGroup(alignTo));
-      const seg = mk('div', 'ds-seg ds-small');
-      for (const [v, t] of [['selection', 'to each other'], ['part', 'to the part']] as const) {
-        const b = mk('button', alignTo === v ? 'active' : '', t) as HTMLButtonElement;
-        b.onclick = () => { alignTo = v; renderCtx(); };
-        seg.appendChild(b);
+    } else if (feats.length > 1 || (feats.length === 1 && st.sels.includes('stock'))) {
+      const withBody = st.sels.includes('stock');
+      kids.push(label(withBody ? `Body + ${feats.length} shape${feats.length > 1 ? 's' : ''}` : `${feats.length} shapes`));
+      kids.push(alignGroup(withBody ? 'part' : alignTo));
+      if (withBody) kids.push(mk('span', 'ds-ctx-hint', 'to the body (it stays put)'));
+      else {
+        const seg = mk('div', 'ds-seg ds-small');
+        for (const [v, t] of [['selection', 'to each other'], ['part', 'to the body']] as const) {
+          const b = mk('button', alignTo === v ? 'active' : '', t) as HTMLButtonElement;
+          b.onclick = () => { alignTo = v; renderCtx(); };
+          seg.appendChild(b);
+        }
+        kids.push(seg);
       }
-      kids.push(seg);
       kids.push(group(
         iconBtn(ICONS.disth, 'Space the centres evenly across (3 or more)', () => distribute(st, 'h'), feats.length < 3),
         iconBtn(ICONS.distv, 'Space the centres evenly up and down (3 or more)', () => distribute(st, 'v'), feats.length < 3),
@@ -227,15 +245,15 @@ export function mount(root: HTMLElement, studio: Studio) {
         seg.appendChild(b);
       }
       kids.push(seg);
-      kids.push(mk('span', 'ds-ctx-hint', 'Align to the part'));
+      kids.push(mk('span', 'ds-ctx-hint', 'Align to the body'));
       kids.push(alignGroup('part'));
       kids.push(mk('span', 'ds-ctx-hint', `in ${view}`));
       kids.push(group(iconBtn(ICONS.trash, 'Delete (⌫)', () => st.deleteSelected())));
     } else {
       const s = st.p.stock;
-      kids.push(label(st.sels[0] === 'stock' ? 'Stock block' : 'Part'));
+      kids.push(label('Body'));
       kids.push(mk('span', 'ds-ctx-hint', `${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
-      kids.push(mk('span', 'ds-ctx-hint', st.sels.length ? 'Drag its handles to resize it.' : 'Pick a tool on the left and draw on a view.'));
+      kids.push(mk('span', 'ds-ctx-hint', st.sels.length ? 'Drag its handles to resize it. Shift-click shapes to line them up to it.' : 'Pick a tool on the left and draw on a view.'));
     }
     ctx.replaceChildren(...kids);
   }
@@ -246,11 +264,16 @@ export function mount(root: HTMLElement, studio: Studio) {
     const k = e.key.toLowerCase();
     if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) st.redo(); else st.undo(); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'y') { e.preventDefault(); st.redo(); return; }
+    if ((e.metaKey || e.ctrlKey) && (k === '=' || k === '+')) { e.preventDefault(); sheet.zoomBy(1.5); return; }
+    if ((e.metaKey || e.ctrlKey) && k === '-') { e.preventDefault(); sheet.zoomBy(1 / 1.5); return; }
+    if ((e.metaKey || e.ctrlKey) && k === '0') { e.preventDefault(); sheet.fit(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === '1') { e.preventDefault(); sheet.zoomBy(100 / sheet.zoomPct); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'a') { e.preventDefault(); st.select(st.p.features.map((f) => f.id)); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (k === 'v' || k === 'escape') { st.setTool('select'); if (k === 'escape') st.select([]); }
     else if (k === 'r') st.setTool('rect');
     else if (k === 'c') st.setTool('circle');
+    else if (k === 'z') st.setTool('zoom');
     else if (k === 'f') sheet.fit();
     else if (k === 'delete' || k === 'backspace') { e.preventDefault(); st.deleteSelected(); }
   });

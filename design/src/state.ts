@@ -1,11 +1,11 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { depthRange, newProject } from './model.js';
+import { depthRange, farDepth, newProject } from './model.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rect' | 'circle';
+export type Tool = 'select' | 'rect' | 'circle' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
@@ -141,7 +141,10 @@ export function featureItem(f: Feature, p: Project): Item {
   const ranges = (): [number, number][] => {
     const hu = f.type === 'circle' ? f.r : f.w / 2;
     const hv = f.type === 'circle' ? f.r : f.h / 2;
-    return [[f.cu - hu, f.cu + hu], [f.cv - hv, f.cv + hv], depthRange(f, p)];
+    const dr = depthRange(f, p);
+    // a through cut reaches just past the part to be sure; show it ending at the far side
+    if (f.op === 'cut' && f.through) dr[0] = Math.min(farDepth(f.view, p), dr[1]);
+    return [[f.cu - hu, f.cu + hu], [f.cv - hv, f.cv + hv], dr];
   };
   return {
     id: f.id, movable: true,
@@ -212,6 +215,8 @@ export type AlignHow = 'left' | 'hcenter' | 'right' | 'top' | 'vmiddle' | 'botto
  * to the part (the stock block).
  */
 export function align(st: State, how: AlignHow, to: 'selection' | 'part') {
+  // with the body selected too, it's the one the others line up to (it stays put)
+  if (st.sels.includes('stock')) to = 'part';
   const view = st.activeView;
   const V = VIEWS[view];
   const items = st.sels.filter((id) => id !== 'stock').map((id) => itemFor(st, id)).filter((x): x is Item => !!x);

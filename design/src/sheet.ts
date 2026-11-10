@@ -21,6 +21,7 @@ type Drag =
   | { kind: 'draw'; view: ViewName; type: 'rect' | 'circle'; u0: number; v0: number; u1: number; v1: number }
   | { kind: 'edge'; id: string; view: ViewName; axis: number; side: 0 | 1; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'move'; ids: string[]; view: ViewName; u0: number; v0: number; orig: string; started: boolean; sx: number; sy: number }
+  | { kind: 'zoom'; x0: number; y0: number; x1: number; y1: number; out: boolean; started: boolean; sx: number; sy: number }
   | { kind: 'box'; x0: number; y0: number; x1: number; y1: number; add: boolean; onStock: boolean; view: ViewName | null; started: boolean; sx: number; sy: number };
 
 // Tool cursors: a crosshair with the tool's shape beside it (hotspot at the cross).
@@ -28,7 +29,14 @@ const cursorSvg = (shape: string) => `url("data:image/svg+xml,${encodeURICompone
   `<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28'><g fill='none' stroke-linecap='round'>`
   + `<path d='M9 1v16M1 9h16' stroke='white' stroke-width='3'/><path d='M9 1v16M1 9h16' stroke='black' stroke-width='1.2'/>`
   + `<g stroke='white' stroke-width='3'>${shape}</g><g stroke='black' stroke-width='1.3'>${shape}</g></g></svg>`)}") 9 9, crosshair`;
+// The zoom tool: a magnifier, + to zoom in, - (holding Option) to zoom out; hotspot in the lens.
+const magnifier = (minus: boolean) => `url("data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns='http://www.w3.org/2000/svg' width='26' height='26'><g fill='none' stroke-linecap='round'>`
+  + `<circle cx='10' cy='10' r='7' fill='white' stroke='black' stroke-width='1.6'/><path d='M15.5 15.5l7 7' stroke='black' stroke-width='3'/>`
+  + `<path d='M6.5 10h7${minus ? '' : 'M10 6.5v7'}' stroke='black' stroke-width='1.6'/></g></svg>`)}") 10 10, zoom-${minus ? 'out' : 'in'}`;
 const CURSORS: Record<string, string> = {
+  zoom: magnifier(false),
+  zoomOut: magnifier(true),
   rect: cursorSvg("<rect x='15' y='16' width='11' height='8' rx='0.5'/>"),
   circle: cursorSvg("<circle cx='21' cy='21' r='5.5'/>"),
 };
@@ -45,8 +53,11 @@ export class Sheet {
   private hoverCursor = '';
   private cursor: { view: ViewName; u: number; v: number } | null = null;
   private fitted = false;
+  private userView = false;      // the owner zoomed or panned: stop re-fitting on resize
   private spaceDown = false;
+  private altDown = false;
   onStatus: (text: string) => void = () => {};
+  onZoom: () => void = () => {};
 
   constructor(private host: HTMLElement, private st: State) {
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -60,9 +71,16 @@ export class Sheet {
     this.svg.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     this.svg.addEventListener('contextmenu', (e) => e.preventDefault());
     this.svg.addEventListener('pointerleave', () => { this.cursor = null; this.status(); });
-    window.addEventListener('keydown', (e) => { if (e.code === 'Space' && !isTyping() && !this.spaceDown) { this.spaceDown = true; this.setCursor(); } });
-    window.addEventListener('keyup', (e) => { if (e.code === 'Space') { this.spaceDown = false; this.setCursor(); } });
-    new ResizeObserver(() => { if (!this.fitted && host.clientWidth > 0) this.fit(); else this.render(); }).observe(host);
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !isTyping() && !this.spaceDown) { this.spaceDown = true; this.setCursor(); }
+      if (e.key === 'Alt') { this.altDown = true; this.setCursor(); }
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'Space') { this.spaceDown = false; this.setCursor(); }
+      if (e.key === 'Alt') { this.altDown = false; this.setCursor(); }
+    });
+    window.addEventListener('blur', () => { this.altDown = this.spaceDown = false; });
+    new ResizeObserver(() => { if (!this.userView && host.clientWidth > 0) this.fit(); else this.render(); }).observe(host);
   }
 
   // ------------------------------------------------------------ layout
@@ -120,12 +138,43 @@ export class Sheet {
     const boxes = [...this.st.p.views, ...this.ghosts()].map((v) => this.placed[v].box);
     const x0 = Math.min(...boxes.map((b) => b.x)), y0 = Math.min(...boxes.map((b) => b.y));
     const x1 = Math.max(...boxes.map((b) => b.x + b.w)), y1 = Math.max(...boxes.map((b) => b.y + b.h));
-    const z = Math.min((w - 60) / (x1 - x0), (h - 70) / (y1 - y0), 40);
+    const z = Math.min((w - 40) / (x1 - x0), (h - 46) / (y1 - y0), 60);
     this.zoom = z;
     this.panX = (w - (x1 - x0) * z) / 2 - x0 * z;
-    this.panY = (h - 20 - (y1 - y0) * z) / 2 - y0 * z;
+    this.panY = (h - 10 - (y1 - y0) * z) / 2 - y0 * z;
     this.fitted = true;
+    this.userView = false;
     this.render();
+    this.onZoom();
+  }
+
+  /** Re-fit after the model changes, unless the owner has zoomed or panned. */
+  autoFit() { if (!this.userView && !this.drag) this.fit(); }
+
+  /** Zoom, as a percentage of real size (100% = 1 mm on screen is 1 mm). */
+  get zoomPct(): number { return (this.zoom / (96 / 25.4)) * 100; }
+
+  /** Zoom by a factor, keeping the sheet point under (mx, my) (px in the sheet) still. */
+  zoomBy(k: number, mx = this.host.clientWidth / 2, my = this.host.clientHeight / 2) {
+    this.userView = true;
+    const z = Math.max(0.3, Math.min(400, this.zoom * k));
+    this.panX = mx - ((mx - this.panX) * z) / this.zoom;
+    this.panY = my - ((my - this.panY) * z) / this.zoom;
+    this.zoom = z;
+    this.render();
+    this.onZoom();
+  }
+
+  /** Fill the window with a sheet rectangle (mm). */
+  zoomToRect(x0: number, y0: number, x1: number, y1: number) {
+    this.userView = true;
+    const w = this.host.clientWidth, h = this.host.clientHeight;
+    const z = Math.max(0.3, Math.min(400, Math.min(w / (x1 - x0), h / (y1 - y0))));
+    this.zoom = z;
+    this.panX = w / 2 - ((x0 + x1) / 2) * z;
+    this.panY = h / 2 - ((y0 + y1) / 2) * z;
+    this.render();
+    this.onZoom();
   }
 
   // ------------------------------------------------------------ geometry of items in a view
@@ -307,10 +356,15 @@ export class Sheet {
     this.svg.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2 || this.spaceDown) {
       this.drag = { kind: 'pan', x0: e.clientX, y0: e.clientY, px: this.panX, py: this.panY };
+      this.userView = true;
       this.setCursor();
       return;
     }
     const [x, y] = this.screenToSheet(e);
+    if (this.st.tool === 'zoom') {
+      this.drag = { kind: 'zoom', x0: x, y0: y, x1: x, y1: y, out: e.altKey, started: false, sx: e.clientX, sy: e.clientY };
+      return;
+    }
     // ghost box: add that view
     for (const g of this.ghosts()) {
       const b = this.placed[g].box;
@@ -365,8 +419,15 @@ export class Sheet {
       return;
     }
     const hit = this.pick(view, u, v);
+    if (hit === 'stock' && e.shiftKey) {
+      // shift-click the body: in or out of the selection, like any shape
+      const s = this.st.sels;
+      this.st.select(s.includes('stock') ? s.filter((id) => id !== 'stock') : [...s, 'stock']);
+      this.render();
+      return;
+    }
     if (!hit || hit === 'stock') { startBox(hit === 'stock'); return; }
-    let sels = this.st.sels.filter((id) => id !== 'stock');
+    let sels = [...this.st.sels];
     if (e.shiftKey) {
       // shift-click toggles a shape in or out of the selection
       sels = sels.includes(hit) ? sels.filter((id) => id !== hit) : [...sels, hit];
@@ -376,7 +437,7 @@ export class Sheet {
       sels = [hit];
       this.st.select(sels);
     }
-    this.drag = { kind: 'move', ids: sels, view, u0: u, v0: v, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
+    this.drag = { kind: 'move', ids: sels.filter((id) => id !== 'stock'), view, u0: u, v0: v, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
     this.render();
   }
 
@@ -392,7 +453,7 @@ export class Sheet {
       this.render();
       return;
     }
-    if (d.kind === 'box') {
+    if (d.kind === 'box' || d.kind === 'zoom') {
       d.x1 = x; d.y1 = y;
       if (!d.started && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) >= 3) d.started = true;
       if (d.started) this.render();
@@ -459,6 +520,11 @@ export class Sheet {
     if (!d) return;
     if (d.kind === 'draw') this.finishDraw(d);
     else if (d.kind === 'box') this.finishBox(d);
+    else if (d.kind === 'zoom') {
+      const r = this.svg.getBoundingClientRect();
+      if (d.started && !d.out) this.zoomToRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1));
+      else this.zoomBy(d.out || e.altKey ? 0.5 : 2, e.clientX - r.left, e.clientY - r.top);
+    }
     else if (d.kind === 'move' && !d.started && !e.shiftKey && this.st.sels.length > 1) {
       // a plain click on one of several selected shapes picks just that one
       const [x, y] = this.screenToSheet(e);
@@ -487,8 +553,11 @@ export class Sheet {
         const poly = this.outline(view, f.id);
         if (poly && touches(poly, rect)) hits.add(f.id);
       }
+      // the body only when the box takes in all of it (it's under everything else)
+      const body = this.outline(view, 'stock');
+      if (body && body.every(([u, v]) => u >= ua && u <= ub && v >= va && v <= vb)) hits.add('stock');
     }
-    const base = d.add ? this.st.sels.filter((id) => id !== 'stock') : [];
+    const base = d.add ? this.st.sels : [];
     this.st.select([...base, ...hits]);
   }
 
@@ -510,6 +579,7 @@ export class Sheet {
 
   private wheel(e: WheelEvent) {
     e.preventDefault();
+    this.userView = true;
     const r = this.svg.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     // pinch (ctrl) or a mouse wheel zooms; a trackpad scroll pans
@@ -525,6 +595,7 @@ export class Sheet {
       this.panY -= e.deltaY;
     }
     this.render();
+    this.onZoom();
   }
 
   // ------------------------------------------------------------ hover + cursor
@@ -549,6 +620,7 @@ export class Sheet {
     let c: string;
     if (this.drag?.kind === 'pan') c = 'grabbing';
     else if (this.spaceDown) c = 'grab';
+    else if (this.st.tool === 'zoom') c = this.altDown ? CURSORS.zoomOut : CURSORS.zoom;
     else if (this.st.tool !== 'select') c = CURSORS[this.st.tool];
     else c = this.hoverCursor || 'default';
     if (this.svg.style.cursor !== c) this.svg.style.cursor = c;
@@ -603,10 +675,10 @@ export class Sheet {
     // ghost boxes
     for (const g of this.ghosts()) {
       const b = this.placed[g].box;
-      const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = Math.min(b.w, b.h) * 0.14;
-      parts.push(`<g class="ds-ghost"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="${Math.min(px(14), b.w / 6)}" stroke-dasharray="5 5"/>`
-        + `<path d="M${cx - r} ${cy - r * 0.4}H${cx + r}M${cx} ${cy - r * 1.4}V${cy + r * 0.6}"/>`
-        + `<text x="${cx}" y="${cy + r * 0.6 + px(16)}" font-size="${px(11)}">${VIEWS[g].label}</text></g>`);
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2, r = Math.min(b.w, b.h) * 0.2;
+      parts.push(`<g class="ds-ghost"><title>Add the ${VIEWS[g].label.toLowerCase()} view</title><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="${Math.min(px(10), b.w / 4)}" stroke-dasharray="4 4"/>`
+        + `<path d="M${cx - r} ${cy}H${cx + r}M${cx} ${cy - r}V${cy + r}"/>`
+        + `<text x="${cx}" y="${b.y + b.h + px(15)}" font-size="${px(10)}">${VIEWS[g].label}</text></g>`);
     }
 
     // guides: faint lines right across the sheet, through every aligned view
@@ -701,7 +773,7 @@ export class Sheet {
       }
       parts.push(`<path class="ds-feat ds-drawing" d="${path(d.view, poly, true)}"/>`);
     }
-    if (d && d.kind === 'box' && d.started) {
+    if (d && (d.kind === 'box' || (d.kind === 'zoom' && !d.out)) && d.started) {
       parts.push(`<rect class="ds-marquee" x="${Math.min(d.x0, d.x1)}" y="${Math.min(d.y0, d.y1)}" width="${Math.abs(d.x1 - d.x0)}" height="${Math.abs(d.y1 - d.y0)}"/>`);
     }
 

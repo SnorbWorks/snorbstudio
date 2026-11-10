@@ -66,11 +66,11 @@ export class Panel {
     if (st.sides) {
       const f = st.feature(st.sides.id);
       if (f) out.push(...this.sides(f, st.sides.sides));
-    } else if (st.sels.length > 1) {
+    } else if (st.sels.filter((id) => id !== 'stock').length > 1 || (st.sels.length > 1 && !st.sels.includes('stock'))) {
       out.push(...this.many());
-    } else if (sel === 'stock' || none) {
+    } else if (sel === 'stock' || none || st.sels.includes('stock')) {
       const s = st.p.stock;
-      out.push(this.h(sel === 'stock' ? 'Stock block' : 'Part'));
+      out.push(this.h('Body'));
       if (none) out.push(this.h('Nothing selected. Draw on a view, or click a shape.', 'ds-note'));
       out.push(this.num('Width (X)', s.max[0] - s.min[0], (v) => { const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; }, { min: 0.1 }));
       out.push(this.num('Depth (Y)', s.max[1] - s.min[1], (v) => { const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; }, { min: 0.1 }));
