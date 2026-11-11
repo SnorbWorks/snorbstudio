@@ -1,7 +1,7 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
+import { makeLid, bodyShape, setBodyShape, BODY_NAMES, type BodyShape, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
 import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
@@ -175,26 +175,45 @@ export class Panel {
       out.push(...this.history());
       return out;
     }
-    out.push(this.check('Start from a block', !s.off, (on) => { s.off = !on; },
-      'Off: no block, the shapes you add stand on their own (a gear, say). Cuts then only cut those shapes.'));
-    if (!s.off) {
-      out.push(this.num('Width (X)', s.max[0] - s.min[0], (v) => { const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.x', f: null } }));
-      out.push(this.num('Depth (Y)', s.max[1] - s.min[1], (v) => { const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.y', f: null } }));
+    // the shape the part starts from: picked here, then it's the first thing in Features
+    const shape = bodyShape(st.p);
+    const pick = document.createElement('select');
+    pick.className = 'ds-select';
+    for (const k of ['block', 'cylinder', 'none'] as BodyShape[]) pick.appendChild(new Option(BODY_NAMES[k], k, false, k === shape));
+    pick.title = 'None: the shapes you add stand on their own (a gear, say), and cuts only cut those shapes.';
+    pick.onchange = () => { st.change((p) => setBodyShape(p, pick.value as BodyShape)); if (pick.value === 'none') st.select([]); else if (none) st.select(['stock']); };
+    const row = this.labelled('Start from a shape', pick);
+    row.classList.add('ds-field-wide');
+    out.push(row);
+    if (none) {
+      if (shape !== 'none') out.push(this.h('Click it in Features (or on the part) for its size and to hollow it out.', 'ds-note'));
+    } else if (shape !== 'none') {
+      out.push(this.h(BODY_NAMES[shape]));
+      if (shape === 'cylinder') {
+        out.push(this.num('Diameter', s.max[0] - s.min[0], (v) => { for (const i of [0, 1]) { const c = (s.min[i] + s.max[i]) / 2; s.min[i] = c - v / 2; s.max[i] = c + v / 2; } }, { min: 0.1, bind: { key: 'stock.dia', f: null } }));
+      } else {
+        out.push(this.num('Width (X)', s.max[0] - s.min[0], (v) => { const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.x', f: null } }));
+        out.push(this.num('Depth (Y)', s.max[1] - s.min[1], (v) => { const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.y', f: null } }));
+      }
       out.push(this.num('Height (Z)', s.max[2] - s.min[2], (v) => { s.max[2] = s.min[2] + v; }, { min: 0.1, bind: { key: 'stock.z', f: null } }));
-      // hollow: an enclosure, open on one face, and its lid
+      // hollow: an enclosure (or a cup), open on one face, and its lid
       const sh = st.p.shell;
       out.push(this.check('Hollow', !!sh, (on) => { if (on) st.p.shell = { wall: 2, open: 'top' }; else delete st.p.shell; },
-        'Take the inside out, leaving walls: a box or an enclosure. Holes and shapes still cut and add as usual.'));
+        `Take the inside out, leaving walls: ${shape === 'cylinder' ? 'a cup or a round box' : 'a box or an enclosure'}. Holes and shapes still cut and add as usual.`));
       if (sh) {
         out.push(this.num('Walls', sh.wall, (v) => { sh.wall = v; }, { min: 0.2, bind: { key: 'shell.wall', f: null } }));
         const sel = document.createElement('select');
         sel.className = 'ds-select';
-        for (const [v, t] of [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'], ['none', 'None (closed)']]) sel.appendChild(new Option(t, v, false, v === sh.open));
+        const faces = shape === 'cylinder' ? [['top', 'Top'], ['bottom', 'Bottom'], ['none', 'None (closed)']]
+          : [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'], ['none', 'None (closed)']];
+        for (const [v, t] of faces) sel.appendChild(new Option(t, v, false, v === sh.open));
         sel.onchange = () => st.change(() => { sh.open = sel.value as any; });
         out.push(this.labelled('Open face', sel));
         if (sh.open !== 'none') out.push(this.button('Make a lid', () => { const lid = makeLid(st.p); if (lid) this.hooks.lid(lid); }, 'btn ghost sm',
           'A lid for the open face, with a lip that slips inside (the printer fit plus a little play). It opens as the other part tab.'));
       }
+      out.push(this.button(`Delete ${BODY_NAMES[shape].toLowerCase()}`, () => st.deleteSelected(), 'btn ghost sm',
+        'The shapes you add then stand on their own. Undo brings it back.'));
     }
     if (!none) return out;
     out.push(...this.sectionsSection());
@@ -275,9 +294,20 @@ export class Panel {
   /** Everything in the project, in the order it's built: click one to select it. */
   private history(): HTMLElement[] {
     const st = this.st;
-    if (!st.p.features.length) return [];
+    const shape = st.p.base ? 'none' : bodyShape(st.p);
+    if (!st.p.features.length && shape === 'none') return [];
     const list = document.createElement('div');
     list.className = 'ds-list';
+    if (shape !== 'none') {
+      // the starting shape comes first: everything else adds to it or cuts it
+      const b = document.createElement('button');
+      const S = st.p.stock, fmt = (mm: number) => `${+this.toUnits(mm).toFixed(st.p.precision)}`;
+      const size = shape === 'cylinder' ? `⌀${fmt(S.max[0] - S.min[0])} × ${fmt(S.max[2] - S.min[2])}` : `${fmt(S.max[0] - S.min[0])} × ${fmt(S.max[1] - S.min[1])} × ${fmt(S.max[2] - S.min[2])}`;
+      b.textContent = `■ ${BODY_NAMES[shape]} ${size}${st.p.shell ? ', hollow' : ''}`;
+      b.title = 'The shape the part starts from';
+      b.onclick = () => { if (st.tool === 'edge') st.setTool('select'); st.select(['stock']); };
+      list.appendChild(b);
+    }
     st.p.features.forEach((f, i) => {
       const b = document.createElement('button');
       const err = st.built?.errors[f.id];

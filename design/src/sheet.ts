@@ -4,7 +4,7 @@
 // picks (Option-click), handles, dimensions, T-square guides and pan/zoom.
 
 import type { Dim, Feature, ViewName, Vec3, P2 } from './model.js';
-import { newId, profile, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
+import { newId, profile, bodyOutline, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
 import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
@@ -241,6 +241,10 @@ export class Sheet {
     if (!it || (id === 'stock' && this.st.p.stock.off)) return null;
     const f = id === 'stock' ? undefined : this.st.feature(id);
     if (f && parallel(f.view, view)) return profile(f).map(([u, v]) => this.featToView(f, view, u, v));
+    if (id === 'stock' && this.st.p.stock.shape === 'cylinder' && !this.st.p.base && (view === 'top' || view === 'bottom')) {
+      const V = VIEWS[view], z = this.st.p.stock.max[2];
+      return bodyOutline(this.st.p).map(([x, y]) => { const q = V.toView([x, y, z]); return [q[0], q[1]] as [number, number]; });
+    }
     const [ur, vr] = viewRanges(view, it);
     return [[ur[0], vr[0]], [ur[1], vr[0]], [ur[1], vr[1]], [ur[0], vr[1]]];
   }

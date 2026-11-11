@@ -308,16 +308,16 @@ export function stockSolid(p: Project): Solid | null {
     return b.clone();
   }
   if (p.stock.off) return null;
-  const [a, b] = [p.stock.min, p.stock.max];
-  let box = makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2])
-    .translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, a[2]);
+  const round = p.stock.shape === 'cylinder';
+  // a block, or an upright cylinder as wide as the box in X
+  const shape = (a: Vec3, b: Vec3): Solid => (round
+    ? makeCylinder((b[0] - a[0]) / 2, b[2] - a[2], [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, a[2]], [0, 0, 1])
+    : makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2]).translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, a[2]));
+  let body = shape(p.stock.min, p.stock.max);
   // a hollow body: the inside taken out, open on one face
   const cav = shellCavity(p);
-  if (cav) {
-    const [m, n] = cav;
-    box = box.cut(makeBaseBox(n[0] - m[0], n[1] - m[1], n[2] - m[2]).translate((m[0] + n[0]) / 2, (m[1] + n[1]) / 2, m[2]));
-  }
-  return box;
+  if (cav) body = body.cut(shape(cav[0], cav[1]));
+  return body;
 }
 
 /** Does an edge pass within tol of a point? (Rounds and chamfers find their edges this way.) */

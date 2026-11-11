@@ -2,7 +2,7 @@
 // or a SnorbCAD part. Everything comes out as mm, Y up, curves flattened to
 // short straight lines (fine enough for a router: 0.02 mm off the curve).
 import { Contour, P2, Part, camId, guessOps, newOp, signedArea } from './job.js';
-import { Feature, Project, applyOps, depthRange, fitOf, instances, isShape, profile } from '../model.js';
+import { Feature, Project, applyOps, bodyOutline, depthRange, fitOf, instances, isShape, profile } from '../model.js';
 import { VIEWS } from '../views.js';
 
 const TOL = 0.02;
@@ -464,8 +464,7 @@ export function importCad(p: Project, name = p.name): { part: Part; notes: strin
     contours.push({ id: camId('k'), pts, closed: true, op, note });
   };
   if (!p.stock.off) {
-    const [x0, y0] = [p.stock.min[0], p.stock.min[1]], [x1, y1] = [p.stock.max[0], p.stock.max[1]];
-    push([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], 'outside', 0, T, 'body outline');
+    push(bodyOutline(p), 'outside', 0, T, 'body outline');
   }
   for (const f of p.features) {
     if (!isShape(f)) continue;

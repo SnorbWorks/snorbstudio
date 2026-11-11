@@ -128,9 +128,11 @@ export class State {
   }
 
   deleteSelected() {
-    const del = new Set(this.sels.filter((id) => id !== 'stock'));
+    const del = new Set(this.sels.filter((id) => id !== 'stock' || (!this.p.base && !this.p.stock.off)));
     if (!del.size) return;
     this.change((p) => {
+      // the starting shape: gone, the shapes stand on their own (undo brings it back)
+      if (del.has('stock')) { p.stock.off = true; delete p.shell; }
       p.features = p.features.filter((f) => !del.has(f.id));
       // dimensions go with what they measure
       p.dims = (p.dims || []).filter((d) => !del.has(d.id) && !del.has(d.target));
@@ -249,6 +251,11 @@ export function itemFor(st: State, id: string): Item | null {
         if (st.p.base) return;                  // a library model's size is its own
         if (side === 0) s.min[axis] = Math.min(value, s.max[axis] - 0.1);
         else s.max[axis] = Math.max(value, s.min[axis] + 0.1);
+        // a cylinder stays round: the other way across follows, about its centre
+        if (s.shape === 'cylinder' && axis < 2) {
+          const o = 1 - axis, d = s.max[axis] - s.min[axis], c = (s.min[o] + s.max[o]) / 2;
+          s.min[o] = c - d / 2; s.max[o] = c + d / 2;
+        }
       },
       move() { /* the stock stays put */ },
     };

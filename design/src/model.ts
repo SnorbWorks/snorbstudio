@@ -14,6 +14,46 @@ export interface Stock {
   min: Vec3;          // mm, world coordinates (X right, Y back, Z up)
   max: Vec3;
   off?: boolean;      // no body: the shapes stand on their own (e.g. a gear)
+  shape?: 'block' | 'cylinder';   // the starting shape (block when unset); a cylinder stands upright, as wide as min..max in X (and Y)
+}
+
+/** The shape the part starts from: a block, an upright cylinder, or none. */
+export type BodyShape = 'block' | 'cylinder' | 'none';
+export const BODY_NAMES: Record<BodyShape, string> = { block: 'Block', cylinder: 'Cylinder', none: 'None' };
+
+export function bodyShape(p: Project): BodyShape {
+  return p.stock.off ? 'none' : p.stock.shape || 'block';
+}
+
+/**
+ * Start from another shape (or none). A cylinder takes the block's narrower
+ * side as its width, centred where the block was; a hollow cylinder opens
+ * at its top or bottom only.
+ */
+export function setBodyShape(p: Project, to: BodyShape): void {
+  const s = p.stock;
+  if (to === 'none') { s.off = true; delete p.shell; return; }
+  s.off = false;
+  if (to === 'cylinder') {
+    const d = Math.min(s.max[0] - s.min[0], s.max[1] - s.min[1]);
+    for (const i of [0, 1]) { const c = (s.min[i] + s.max[i]) / 2; s.min[i] = c - d / 2; s.max[i] = c + d / 2; }
+    s.shape = 'cylinder';
+    if (p.exprs) { delete p.exprs['stock.x']; delete p.exprs['stock.y']; }
+    if (p.shell && p.shell.open !== 'top' && p.shell.open !== 'bottom' && p.shell.open !== 'none') p.shell.open = 'top';
+  } else {
+    delete s.shape;
+    if (p.exprs) delete p.exprs['stock.dia'];
+  }
+}
+
+/** The body's outline seen from above (world X, Y): its rectangle, or its circle. */
+export function bodyOutline(p: Project, n = 64): P2[] {
+  const s = p.stock;
+  if (s.shape === 'cylinder') {
+    const cx = (s.min[0] + s.max[0]) / 2, cy = (s.min[1] + s.max[1]) / 2, r = (s.max[0] - s.min[0]) / 2;
+    return Array.from({ length: n }, (_, i) => [cx + r * Math.cos((2 * Math.PI * i) / n), cy + r * Math.sin((2 * Math.PI * i) / n)] as P2);
+  }
+  return [[s.min[0], s.min[1]], [s.max[0], s.min[1]], [s.max[0], s.max[1]], [s.min[0], s.max[1]]];
 }
 
 export type ShapeType = 'rect' | 'circle' | 'polygon' | 'poly' | 'gear' | 'text' | 'hole' | 'slot';
@@ -713,6 +753,15 @@ export function makeLid(p: Project): Project | null {
   lid.stock = { min: [-W / 2, -H / 2, 0], max: [W / 2, H / 2, sh.wall] };
   lid.views = ['top', 'front', 'right'];
   const base = { view: 'bottom' as ViewName, cu: 0, cv: 0, r: 0, corner: 0, d0: 0, d1: lipH, through: false };
+  if (p.stock.shape === 'cylinder') {
+    // a round lid: a disc with a ring underneath
+    lid.stock.shape = 'cylinder';
+    lid.features = [
+      { ...base, id: newId(), type: 'circle', w: 0, h: 0, r: ow / 2, op: 'add' },
+      ...(ow - 2 * lipW > 1 ? [{ ...base, id: newId(), type: 'circle' as const, w: 0, h: 0, r: ow / 2 - lipW, op: 'cut' as const }] : []),
+    ];
+    return lid;
+  }
   lid.features = [
     { ...base, id: newId(), type: 'rect', w: ow, h: oh, op: 'add' },
     ...(ow - 2 * lipW > 1 && oh - 2 * lipW > 1 ? [{ ...base, id: newId(), type: 'rect' as const, w: ow - 2 * lipW, h: oh - 2 * lipW, op: 'cut' as const }] : []),

@@ -79,6 +79,7 @@ export const BINDS: Record<string, Setter> = {
   depth: (_p, f, v) => { if (f) { const dir = f.d1 >= f.d0 ? 1 : -1; f.d1 = f.d0 + dir * Math.max(0, v); } },
   'stock.x': (p, _f, v) => { const s = p.stock; const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; },
   'stock.y': (p, _f, v) => { const s = p.stock; const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; },
+  'stock.dia': (p, _f, v) => { const s = p.stock; for (const i of [0, 1]) { const c = (s.min[i] + s.max[i]) / 2; s.min[i] = c - v / 2; s.max[i] = c + v / 2; } },
   'stock.z': (p, _f, v) => { p.stock.max[2] = p.stock.min[2] + Math.max(0.1, v); },
   'shell.wall': (p, _f, v) => { if (p.shell) p.shell.wall = Math.max(0.2, v); },
 };

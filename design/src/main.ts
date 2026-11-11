@@ -18,7 +18,7 @@ import { viewDxf } from './dxf.js';
 import { checkPrint, type Issue } from './check.js';
 import { openCheckDialog } from './checkdialog.js';
 import { openFitDialog } from './fitdialog.js';
-import { takesFit, fitPlate } from './model.js';
+import { takesFit, fitPlate, bodyShape, BODY_NAMES } from './model.js';
 
 interface Studio {
   prepare: { addFiles(files: { name: string; buffer: ArrayBuffer }[]): Promise<void> };
@@ -1130,10 +1130,13 @@ export function mount(root: HTMLElement, studio: Studio) {
       kids.push(b);
     } else {
       const s = st.p.stock;
-      kids.push(label(st.p.base ? `Body: ${st.p.base.model}` : s.off ? 'No block' : 'Body'));
+      const shape = bodyShape(st.p);
+      kids.push(label(st.p.base ? `Body: ${st.p.base.model}` : shape === 'none' ? 'No starting shape' : BODY_NAMES[shape]));
       if (s.off && !st.p.base) kids.push(mk('span', 'ds-ctx-hint', 'The shapes stand on their own.'));
+      else if (shape === 'cylinder') kids.push(mk('span', 'ds-ctx-hint', `⌀${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
       else kids.push(mk('span', 'ds-ctx-hint', `${fmt(s.max[0] - s.min[0])} × ${fmt(s.max[1] - s.min[1])} × ${fmt(s.max[2] - s.min[2])}${st.p.units === 'mm' ? ' mm' : ''}`));
       kids.push(mk('span', 'ds-ctx-hint', st.sels.length ? 'Drag its handles to resize it. Shift-click shapes to line them up to it.' : 'Pick a tool on the left and draw on a view.'));
+      if (st.sels.includes('stock') && !st.p.base && !s.off) kids.push(group(iconBtn(ICONS.trash, 'Delete (⌫): the shapes then stand on their own', () => st.deleteSelected())));
     }
     ctx.replaceChildren(...kids);
   }
