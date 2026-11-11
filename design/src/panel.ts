@@ -1,7 +1,9 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners } from './model.js';
+import { cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs } from './model.js';
+import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
+import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
 import { VIEWS, axisOf } from './views.js';
 import type { State } from './state.js';
@@ -10,6 +12,7 @@ const AX = 'XYZ';
 
 export interface PanelHooks {
   gear(id: string): void;                       // open the gear dialog
+  hole(id: string): void;                       // open the hole box
   dimValue(dm: Dim): number | null;
   dimSize(dm: Dim, size: number): void;
   repick(id: string): void;                     // pick a fillet's edges again
@@ -17,7 +20,7 @@ export interface PanelHooks {
 }
 
 const NAMES: Record<string, string> = {
-  rect: 'Rectangle', circle: 'Circle', polygon: 'Polygon', poly: 'Outline', gear: 'Gear', text: 'Text', fillet: 'Fillet',
+  rect: 'Rectangle', circle: 'Circle', polygon: 'Polygon', poly: 'Outline', gear: 'Gear', text: 'Text', fillet: 'Fillet', hole: 'Hole', slot: 'Slot',
 };
 
 export function featureName(f: Feature): string {
@@ -25,6 +28,8 @@ export function featureName(f: Feature): string {
   if (f.type === 'polygon') return `${f.sides || 6}-sided polygon`;
   if (f.type === 'gear' && f.gear) return `${f.gear.teeth}T ${({ spur: 'spur gear', helical: 'helical gear', ring: 'ring gear', rack: 'rack' })[f.gear.kind]}`;
   if (f.type === 'text' && f.text) return `Text “${f.text.s}”`;
+  if (f.type === 'hole' && f.hole) return `${holeLabel(f.hole)} hole`;
+  if (f.type === 'poly' && hasArcs(f)) return 'Outline with arcs';
   if (f.type === 'fillet' && f.fillet) return `${f.fillet.mode === 'fillet' ? 'Fillet' : 'Chamfer'} ${f.fillet.size} mm × ${f.fillet.edges.length} edge${f.fillet.edges.length === 1 ? '' : 's'}`;
   return NAMES[f.type] || f.type;
 }
@@ -163,8 +168,12 @@ export class Panel {
     }))));
     out.push(this.num('Grid snap', st.p.grid, (v) => { st.p.grid = v; }, { min: 0, title: 'Snap increment (0 = off). Hold Option while dragging to place freely.' }));
     out.push(this.num('Decimals', st.p.precision, (v) => { st.p.precision = Math.round(Math.max(0, Math.min(4, v))); }, { raw: true }));
+    out.push(this.h('Printer fit'));
+    out.push(this.num('Holes print small by', st.p.fit ?? 0, (v) => { st.p.fit = v; rememberFit(v); }, { min: 0, max: 2,
+      title: 'Printed holes come out a little small. Holes and cut slots are made this much bigger across so they fit; the sizes you type stay the real ones. New parts start with this.' }));
+    out.push(this.h('Holes and cut slots grow by this. Any other cut can take it too (its “Add printer fit” box).', 'ds-note'));
     out.push(this.h('Tips', 'ds-h'));
-    out.push(this.h('V select · R rectangle · C circle · P polygon · L line (click corners, click the first to close) · G gear · T text · E edges (fillet/chamfer) · D dimension (double-click its number to type a size) · H draw on the far face (hidden lines) · Z zoom · Shift-click or drag a box to select several · Option-click a side, Option-Shift-click the side next to it for their corner · Delete removes · ⌘Z undo · F fit · Space-drag or right-drag to pan · pinch or ⌘-scroll to zoom · hold Option while dragging for no snapping', 'ds-note'));
+    out.push(this.h('V select · R rectangle · S slot · C circle · P polygon · L line (click corners, click the first to close; drag a side’s ◆ to bow it into an arc) · O hole · G gear · T text · E edges (fillet/chamfer) · D dimension (double-click its number to type a size) · H draw on the far face (hidden lines) · Z zoom · Shift-click or drag a box to select several · Option-click a side, Option-Shift-click the side next to it for their corner · Delete removes · ⌘Z undo · F fit · Space-drag or right-drag to pan · pinch or ⌘-scroll to zoom · hold Option while dragging for no snapping', 'ds-note'));
     return out;
   }
 
@@ -284,22 +293,26 @@ export class Panel {
     else if (sketch) out.push(this.h('A sketch with no depth yet: give it a depth below, or drag its line in a side view.', 'ds-note ds-sk'));
     else if (st.built && st.built.effect[f.id] === false) out.push(this.h(f.op === 'add' ? 'Buried in solid material, so it changes nothing (shown faded).' : 'Cuts only empty space, so it changes nothing (shown faded).', 'ds-note'));
 
-    out.push(this.labelled('Operation', this.seg([['add', 'Add ▲'], ['cut', 'Cut ▼']], f.op, (v) => st.change(() => setOp(f, v as 'add' | 'cut')))));
+    if (f.type !== 'hole') out.push(this.labelled('Operation', this.seg([['add', 'Add ▲'], ['cut', 'Cut ▼']], f.op, (v) => st.change(() => setOp(f, v as 'add' | 'cut')))));
 
+    if (f.type === 'hole' && f.hole) out.push(...this.holeSummary(f));
     if (f.type === 'gear' && f.gear) out.push(...this.gearSummary(f));
     if (f.type === 'text' && f.text) out.push(...this.textFields(f));
 
     out.push(this.h('Position'));
     out.push(this.num(`Centre ${AX[ua]}`, us * f.cu, (v) => { f.cu = us * v; }));
     out.push(this.num(`Centre ${AX[va]}`, vs * f.cv, (v) => { f.cv = vs * v; }));
-    if (f.type === 'polygon' || f.type === 'gear' || f.type === 'text') {
+    if (f.type === 'polygon' || f.type === 'gear' || f.type === 'text' || f.type === 'slot') {
       out.push(this.num('Turned', f.rot || 0, (v) => { f.rot = v; }, { raw: true, unit: '°', title: 'Degrees, anticlockwise as the drawing view sees it' }));
     }
 
-    if (f.type !== 'gear' && f.type !== 'text') {
+    if (f.type !== 'gear' && f.type !== 'text' && f.type !== 'hole') {
       out.push(this.h('Size'));
       if (f.type === 'circle') {
         out.push(this.num('Diameter', 2 * f.r, (v) => { f.r = v / 2; }, { min: 0 }));
+      } else if (f.type === 'slot') {
+        out.push(this.num('Length', Math.max(f.w, f.h), (v) => { if (f.w >= f.h) f.w = Math.max(v, f.h); else f.h = Math.max(v, f.w); }, { min: 0.01, title: 'End to end, round ends included' }));
+        out.push(this.num('Width', Math.min(f.w, f.h), (v) => { if (f.w >= f.h) f.h = Math.min(v, f.w); else f.w = Math.min(v, f.h); }, { min: 0.01, title: 'Across: the screw or pin that slides in it' }));
       } else if (f.type === 'polygon') {
         const n = Math.max(3, Math.round(f.sides || 6));
         out.push(this.num('Sides', n, (v) => { f.sides = Math.round(Math.max(3, Math.min(64, v))); st.polygonSides = f.sides; delete f.corners; }, { raw: true, step: 1 }));
@@ -317,6 +330,7 @@ export class Panel {
         out.push(this.num(`Width (${AX[ua]})`, u1 - u0, (v) => scale(0, v), { min: 0.01 }));
         out.push(this.num(`Height (${AX[va]})`, v1 - v0, (v) => scale(1, v), { min: 0.01 }));
         out.push(...this.cornerFields(f));
+        out.push(...this.arcFields(f));
       } else {
         out.push(this.num(`Width (${AX[ua]})`, f.w, (v) => { f.w = v; }, { min: 0 }));
         out.push(this.num(`Height (${AX[va]})`, f.h, (v) => { f.h = v; }, { min: 0 }));
@@ -337,6 +351,10 @@ export class Panel {
     }
     if (f.op === 'cut') {
       out.push(this.check('Through all', f.through, (on) => { f.through = on; if (!on && Math.abs(f.d1 - f.d0) < 1e-9) f.d1 = f.d0 + into(f); }));
+      if (f.type !== 'hole' && f.type !== 'gear' && f.type !== 'text') {
+        out.push(this.check(`Add printer fit (${this.toUnits(st.p.fit ?? 0).toFixed(st.p.precision)} ${st.p.units})`, takesFit(f), (on) => { f.fit = on; },
+          'Make this cut bigger across by the part’s printer fit (Sheet › Printer fit), so a printed peg or screw fits in it'));
+      }
     }
     if (!st.p.stock.off) {
       out.push(this.check('On the far face (hidden)', !!f.far, (on) => {
@@ -351,6 +369,49 @@ export class Panel {
 
     out.push(...this.copies(f));
     out.push(this.button('Delete shape', () => st.deleteSelected()));
+    return out;
+  }
+
+  private holeSummary(f: Feature): HTMLElement[] {
+    const h = f.hole!;
+    const st = this.st;
+    const fit = takesFit(f) ? (st.p.fit ?? 0) : 0;
+    const fmt = (mm: number) => `${this.toUnits(mm).toFixed(st.p.precision)} ${st.p.units}`;
+    const lines = [`${SCREWS[h.size]?.label ?? 'Custom'} · ${KIND_LABEL[h.kind]}${h.kind === 'clear' || h.kind === 'cbore' || h.kind === 'csk' || h.kind === 'nut' ? ` (${h.fit} fit)` : ''}`,
+      `Hole Ø ${fmt(h.d)}${fit ? `, made ${fmt(h.d + fit)} for the printer` : ''}`];
+    if (h.kind === 'cbore') lines.push(`Counterbore Ø ${fmt(h.headD)} × ${fmt(h.headDepth)} deep`);
+    if (h.kind === 'csk') lines.push(`Countersink Ø ${fmt(h.headD)}, 90°`);
+    if (h.kind === 'nut') lines.push(`Nut pocket ${fmt(h.nutAF)} across flats × ${fmt(h.nutDepth)} deep, on the far end`);
+    if (h.kind === 'insert') lines.push(`For an insert ${fmt(h.insertLen)} long`);
+    return [this.h('Hole'), ...lines.map((l) => this.h(l, 'ds-note')),
+      this.button('Edit hole…', () => this.hooks.hole(f.id), 'btn sm'),
+      this.check('Add printer fit', takesFit(f), (on) => { f.fit = on; }, 'Make it bigger across by the part’s printer fit (Sheet › Printer fit)')];
+  }
+
+  /** An outline's bowed sides: their radius, and a way back to straight. */
+  private arcFields(f: Feature): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    const n = f.pts?.length || 0;
+    const arcs = (f.bulges || []).map((s, k) => ({ s, k })).filter((x) => Math.abs(x.s) > 1e-9);
+    if (!arcs.length) {
+      out.push(this.h('Drag the ◆ in the middle of a side to bow it into an arc.', 'ds-note'));
+      return out;
+    }
+    out.push(this.h('Arcs'));
+    for (const { s, k } of arcs) {
+      const a = f.pts![k], b = f.pts![(k + 1) % n];
+      const c = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const R = (c * c / 4 + s * s) / (2 * Math.abs(s));
+      out.push(this.num(`Side ${k + 1} radius`, R, (v) => {
+        // the bulge that gives this radius on this side (the smaller arc, same way out)
+        const r = Math.max(v, c / 2);
+        const sag = r - Math.sqrt(Math.max(0, r * r - c * c / 4));
+        const bb = [...(f.bulges || [])];
+        bb[k] = Math.sign(s) * sag;
+        f.bulges = bb;
+      }, { min: 0.01, title: 'At least half the side: that makes a half circle' }));
+    }
+    out.push(this.button('Straighten all sides', () => this.st.change(() => { delete f.bulges; }), 'btn ghost sm'));
     return out;
   }
 

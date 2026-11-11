@@ -3,6 +3,7 @@
 
 import { VIEWS } from './views.js';
 import { type GearSpec, gearOutline, rackOutline, outerRadius, pitchRadius, place } from './gears.js';
+import { type HoleSpec, holeOuterD } from './holes.js';
 
 export type ViewName = 'top' | 'front' | 'right' | 'left' | 'back' | 'bottom';
 export type Vec3 = [number, number, number];
@@ -14,7 +15,7 @@ export interface Stock {
   off?: boolean;      // no body: the shapes stand on their own (e.g. a gear)
 }
 
-export type ShapeType = 'rect' | 'circle' | 'polygon' | 'poly' | 'gear' | 'text';
+export type ShapeType = 'rect' | 'circle' | 'polygon' | 'poly' | 'gear' | 'text' | 'hole' | 'slot';
 
 export interface TextSpec { s: string; size: number; bold: boolean }
 /**
@@ -50,9 +51,12 @@ export interface Feature {
   corner: number;     // corner radius for every corner (rect, polygon, poly)
   corners?: number[]; // per corner, overriding corner (rect: 0 (-u,-v) 1 (+u,-v) 2 (+u,+v) 3 (-u,+v))
   sides?: number;     // polygon
-  rot?: number;       // polygon / gear / text: turned this many degrees
+  rot?: number;       // polygon / gear / text / slot: turned this many degrees
   pts?: P2[];         // poly: corners relative to (cu, cv)
+  bulges?: number[];  // poly: side k (corner k to k+1) bowed into an arc; how far its middle sits right of the straight side, going corner k to k+1 (mm)
   gear?: GearSpec;
+  hole?: HoleSpec;    // hole: its screw, kind and sizes (r is the bore radius)
+  fit?: boolean;      // grow by the part's printer fit (default: on for holes and cut slots)
   text?: TextSpec;
   fillet?: FilletSpec;
   d0: number;         // start: the face it was drawn on, as depth toward the viewer
@@ -78,6 +82,7 @@ export interface Project {
   base?: { model: string };   // the body is a model from the library (an STL) instead of a block
   name: string;
   units: 'mm' | 'in';
+  fit?: number;       // printer fit: holes print this much small, so they're made this much bigger across (mm)
   precision: number;  // decimals shown
   grid: number;       // snap increment, mm
   stock: Stock;
@@ -107,6 +112,22 @@ export function newId(): string {
 }
 
 export const isShape = (f: Feature) => f.type !== 'fillet';
+
+/** The default printer fit for new parts (mm on a hole's diameter). */
+export const DEFAULT_FIT = 0.2;
+
+/** Does this feature take the part's printer fit? Holes and cut slots do unless told not to; other cuts only when asked. */
+export function takesFit(f: Feature): boolean {
+  if (f.type === 'hole') return f.fit !== false;
+  if (f.op !== 'cut') return false;
+  if (f.fit !== undefined) return f.fit;
+  return f.type === 'slot';
+}
+
+/** How much bigger across this feature is made for the printer (mm), 0 when it doesn't take fit. */
+export function fitOf(f: Feature, p: Project): number {
+  return takesFit(f) ? Math.max(0, p.fit ?? 0) : 0;
+}
 
 /** Which way is "into the material" for a feature, in its depth: -1 from the near face, +1 from the far face. */
 export const into = (f: Feature) => (f.far ? 1 : -1);
@@ -165,11 +186,41 @@ export function verts(f: Feature): P2[] | null {
     const a0 = -Math.PI / 2 + Math.PI / n + ((f.rot || 0) * Math.PI) / 180;
     return Array.from({ length: n }, (_, k) => [f.cu + f.r * Math.cos(a0 + (2 * Math.PI * k) / n), f.cv + f.r * Math.sin(a0 + (2 * Math.PI * k) / n)] as P2);
   }
-  if (f.type === 'poly' && f.pts && f.pts.length >= 3) {
-    const pts = f.pts.map(([u, v]) => [f.cu + u, f.cv + v] as P2);
-    return signedArea(pts) < 0 ? pts.reverse() : pts;
-  }
+  if (f.type === 'poly' && f.pts && f.pts.length >= 3) return polyPath(f).pts;
   return null;
+}
+
+/**
+ * An outline's corners going round anticlockwise, with each side's bulge
+ * (side k runs from corner k to k+1; + bows it out to the right of travel,
+ * which is outward for an anticlockwise outline).
+ */
+export function polyPath(f: Feature): { pts: P2[]; bulge: number[] } {
+  const pts = (f.pts || []).map(([u, v]) => [f.cu + u, f.cv + v] as P2);
+  const n = pts.length;
+  const b = Array.from({ length: n }, (_, k) => f.bulges?.[k] || 0);
+  if (signedArea(pts) >= 0) return { pts, bulge: b };
+  // reversed: new side k joins old corners n-1-k and n-2-k, i.e. old side n-2-k run backwards
+  return { pts: pts.reverse(), bulge: Array.from({ length: n }, (_, k) => -b[((n - 2 - k) % n + n) % n]) };
+}
+
+/** Does an outline have any bowed sides? */
+export const hasArcs = (f: Feature) => f.type === 'poly' && !!f.bulges?.some((x) => Math.abs(x) > 1e-9);
+
+/** The middle of a bowed side: the chord's middle moved off it by the bulge (+ to the right of travel: outward on an anticlockwise outline). */
+export function bulgeMid(a: P2, b: P2, s: number): P2 {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+  return [(a[0] + b[0]) / 2 + (dy / L) * s, (a[1] + b[1]) / 2 - (dx / L) * s];
+}
+
+/** A slot's outline as two straights and two half circles: [start, (line to) p1, (arc via m1 to) p2, (line to) p3, (arc via m3 back to) start]. */
+export function slotPath(f: Feature, grow = 0): { a: P2; b: P2; c: P2; d: P2; m1: P2; m2: P2 } | null {
+  let L = f.w + grow, W = f.h + grow, rot = f.rot || 0;
+  if (L <= 1e-6 || W <= 1e-6) return null;
+  if (W > L) { [L, W] = [W, L]; rot += 90; }
+  const r = W / 2, k = L / 2 - r;
+  const pts = rotatePts([[-k, -r], [k, -r], [k, r], [-k, r], [k + r, 0], [-k - r, 0]], 0, 0, rot).map(([x, y]) => [f.cu + x, f.cv + y] as P2);
+  return { a: pts[0], b: pts[1], c: pts[2], d: pts[3], m1: pts[4], m2: pts[5] };
 }
 
 export function signedArea(pts: P2[]): number {
@@ -183,7 +234,11 @@ export function cornerRadii(f: Feature): number[] {
   const v = verts(f);
   if (!v) return [];
   const n = v.length;
-  const want = Array.from({ length: n }, (_, i) => Math.max(0, (f.corners && f.corners[i] !== undefined ? f.corners[i] : f.corner) || 0));
+  const arcs = f.type === 'poly' ? polyPath(f).bulge : null;
+  const want = Array.from({ length: n }, (_, i) => {
+    if (arcs && (Math.abs(arcs[i]) > 1e-9 || Math.abs(arcs[(i + n - 1) % n]) > 1e-9)) return 0;   // a corner next to an arc stays sharp
+    return Math.max(0, (f.corners && f.corners[i] !== undefined ? f.corners[i] : f.corner) || 0);
+  });
   return want.map((r, i) => {
     if (r <= 0) return 0;
     const P = v[i], A = v[(i + n - 1) % n], B = v[(i + 1) % n];
@@ -246,6 +301,24 @@ export function profile(f: Feature, segs = 48): P2[] {
     return Array.from({ length: segs }, (_, i) => [f.cu + f.r * Math.cos((i / segs) * 2 * Math.PI), f.cv + f.r * Math.sin((i / segs) * 2 * Math.PI)] as P2);
   }
   if (f.type === 'gear' && f.gear) return gearProfile(f).outer;
+  if (f.type === 'hole' && f.hole) {
+    const R = f.hole.d / 2;
+    return Array.from({ length: segs }, (_, i) => [f.cu + R * Math.cos((i / segs) * 2 * Math.PI), f.cv + R * Math.sin((i / segs) * 2 * Math.PI)] as P2);
+  }
+  if (f.type === 'slot') {
+    const s = slotPath(f);
+    if (!s) return [];
+    return [...arcPoints(s.b, s.m1, s.c, 12), ...arcPoints(s.d, s.m2, s.a, 12)];
+  }
+  if (hasArcs(f)) {
+    const { pts, bulge } = polyPath(f), n = pts.length, out: P2[] = [];
+    pts.forEach((P, k) => {
+      const Q = pts[(k + 1) % n];
+      if (Math.abs(bulge[k]) > 1e-9) out.push(...arcPoints(P, bulgeMid(P, Q, bulge[k]), Q, 16).slice(0, -1));
+      else out.push(P);
+    });
+    return out;
+  }
   if (f.type === 'text') {
     const hw = f.w / 2, hh = f.h / 2;
     return rotatePts([[f.cu - hw, f.cv - hh], [f.cu + hw, f.cv - hh], [f.cu + hw, f.cv + hh], [f.cu - hw, f.cv + hh]], f.cu, f.cv, f.rot || 0);
@@ -309,11 +382,12 @@ export function gearProfile(f: Feature): { outer: P2[]; hole?: P2[] } {
 /** The feature's extent in its own view: [u0, v0, u1, v1]. */
 export function bounds2d(f: Feature): [number, number, number, number] {
   if (f.type === 'circle') return [f.cu - f.r, f.cv - f.r, f.cu + f.r, f.cv + f.r];
+  if (f.type === 'hole' && f.hole) { const R = holeOuterD(f.hole) / 2; return [f.cu - R, f.cv - R, f.cu + R, f.cv + R]; }
   if (f.type === 'gear' && f.gear && f.gear.kind !== 'rack') {
     const R = Math.max(outerRadius(f.gear), f.gear.hubD / 2);
     return [f.cu - R, f.cv - R, f.cu + R, f.cv + R];
   }
-  const pts = f.type === 'rect' || f.type === 'polygon' || f.type === 'poly' ? verts(f) || [] : profile(f);
+  const pts = f.type === 'rect' || f.type === 'polygon' || (f.type === 'poly' && !hasArcs(f)) ? verts(f) || [] : profile(f);
   if (!pts.length) return [f.cu, f.cv, f.cu, f.cv];
   const us = pts.map((p) => p[0]), vs = pts.map((p) => p[1]);
   return [Math.min(...us), Math.min(...vs), Math.max(...us), Math.max(...vs)];

@@ -1,15 +1,25 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newProject, type P2 } from './model.js';
+import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newProject, DEFAULT_FIT, type P2 } from './model.js';
+import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rect' | 'circle' | 'polygon' | 'line' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
+export type Tool = 'select' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
 const VIEW_KEY = 'studio.design.viewOpts';
+const HOLE_KEY = 'studio.design.lastHole';
+const FIT_KEY = 'studio.design.fit';
+
+/** The printer fit new parts start with: the owner's last setting, else 0.2 mm. */
+export function defaultFit(): number {
+  try { const v = parseFloat(localStorage.getItem(FIT_KEY) || ''); if (Number.isFinite(v) && v >= 0) return v; } catch { /* default */ }
+  return DEFAULT_FIT;
+}
+export function rememberFit(v: number) { try { localStorage.setItem(FIT_KEY, String(v)); } catch { /* private mode */ } }
 
 /** How the sheet is drawn (the Views tab): the owner's, not saved with the part. */
 export interface ViewOpts { projLines: boolean; hidden: boolean }
@@ -23,6 +33,7 @@ export class State {
   farFace = false;                    // the hidden-line tool: new shapes go on the far face, seen through the part
   edges: Vec3[] = [];                 // the edge tool: picked edges (a point on each)
   polygonSides = 6;                   // the polygon tool's last choice
+  lastHole: HoleSpec = defaultHole();  // the hole tool starts from the last hole made
   repick: string | null = null;       // the edge tool is re-picking this fillet's edges
   viewOpts: ViewOpts = { projLines: true, hidden: true };
   built: BuildResult | null = null;
@@ -37,6 +48,8 @@ export class State {
       const raw = localStorage.getItem(KEY);
       if (raw) this.p = { ...newProject(), ...JSON.parse(raw) };
     } catch { /* fresh project */ }
+    if (this.p.fit === undefined) this.p.fit = defaultFit();
+    try { const h = localStorage.getItem(HOLE_KEY); if (h) this.lastHole = { ...this.lastHole, ...JSON.parse(h) }; } catch { /* default */ }
   }
 
   on(fn: Listener) { this.listeners.add(fn); }
@@ -92,7 +105,13 @@ export class State {
     if (this.sides && !this.feature(this.sides.id)) this.sides = null;
   }
 
-  load(p: Project) { this.snapshot(); this.p = { ...newProject(), ...p }; this.sels = []; this.sides = null; this.changed(); }
+  load(p: Project) {
+    this.snapshot();
+    this.p = { ...newProject(), ...p };
+    // parts from before printer fit: the owner's current fit (it only touches holes and slots, which they didn't have)
+    if (this.p.fit === undefined) this.p.fit = defaultFit();
+    this.sels = []; this.sides = null; this.changed();
+  }
 
   /** The one selected thing, or null when none or several are selected. */
   get one(): string | null { return this.sels.length === 1 ? this.sels[0] : null; }
@@ -113,6 +132,7 @@ export class State {
     });
     this.select([]);
   }
+  rememberHole(h: HoleSpec) { this.lastHole = { ...h }; try { localStorage.setItem(HOLE_KEY, JSON.stringify(h)); } catch { /* private mode */ } }
   setTool(t: Tool) { this.tool = t; if (t !== 'edge') { this.edges = []; this.repick = null; } this.emit('tool'); }
 
   feature(id: string | null): Feature | undefined { return this.p.features.find((f) => f.id === id); }
@@ -173,7 +193,13 @@ export function featureItem(f: Feature, p: Project): Item {
   };
   return {
     id: f.id, movable: true,
-    resizable(axis) { const [a] = featAxis(f, axis); return a === 2 || (f.type !== 'gear'); },
+    resizable(axis) {
+      const [a] = featAxis(f, axis);
+      if (a === 2) return true;
+      if (f.type === 'gear' || f.type === 'hole') return false;      // sized in their boxes
+      if (f.type === 'slot') return Math.abs(((f.rot || 0) % 90 + 90) % 90) < 1e-6;   // square to the view: like a rectangle
+      return true;
+    },
     extents() {
       const r = ranges();
       const min: Vec3 = [0, 0, 0], max: Vec3 = [0, 0, 0];
@@ -195,7 +221,13 @@ export function featureItem(f: Feature, p: Project): Item {
         let lo = lo0, hi = hi0;
         if (fside === 0) lo = Math.min(fv, hi); else hi = Math.max(fv, lo);
         const k = hi0 - lo0 > 1e-9 ? (hi - lo) / (hi0 - lo0) : 1;
-        if (f.type === 'rect') {
+        if (f.type === 'hole' || f.type === 'gear') return;
+        if (f.type === 'slot') {
+          // turned 90°: its length runs up the view
+          const across = Math.abs(((f.rot || 0) % 180 + 180) % 180 - 90) < 1e-6;
+          const n = Math.max(0.1, hi - lo);
+          if (a === 0) { f.cu = (lo + hi) / 2; if (across) f.h = n; else f.w = n; } else { f.cv = (lo + hi) / 2; if (across) f.w = n; else f.h = n; }
+        } else if (f.type === 'rect') {
           if (a === 0) { f.cu = (lo + hi) / 2; f.w = hi - lo; } else { f.cv = (lo + hi) / 2; f.h = hi - lo; }
         } else if (f.type === 'circle') {
           const c = a === 0 ? f.cu : f.cv;

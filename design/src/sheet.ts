@@ -4,7 +4,8 @@
 // picks (Option-click), handles, dimensions, T-square guides and pan/zoom.
 
 import type { Dim, Feature, ViewName, Vec3, P2 } from './model.js';
-import { newId, profile, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape } from './model.js';
+import { newId, profile, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath } from './model.js';
+import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
 import { State, itemFor, viewRanges, type Item } from './state.js';
@@ -19,7 +20,8 @@ interface Guide { axis: number; value: number }
 
 type Drag =
   | { kind: 'pan'; x0: number; y0: number; px: number; py: number }
-  | { kind: 'draw'; view: ViewName; type: 'rect' | 'circle' | 'polygon' | 'gear'; u0: number; v0: number; u1: number; v1: number }
+  | { kind: 'draw'; view: ViewName; type: 'rect' | 'slot' | 'circle' | 'polygon' | 'gear' | 'hole'; u0: number; v0: number; u1: number; v1: number }
+  | { kind: 'bulge'; id: string; k: number; view: ViewName; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'dim'; id: string; view: ViewName; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'edge'; id: string; view: ViewName; axis: number; side: 0 | 1; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'move'; ids: string[]; view: ViewName; u0: number; v0: number; orig: string; started: boolean; sx: number; sy: number }
@@ -40,6 +42,8 @@ const CURSORS: Record<string, string> = {
   zoom: magnifier(false),
   zoomOut: magnifier(true),
   rect: cursorSvg("<rect x='15' y='16' width='11' height='8' rx='0.5'/>"),
+  slot: cursorSvg("<rect x='14' y='17' width='13' height='7' rx='3.5'/>"),
+  hole: cursorSvg("<circle cx='21' cy='21' r='5.5'/><circle cx='21' cy='21' r='2.5'/>"),
   circle: cursorSvg("<circle cx='21' cy='21' r='5.5'/>"),
   polygon: cursorSvg("<path d='M18 16h6l3 5-3 5h-6l-3-5z'/>"),
   line: cursorSvg("<path d='M14 26l4-9 5 5 4-8'/>"),
@@ -67,6 +71,7 @@ export class Sheet {
   onStatus: (text: string) => void = () => {};
   onZoom: () => void = () => {};
   onGear: (id: string) => void = () => {};       // a gear was just drawn: open its dialog
+  onHole: (id: string) => void = () => {};       // a hole was just placed: open its box
   onText: (id: string) => void = () => {};       // a text was just placed: type it
   onEdges: () => void = () => {};                // the edge tool's picks changed
   private line: { view: ViewName; pts: P2[] } | null = null;   // the line tool, in progress
@@ -276,7 +281,8 @@ export class Sheet {
     // a sketch seen edge-on is a line: one handle pulls its depth
     if (Math.abs(ur[1] - ur[0]) < 1e-9) out.splice(0, 1);
     else if (Math.abs(vr[1] - vr[0]) < 1e-9) out.splice(2, 1);
-    return out;
+    // only the sides it can be dragged by (a hole's size is set in its box)
+    return out.filter((h) => !it.resizable || it.resizable(h.axis));
   }
 
   private handleAt(view: ViewName, u: number, v: number) {
@@ -451,7 +457,7 @@ export class Sheet {
     const view = this.viewAt(x, y);
     const tool = this.st.tool;
     if (view && view !== this.st.activeView) { this.st.activeView = view; this.st.emit('select'); }
-    if (view && (tool === 'rect' || tool === 'circle' || tool === 'polygon' || tool === 'gear')) {
+    if (view && (tool === 'rect' || tool === 'slot' || tool === 'circle' || tool === 'polygon' || tool === 'gear' || tool === 'hole')) {
       const [u, v] = this.fromSheet(view, x, y);
       const [su, sv] = this.snapView(view, u, v, this.snapTargets(new Set()), e.altKey);
       this.drag = { kind: 'draw', view, type: tool, u0: su, v0: sv, u1: su, v1: sv };
@@ -509,6 +515,12 @@ export class Sheet {
         this.render();
         return;
       }
+    }
+    // an outline side's arc handle: drag it to bow the side
+    const bh = this.bulgeAt(view, u, v);
+    if (bh) {
+      this.drag = { kind: 'bulge', id: bh.id, k: bh.k, view, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
+      return;
     }
     // a handle of the one selected item
     const h = this.handleAt(view, u, v);
@@ -594,6 +606,7 @@ export class Sheet {
       d.started = true;
       this.st.snapshot();
     }
+    if (d.kind === 'bulge') { this.dragBulge(d, u, v, free); this.st.changed(); this.status(); return; }
     // start each step from the state at drag start, so snapping never drifts
     const orig = JSON.parse(d.orig);
     const ids = d.kind === 'move' ? d.ids : [d.id];
@@ -686,13 +699,16 @@ export class Sheet {
   private finishDraw(d: Extract<Drag, { kind: 'draw' }>) {
     const w = Math.abs(d.u1 - d.u0), h = Math.abs(d.v1 - d.v0);
     let r = Math.hypot(d.u1 - d.u0, d.v1 - d.v0);
-    if ((d.type === 'rect' && (w < 1e-6 || h < 1e-6)) || (d.type !== 'rect' && r < 1e-6)) return;
+    const boxy = d.type === 'rect' || d.type === 'slot';
+    if (d.type === 'hole') { this.placeHole(d.view, d.u0, d.v0, 2 * r); return; }
+    if ((boxy && (w < 1e-6 || h < 1e-6)) || (!boxy && r < 1e-6)) return;
     const f: Feature = {
       id: newId(), type: d.type, view: d.view,
-      cu: d.type === 'rect' ? (d.u0 + d.u1) / 2 : d.u0,
-      cv: d.type === 'rect' ? (d.v0 + d.v1) / 2 : d.v0,
+      cu: boxy ? (d.u0 + d.u1) / 2 : d.u0,
+      cv: boxy ? (d.v0 + d.v1) / 2 : d.v0,
       w, h, r, corner: 0, d0: 0, d1: 0, op: 'add', through: false,
     };
+    if (d.type === 'slot') f.rot = 0;
     if (d.type === 'polygon') { f.sides = this.st.polygonSides; f.rot = 0; }
     if (d.type === 'gear') {
       // as many teeth as fit the circle drawn, at the module of the gears already here (so they mesh)
@@ -725,6 +741,70 @@ export class Sheet {
     }
     this.st.change((p) => { p.features.push(f); });
     this.st.select([f.id]);
+  }
+
+  /**
+   * A hole where it was clicked: last hole's kind; dragged out, the screw
+   * whose clearance is nearest the size drawn. Cut right through; the box
+   * opens to set it up.
+   */
+  private placeHole(view: ViewName, u: number, v: number, dragged: number) {
+    let spec = { ...this.st.lastHole };
+    if (dragged > 1) {
+      let best = spec.size, err = Infinity;
+      for (const k of SCREW_ORDER) { const e = Math.abs(SCREWS[k].clear[1] - dragged); if (e < err) { err = e; best = k; } }
+      spec = holeFromTable(best, spec.kind, spec.fit, spec);
+    }
+    const f: Feature = {
+      id: newId(), type: 'hole', view, cu: u, cv: v, w: 0, h: 0, r: spec.d / 2, corner: 0,
+      d0: 0, d1: 0, op: 'cut', through: true, hole: spec,
+    };
+    this.newShape(f, view);
+    this.onHole(f.id);
+  }
+
+  // ------------------------------------------------------------ bowing an outline's sides into arcs
+
+  /** Where each side's arc handle sits, in a view (the one selected outline, in a view facing it). */
+  private bulgeHandles(view: ViewName): { id: string; k: number; u: number; v: number; a: P2; b: P2 }[] {
+    const one = this.st.one;
+    const f = one ? this.st.feature(one) : undefined;
+    if (!f || f.type !== 'poly' || !f.pts || this.st.sides || !parallel(f.view, view)) return [];
+    const pts = f.pts.map(([u, v]) => [f.cu + u, f.cv + v] as P2), n = pts.length;
+    return pts.map((P, k) => {
+      const Q = pts[(k + 1) % n];
+      const m = bulgeMid(P, Q, f.bulges?.[k] || 0);
+      const [u, v] = this.featToView(f, view, m[0], m[1]);
+      return { id: f.id, k, u, v, a: P, b: Q };
+    });
+  }
+
+  private bulgeAt(view: ViewName, u: number, v: number) {
+    const tol = (HANDLE_PX + 3) / this.zoom;
+    return this.bulgeHandles(view).find((h) => Math.abs(h.u - u) <= tol && Math.abs(h.v - v) <= tol) || null;
+  }
+
+  /** Bow side k so its middle follows the pointer; it snaps straight, and to a half circle. */
+  private dragBulge(d: Extract<Drag, { kind: 'bulge' }>, u: number, v: number, free: boolean) {
+    const f = this.st.feature(d.id);
+    if (!f || !f.pts) return;
+    const n = f.pts.length;
+    const P: P2 = [f.cu + f.pts[d.k][0], f.cv + f.pts[d.k][1]], Q: P2 = [f.cu + f.pts[(d.k + 1) % n][0], f.cv + f.pts[(d.k + 1) % n][1]];
+    // the pointer in the outline's own view
+    const w = VIEWS[d.view].toWorld(u, v, 0);
+    const q = VIEWS[f.view].toView(w);
+    const dx = Q[0] - P[0], dy = Q[1] - P[1], L = Math.hypot(dx, dy) || 1;
+    let s = (q[0] - (P[0] + Q[0]) / 2) * (dy / L) + (q[1] - (P[1] + Q[1]) / 2) * (-dx / L);
+    s = Math.max(-L, Math.min(L, s));
+    if (!free) {
+      const snapMm = 6 / this.zoom;
+      if (Math.abs(s) < snapMm) s = 0;
+      else if (Math.abs(Math.abs(s) - L / 2) < snapMm) s = Math.sign(s) * L / 2;
+      else s = Math.round(s / (this.st.p.grid / 2 || 0.5)) * (this.st.p.grid / 2 || 0.5);
+    }
+    const b = Array.from({ length: n }, (_, i) => f.bulges?.[i] || 0);
+    b[d.k] = Math.round(s * 1e4) / 1e4;
+    f.bulges = b.some((x) => x !== 0) ? b : undefined;
   }
 
   private placeText(view: ViewName, u: number, v: number) {
@@ -982,7 +1062,8 @@ export class Sheet {
     if (view && this.st.tool === 'select') {
       const [u, v] = this.fromSheet(view, x, y);
       const hd = this.handleAt(view, u, v);
-      if (hd) cur = hd.horiz ? 'ew-resize' : 'ns-resize';
+      if (this.bulgeAt(view, u, v)) cur = 'grab';
+      else if (hd) cur = hd.horiz ? 'ew-resize' : 'ns-resize';
       else if (alt && this.pickSide(view, u, v)) cur = 'pointer';
       else {
         h = this.pick(view, u, v);
@@ -1015,13 +1096,19 @@ export class Sheet {
     }
     const d = this.drag;
     if (d && d.kind === 'draw') {
-      t += d.type === 'rect'
+      t += d.type === 'rect' || d.type === 'slot'
         ? `     ${fmt(Math.abs(d.u1 - d.u0))} × ${fmt(Math.abs(d.v1 - d.v0))}`
+        : d.type === 'hole' ? '     click for the hole, or drag out roughly its size'
         : `     Ø ${fmt(2 * Math.hypot(d.u1 - d.u0, d.v1 - d.v0))}`;
     }
     if (this.line && c) {
       const last = this.line.pts[this.line.pts.length - 1];
       t += `     line ${fmt(Math.hypot(c.u - last[0], c.v - last[1]))}   (click the first point or press Return to close, Shift keeps it level)`;
+    }
+    if (d && d.kind === 'bulge') {
+      const f = this.st.feature(d.id);
+      const s = f?.bulges?.[d.k] || 0;
+      t += s ? `     arc: bowed ${fmt(Math.abs(s))}   (Option: no snapping; drag back to the side to straighten it)` : '     straight side';
     }
     if (this.st.tool === 'edge' && !this.st.built?.edges.length) t += '     Nothing to round yet: make a body first';
     this.onStatus(t);
@@ -1175,6 +1262,11 @@ export class Sheet {
             const s = px(HANDLE_PX);
             parts.push(`<rect class="ds-handle" x="${x - s}" y="${y - s}" width="${2 * s}" height="${2 * s}"/>`);
           }
+          for (const bh of this.bulgeHandles(view)) {
+            const [x, y] = this.toSheet(view, bh.u, bh.v);
+            const s = px(HANDLE_PX);
+            parts.push(`<path class="ds-handle ds-bulge" d="M${x} ${y - s * 1.3}L${x + s * 1.3} ${y}L${x} ${y + s * 1.3}L${x - s * 1.3} ${y}Z"><title>Drag to bow this side into an arc</title></path>`);
+          }
         }
       }
     }
@@ -1201,6 +1293,10 @@ export class Sheet {
     if (d && d.kind === 'draw') {
       let poly: [number, number][];
       if (d.type === 'rect') poly = [[d.u0, d.v0], [d.u1, d.v0], [d.u1, d.v1], [d.u0, d.v1]];
+      else if (d.type === 'slot') {
+        const fake = { type: 'slot', cu: (d.u0 + d.u1) / 2, cv: (d.v0 + d.v1) / 2, w: Math.abs(d.u1 - d.u0), h: Math.abs(d.v1 - d.v0), rot: 0 } as Feature;
+        poly = slotPath(fake) ? profile(fake) : [];
+      }
       else if (d.type === 'polygon') {
         const fake = { type: 'polygon', cu: d.u0, cv: d.v0, r: Math.hypot(d.u1 - d.u0, d.v1 - d.v0), sides: st.polygonSides, rot: 0 } as Feature;
         poly = verts(fake) || [];

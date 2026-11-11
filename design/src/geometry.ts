@@ -6,7 +6,8 @@ import {
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
-import { cornerRadii, depthRange, fromRef, gearProfile, instances, isShape, roundCorner, verts } from './model.js';
+import { bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
+import { hexPoints } from './holes.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
 
@@ -66,9 +67,27 @@ function smooth(path: Path) {
   return pen.close();
 }
 
-/** The feature's 2D drawing in its own view (u, v). */
-function drawing(f: Feature) {
-  if (f.type === 'circle') return f.r > 1e-6 ? drawCircle(f.r).translate(f.cu, f.cv) : null;
+/** An outline with some sides bowed into arcs. */
+function arcOutline(f: Feature) {
+  const { pts, bulge } = polyPath(f), n = pts.length;
+  let pen = draw(pts[0]);
+  for (let k = 0; k < n; k++) {
+    const P = pts[k], Q = pts[(k + 1) % n];
+    if (Math.abs(bulge[k]) > 1e-9) pen = pen.threePointsArcTo(Q, bulgeMid(P, Q, bulge[k]));
+    else if (k < n - 1) pen = pen.lineTo(Q);
+  }
+  return pen.close();
+}
+
+/** The feature's 2D drawing in its own view (u, v); grow: made this much bigger across (printer fit). */
+function drawing(f: Feature, grow = 0) {
+  if (f.type === 'circle') return f.r + grow / 2 > 1e-6 ? drawCircle(f.r + grow / 2).translate(f.cu, f.cv) : null;
+  if (f.type === 'slot') {
+    const s = slotPath(f, grow);
+    if (!s) return null;
+    return draw(s.a).lineTo(s.b).threePointsArcTo(s.c, s.m1).lineTo(s.d).threePointsArcTo(s.a, s.m2).close();
+  }
+  if (hasArcs(f)) return arcOutline(f);
   if (f.type === 'gear' && f.gear) {
     const g = f.gear, rot = f.rot || 0;
     if (g.kind === 'rack') return polyline(gearProfile(f).outer);
@@ -107,7 +126,8 @@ export function featureSolid(f: Feature, p: Project): Solid | null {
   if (!isShape(f)) return null;
   const [lo, hi] = depthRange(f, p);
   if (hi - lo < 1e-6) return null;
-  const d = drawing(f);
+  if (f.type === 'hole') return holeSolid(f, p, lo, hi);
+  const d = drawing(f, fitOf(f, p));
   if (!d) return null;
   const v = VIEWS[f.view];
   const plane = new Plane(v.toWorld(0, 0, lo), v.uDir, v.eye);
@@ -120,6 +140,49 @@ export function featureSolid(f: Feature, p: Project): Solid | null {
   } else solid = d.sketchOnPlane(plane).extrude(hi - lo);
   if (g && g.kind !== 'rack') solid = gearExtras(f, solid);
   return solid;
+}
+
+/**
+ * A screw hole as one cutter: the bore, plus a counterbore or countersink at
+ * the face it was drawn on, or a hex nut pocket at the other end. Everything
+ * made the printer fit bigger across.
+ */
+function holeSolid(f: Feature, p: Project, lo: number, hi: number): Solid | null {
+  const h = f.hole;
+  if (!h || !(h.d > 0)) return null;
+  const V = VIEWS[f.view];
+  const fit = fitOf(f, p);
+  const inn = into(f);                         // depth direction into the material
+  const out = -inn;
+  // a blind heat-set insert hole goes the insert's length (and a bit) unless set deeper
+  const plane = (d: number) => new Plane(V.toWorld(0, 0, d), V.uDir, V.eye);
+  const disc = (r: number, d0: number, d1: number) => {
+    const a = Math.min(d0, d1), b = Math.max(d0, d1);
+    return drawCircle(r).translate(f.cu, f.cv).sketchOnPlane(plane(a)).extrude(b - a);
+  };
+  const R = (h.d + fit) / 2;
+  const face = f.d0;
+  // the bore, poking 0.5 mm out past the face so it never leaves a skin
+  let tool: Solid = disc(R, face + out * 0.5, inn < 0 ? lo : hi);
+  if (h.kind === 'cbore' && h.headD > 0 && h.headDepth > 0) {
+    tool = tool.fuse(disc((h.headD + fit) / 2, face + out * 0.5, face + inn * h.headDepth));
+  } else if (h.kind === 'csk' && h.headD > h.d) {
+    // 90°: the cone narrows by its depth on each side
+    const rTop = (h.headD + fit) / 2, depth = rTop - R;
+    const a = drawCircle(rTop).translate(f.cu, f.cv).sketchOnPlane(plane(face));
+    const b = drawCircle(R).translate(f.cu, f.cv).sketchOnPlane(plane(face + inn * depth));
+    const cone = (a as any).loftWith(b);
+    tool = tool.fuse(cone).fuse(disc(rTop, face, face + out * 0.5));
+  } else if (h.kind === 'nut' && h.nutAF > 0 && h.nutDepth > 0) {
+    // at the far end of the hole: the nut drops in from the other side
+    // (a through hole reaches past the part: use the part's own far side)
+    const end = f.op === 'cut' && f.through ? (f.far ? nearDepth(f.view, p) : farDepth(f.view, p)) : (inn < 0 ? lo : hi);
+    const hex = hexPoints(f.cu, f.cv, h.nutAF + fit, h.nutRot + 30);
+    const a = Math.min(end - inn * h.nutDepth, end + inn * 0.5), b = Math.max(end - inn * h.nutDepth, end + inn * 0.5);
+    const pocket = polyline(hex as P2[]).sketchOnPlane(plane(a)).extrude(b - a);
+    tool = tool.fuse(pocket);
+  }
+  return tool;
 }
 
 /** A gear's hub, bore and set screw. */

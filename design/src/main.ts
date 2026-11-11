@@ -10,6 +10,8 @@ import { Sheet, isTyping } from './sheet.js';
 import { Panel, featureName } from './panel.js';
 import { Preview3D } from './preview3d.js';
 import { openGearDialog } from './geardialog.js';
+import { openHoleDialog } from './holedialog.js';
+import { takesFit } from './model.js';
 
 interface Studio {
   prepare: { addFiles(files: { name: string; buffer: ArrayBuffer }[]): Promise<void> };
@@ -22,6 +24,8 @@ const ico = (body: string) => `<svg viewBox="0 0 24 24" width="20" height="20" f
 const ICONS = {
   select: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="currentColor" stroke-width="1.2"/>'),
   rect: ico('<rect x="4" y="6" width="16" height="12" rx="0.5"/>'),
+  slot: ico('<rect x="3" y="8" width="18" height="8" rx="4"/>'),
+  hole: ico('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" stroke-width="1.2"/>'),
   circle: ico('<circle cx="12" cy="12" r="8"/>'),
   zoom: ico('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5l5 5M7.5 10.5h6M10.5 7.5v6"/>'),
   polygon: ico('<path d="M8 4.5h8l4 7.5-4 7.5H8l-4-7.5z"/>'),
@@ -41,6 +45,24 @@ const ICONS = {
   distv: ico('<path d="M4 3h16M4 21h16"/><rect x="8" y="6" width="8" height="3"/><rect x="8" y="15" width="8" height="3"/><rect x="8" y="10.5" width="8" height="3"/>'),
   trash: ico('<path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/>'),
 };
+
+/** Tools that share one toolbox button (hold it, or click its corner, for the others). */
+const SHAPES: { tool: Tool; name: string; key: string; tip: string }[] = [
+  { tool: 'rect', name: 'Rectangle', key: 'R', tip: 'Drag corner to corner' },
+  { tool: 'slot', name: 'Slot', key: 'S', tip: 'Drag out its length and width; the ends are round' },
+  { tool: 'circle', name: 'Circle', key: 'C', tip: 'Drag out from the centre' },
+  { tool: 'polygon', name: 'Polygon', key: 'P', tip: 'Drag out from the centre; set the sides on the right' },
+];
+const GROUPS: Record<string, typeof SHAPES> = { shapes: SHAPES };
+
+function toolGroup(name: string, list: typeof SHAPES): string {
+  const first = list[0];
+  const items = list.map((t) => `<button data-tool="${t.tool}" title="${t.tip}">${(ICONS as any)[t.tool]}<span>${t.name}</span><kbd>${t.key}</kbd></button>`).join('');
+  return `<div class="ds-tgroup" data-group="${name}">
+    <button class="ds-tgroup-main" data-tool="${first.tool}" title="${first.name} (${first.key})&#10;Hold for the other shapes">${(ICONS as any)[first.tool]}<i class="ds-tgroup-more"></i></button>
+    <div class="ds-flyout hidden">${items}</div>
+  </div>`;
+}
 
 const html = `
 <div class="ds-tools">
@@ -64,10 +86,10 @@ const html = `
 <div class="ds-body">
   <nav class="ds-toolbox" id="ds-tool">
     <button data-tool="select" title="Select (V)&#10;Shift-click or drag a box to select several.&#10;Option-click a side of a rectangle.">${ICONS.select}</button>
-    <button data-tool="rect" title="Rectangle (R)">${ICONS.rect}</button>
-    <button data-tool="circle" title="Circle (C): drag out from the centre">${ICONS.circle}</button>
-    <button data-tool="polygon" title="Polygon (P): drag out from the centre&#10;Set the number of sides on the right.">${ICONS.polygon}</button>
-    <button data-tool="line" title="Line (L): click each corner of an outline,&#10;click the first one (or press Return) to close it.&#10;Shift keeps a side level or plumb.">${ICONS.line}</button>
+    ${toolGroup('shapes', SHAPES)}
+    <button data-tool="line" title="Line (L): click each corner of an outline,&#10;click the first one (or press Return) to close it.&#10;Shift keeps a side level or plumb.&#10;Then drag the ◆ in the middle of a side to bow it into an arc.">${ICONS.line}</button>
+    <span class="ds-tool-sep"></span>
+    <button data-tool="hole" title="Hole (O): click where a screw goes (or drag out roughly its size),&#10;then pick the screw and the kind of hole in the box that opens.">${ICONS.hole}</button>
     <button data-tool="gear" title="Gear (G): drag out roughly how big,&#10;then set it up in the box that opens.">${ICONS.gear}</button>
     <button data-tool="text" title="Text (T): click where it goes">${ICONS.text}</button>
     <span class="ds-tool-sep"></span>
@@ -101,6 +123,7 @@ export function mount(root: HTMLElement, studio: Studio) {
   const sheet = new Sheet($('#ds-sheet'), st);
   new Panel($('#ds-panel'), st, {
     gear: (id) => editGear(id, false),
+    hole: (id) => editHole(id, false),
     dimValue: (dm) => sheet.dimGeom(dm)?.value ?? null,
     dimSize: (dm, size) => sheet.resizeTo(dm, size),
     repick: (id) => repick(id),
@@ -170,6 +193,37 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   sheet.onStatus = (t) => { $('#ds-status').textContent = t; };
   sheet.onGear = (id) => editGear(id, true);
+  sheet.onHole = (id) => editHole(id, true);
+
+  /**
+   * The hole box. On a new hole, Cancel takes it away again. With several
+   * holes selected, Apply sets them all alike (each keeps its place).
+   */
+  function editHole(id: string, isNew: boolean) {
+    const f = st.feature(id);
+    if (!f || !f.hole) return;
+    const group = isNew ? [f] : st.sels.map((x) => st.feature(x)).filter((q): q is Feature => !!q && q.type === 'hole');
+    if (!group.includes(f)) group.unshift(f);
+    openHoleDialog(root, {
+      hole: f.hole, through: f.through, depth: Math.abs(f.d1 - f.d0) || 5, fit: takesFit(f), partFit: st.p.fit ?? 0,
+      units: st.p.units, isNew, count: group.length,
+      apply: (r) => {
+        st.change(() => {
+          for (const q of group) {
+            q.hole = { ...r.hole };
+            q.r = r.hole.d / 2;
+            q.op = 'cut';
+            q.through = r.through;
+            if (!r.through) q.d1 = q.d0 + (q.far ? 1 : -1) * r.depth;
+            q.fit = r.fit ? undefined : false;
+          }
+        }, !isNew);
+        st.rememberHole(r.hole);
+        if (isNew) st.save();
+      },
+      cancel: () => { if (isNew) { st.undo(); st.select([]); } },
+    });
+  }
   sheet.onText = () => requestAnimationFrame(() => { const i = root.querySelector('#ds-text-input') as HTMLInputElement | null; if (i) { i.focus(); i.select(); } });
   sheet.onEdges = () => { st.emit('select'); };
 
@@ -301,11 +355,43 @@ export function mount(root: HTMLElement, studio: Studio) {
   });
 
   // ---------------------------------------------------------- toolbar
-  root.querySelectorAll<HTMLButtonElement>('#ds-tool button[data-tool]').forEach((b) => { b.onclick = () => st.setTool(b.dataset.tool as Tool); });
+  root.querySelectorAll<HTMLButtonElement>('#ds-tool > button[data-tool]').forEach((b) => { b.onclick = () => st.setTool(b.dataset.tool as Tool); });
+  // tool groups: click uses the one shown; hold (or click the corner) opens the others
+  const GROUP_KEY = 'studio.design.groups';
+  let groupPick: Record<string, Tool> = {};
+  try { groupPick = JSON.parse(localStorage.getItem(GROUP_KEY) || '{}'); } catch { /* defaults */ }
+  const closeFlyouts = () => root.querySelectorAll('.ds-flyout').forEach((f) => f.classList.add('hidden'));
+  root.querySelectorAll<HTMLElement>('.ds-tgroup').forEach((g) => {
+    const name = g.dataset.group!;
+    const main = g.querySelector('.ds-tgroup-main') as HTMLButtonElement;
+    const fly = g.querySelector('.ds-flyout') as HTMLElement;
+    let held: number | undefined, opened = false;
+    const open = () => { closeFlyouts(); fly.classList.remove('hidden'); opened = true; };
+    main.addEventListener('pointerdown', (e) => {
+      opened = false;
+      const r = main.getBoundingClientRect();
+      if (e.clientX > r.right - 11 && e.clientY > r.bottom - 11) { open(); return; }   // the little corner
+      held = window.setTimeout(open, 350);
+    });
+    main.addEventListener('pointerup', () => { clearTimeout(held); });
+    main.addEventListener('pointerleave', () => { clearTimeout(held); });
+    main.onclick = () => { if (!opened) st.setTool((groupPick[name] || GROUPS[name][0].tool) as Tool); };
+    fly.querySelectorAll<HTMLButtonElement>('button[data-tool]').forEach((b) => {
+      b.onclick = (e) => {
+        e.stopPropagation();
+        const t = b.dataset.tool as Tool;
+        groupPick[name] = t;
+        try { localStorage.setItem(GROUP_KEY, JSON.stringify(groupPick)); } catch { /* private mode */ }
+        closeFlyouts();
+        st.setTool(t);
+      };
+    });
+  });
+  document.addEventListener('pointerdown', (e) => { if (!(e.target as HTMLElement).closest?.('.ds-tgroup')) closeFlyouts(); });
   const toggleFar = () => {
     st.farFace = !st.farFace;
     // the hidden-line toggle goes with drawing, so pick a drawing tool if none is
-    if (st.farFace && !['rect', 'circle', 'polygon', 'line', 'text'].includes(st.tool)) st.setTool('rect'); else st.emit('tool');
+    if (st.farFace && !['rect', 'slot', 'circle', 'polygon', 'line', 'hole', 'text'].includes(st.tool)) st.setTool('rect'); else st.emit('tool');
   };
   ($('#ds-tool button[data-toggle="far"]') as HTMLButtonElement).onclick = toggleFar;
   $('#ds-undo').onclick = () => st.undo();
@@ -590,7 +676,21 @@ export function mount(root: HTMLElement, studio: Studio) {
   };
 
   function syncToolbar() {
-    root.querySelectorAll<HTMLButtonElement>('#ds-tool button[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === st.tool));
+    root.querySelectorAll<HTMLButtonElement>('#ds-tool > button[data-tool], .ds-flyout button[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === st.tool));
+    // a group's button shows the tool in use (or the last one picked from it)
+    root.querySelectorAll<HTMLElement>('.ds-tgroup').forEach((g) => {
+      const name = g.dataset.group!, list = GROUPS[name];
+      const inUse = list.find((t) => t.tool === st.tool);
+      if (inUse) groupPick[name] = inUse.tool;
+      const shown = list.find((t) => t.tool === groupPick[name]) || list[0];
+      const main = g.querySelector('.ds-tgroup-main') as HTMLButtonElement;
+      if (main.dataset.tool !== shown.tool) {
+        main.dataset.tool = shown.tool;
+        main.innerHTML = `${(ICONS as any)[shown.tool]}<i class="ds-tgroup-more"></i>`;
+        main.title = `${shown.name} (${shown.key})\nHold for the other shapes`;
+      }
+      main.classList.toggle('active', !!inUse);
+    });
     $('#ds-tool button[data-toggle="far"]').classList.toggle('active', st.farFace);
     ($('#ds-undo') as HTMLButtonElement).disabled = !st.canUndo;
     ($('#ds-redo') as HTMLButtonElement).disabled = !st.canRedo;
@@ -737,7 +837,11 @@ export function mount(root: HTMLElement, studio: Studio) {
       const f = st.feature(feats[0]);
       if (!f) { ctx.replaceChildren(); return; }
       kids.push(label(featureName(f)));
-      if (isShape(f)) {
+      if (f.type === 'hole') {
+        const b = mk('button', 'btn sm ghost', 'Edit hole…') as HTMLButtonElement;
+        b.onclick = () => editHole(f.id, false);
+        kids.push(b);
+      } else if (isShape(f)) {
         const seg = mk('div', 'ds-seg ds-small');
         for (const [v, t] of [['add', 'Add ▲'], ['cut', 'Cut ▼']] as const) {
           const b = mk('button', f.op === v ? 'active' : '', t) as HTMLButtonElement;
@@ -786,7 +890,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }
-    const keys: Record<string, Tool> = { v: 'select', r: 'rect', c: 'circle', p: 'polygon', l: 'line', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
+    const keys: Record<string, Tool> = { v: 'select', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);
     else if (k === 'h') toggleFar();
