@@ -132,6 +132,19 @@ depths along the view's eye. So:
    rotate about its normal; SnorbCAM import skips features not on the top.
    The printability check needs nothing (it reads the built part).
 
+### Start from a shape (shipped 06bccbf)
+
+Body › *Start from a shape*: Block, Cylinder or None. The shape is the
+first entry in Features (click it for size, Hollow, Delete; ⌫ deletes,
+undo restores). Data is still `p.stock` plus `stock.shape`. Sphere and
+cone go in the same list later.
+
+Known slow spot: a hollow cylinder with a hole through its wall takes
+about 8 s per side view to work out hidden lines (exact HLR on the curves
+where the hole meets both round walls; a solid cylinder with the same hole
+takes 0.26 s). The faster approximate HLR (HLRBRep_PolyAlgo) is in the
+OpenCascade build, but its shape output (PolyHLRToShape) isn't bound.
+
 ### Spheres
 Possible now with Revolve (a half circle against its centre line). Next: a
 *Sphere* shape in the shapes flyout (click the centre, drag the radius in any
