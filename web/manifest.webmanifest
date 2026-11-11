@@ -1,0 +1,13 @@
+{
+  "name": "SnorbStudio",
+  "short_name": "SnorbStudio",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#211427",
+  "theme_color": "#211427",
+  "icons": [
+    { "src": "img/snorb-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "img/snorb-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
