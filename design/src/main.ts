@@ -15,6 +15,8 @@ import { openHoleDialog } from './holedialog.js';
 import { openRotateDialog } from './rotatedialog.js';
 import { axisOf } from './views.js';
 import { viewDxf } from './dxf.js';
+import { checkPrint, type Issue } from './check.js';
+import { openCheckDialog } from './checkdialog.js';
 import { takesFit } from './model.js';
 
 interface Studio {
@@ -95,6 +97,7 @@ const html = `
   <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
   <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Download the STL, or a DXF drawing of a view">Export ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
+  <button class="btn sm ghost" id="ds-check" title="Will it print? Looks for thin walls, steep overhangs, holes on their side and bits too small (it also runs on Send to Prepare / Library)">Check</button>
   <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
   <button class="btn sm ghost" id="ds-lib" title="Keep the STL in the model library on the Pi (Files tab)">Send to Library</button>
   <button class="btn sm primary" id="ds-send" title="Put it on the plate in Prepare">Send to Prepare</button>
@@ -191,7 +194,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     el.replaceChildren(...kids);
   }
   const preview = new Preview3D($('#ds-3d'));
-  (window as any).__design = { st, sheet };     // for poking at from the console
+  (window as any).__design = { st, sheet, checkPrint };     // for poking at from the console
   // the panel on the right: drag its edge to make it narrower or wider (remembered)
   const side = $('#ds-side'), split = $('#ds-splitter');
   const PANEL_KEY = 'studio.design.panelWidth', PANEL_DEFAULT = 300;
@@ -605,10 +608,62 @@ export function mount(root: HTMLElement, studio: Studio) {
   $('#ds-new').onclick = () => startBlank('A new part.');
   $('#ds-close').onclick = () => startBlank('Closed. Here is a blank part.');
   // ---------------------------------------------------------- library
+  // ---------------------------------------------------------------- printability
+  /** Wait for the part to finish building (so the check sees what's drawn now). */
+  const builtNow = () => new Promise<void>((res) => {
+    if (!inFlight && !pending && st.built) return res();
+    const t0 = Date.now();
+    const poll = () => (!inFlight && !pending && st.built) || Date.now() - t0 > 20000 ? res() : setTimeout(poll, 100);
+    poll();
+  });
+  let printAnyway = '';           // the part as it was when Print anyway was picked: don't ask again for that
+  let checking = false;
+  /** Run the check. Manual: show what it found. Sending: true to go ahead. */
+  async function runCheck(sending?: string): Promise<boolean> {
+    if (checking) return false;
+    checking = true;
+    try {
+      await builtNow();
+      const now = JSON.stringify(st.p);
+      if (sending && printAnyway === now) return true;
+      const t0 = performance.now();
+      let issues: Issue[];
+      try { issues = checkPrint(st.p, st.built?.mesh ?? null); } catch (e: any) { flash(`The check didn't finish (${e.message}).`); return !!sending; }
+      const ms = Math.round(performance.now() - t0);
+      if (!issues.length) {
+        if (!sending) flash(`Looks printable: no thin walls, steep overhangs, sideways holes or tiny bits (checked in ${ms} ms).`);
+        return true;
+      }
+      const r = await new Promise<boolean | 'again'>((res) => openCheckDialog(document.body, {
+        issues, sending,
+        show: (it) => {
+          preview.highlight(it.tris ?? null);
+          if (it.feature) st.select([it.feature]); else st.select([]);
+          flash(it.tris ? `${it.title}: shown in red in the 3D view.` : it.title);
+        },
+        fix: (it) => {
+          if (it.fix === 'teardrop' && it.feature) {
+            const f = st.feature(it.feature);
+            if (f) { st.change(() => { f.teardrop = true; }); flash('Made it a teardrop: the point is straight up.'); }
+          }
+        },
+        done: (go) => {
+          preview.highlight(null);
+          if (go === true) printAnyway = JSON.stringify(st.p);
+          res(go);
+        },
+      }));
+      if (r !== 'again') return r;
+    } finally { checking = false; }
+    return runCheck(sending);      // a fix changed the part: look again at the new one
+  }
+  $('#ds-check').onclick = () => { runCheck(); };
+
   $('#ds-lib').onclick = async () => {
     const b = $('#ds-lib') as HTMLButtonElement;
     commitName();
     if (!await nameFree()) return;
+    if (!await runCheck('Send to Library')) return;
     b.disabled = true;
     try {
       const buf = await getSTL();
@@ -854,6 +909,7 @@ export function mount(root: HTMLElement, studio: Studio) {
   };
   $('#ds-send').onclick = async () => {
     const b = $('#ds-send') as HTMLButtonElement;
+    if (!await runCheck('Send to Prepare')) return;
     b.disabled = true;
     try {
       const buf = await getSTL();

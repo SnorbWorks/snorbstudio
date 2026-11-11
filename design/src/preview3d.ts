@@ -41,7 +41,42 @@ export class Preview3D {
     this.draw();
   }
 
+  /** Light up some triangles of the part (a printability problem), or clear with null. */
+  highlight(tris: number[] | null) {
+    if (this.marks) { this.scene.remove(this.marks); this.marks.geometry.dispose(); this.marks = null; }
+    if (tris && tris.length && this.mesh) {
+      const src = this.mesh.geometry, idx = src.getIndex()!;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', src.getAttribute('position').clone());   // its own copy: disposing this must not free the part's buffer
+      const ix: number[] = [];
+      for (const t of tris) ix.push(idx.getX(3 * t), idx.getX(3 * t + 1), idx.getX(3 * t + 2));
+      g.setIndex(ix);
+      this.marks = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0xff4d5e, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      this.scene.add(this.marks);
+      // swing round to face it: from the way the marked faces look (an overhang: from underneath)
+      const pos = g.getAttribute('position');
+      const n = new THREE.Vector3(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      for (let k = 0; k < ix.length; k += 3) {
+        a.fromBufferAttribute(pos, ix[k]); b.fromBufferAttribute(pos, ix[k + 1]); c.fromBufferAttribute(pos, ix[k + 2]);
+        n.add(b.clone().sub(a).cross(c.clone().sub(a)));     // area-weighted
+      }
+      const box = new THREE.Box3().setFromObject(this.mesh);
+      const centre = box.getCenter(new THREE.Vector3());
+      const dist = this.camera.position.distanceTo(this.controls.target);
+      if (n.lengthSq() > 1e-12) {
+        n.normalize();                                         // the part's mesh is wound outward
+        const dir = n.clone().add(new THREE.Vector3(0.45, -0.6, 0)).normalize();
+        this.controls.target.copy(centre);
+        this.camera.position.copy(centre).add(dir.multiplyScalar(dist));
+      }
+      this.controls.update();
+    }
+    this.draw();
+  }
+  private marks: THREE.Mesh | null = null;
+
   setMesh(m: { vertices: number[]; triangles: number[] } | null) {
+    this.highlight(null);
     if (this.mesh) { this.scene.remove(this.mesh); this.mesh.geometry.dispose(); }
     if (this.edges) { this.scene.remove(this.edges); this.edges.geometry.dispose(); }
     this.mesh = this.edges = null;

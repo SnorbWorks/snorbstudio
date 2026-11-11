@@ -67,6 +67,7 @@ export interface Feature {
   pattern?: Pattern;
   mirror?: Mirror;
   exprs?: Record<string, string>;   // boxes typed as a formula of named sizes (see sizes.ts BINDS)
+  teardrop?: boolean; // circle / hole drawn sideways to the bed: a 45° point on top so it prints without support
 }
 
 /** A hollow body: walls this thick, one face left open (or none: a closed box). */
@@ -303,7 +304,38 @@ export function sharedCorner(a: number, b: number, n = 4): number {
 }
 
 /** The outline in the feature's own view (u, v), closed. Rings and text use their outside. */
+/** Which way is up (world +Z) in a view, as a unit (u, v); null when the view looks straight up or down. */
+export function upIn(view: ViewName): P2 | null {
+  const V = VIEWS[view], u = V.uDir[2], v = V.vDir[2], l = Math.hypot(u, v);
+  return l < 1e-9 ? null : [u / l, v / l];
+}
+
+/** Can this shape be a teardrop? A round hole or circle drawn on a side view. */
+export const canTeardrop = (f: Feature) => (f.type === 'circle' || f.type === 'hole') && upIn(f.view) !== null;
+
+/**
+ * A teardrop: the circle of radius R round (cu, cv), with its top replaced by
+ * two 45° sides meeting in a point straight above (the printer can build that
+ * without support). up is world +Z in the view.
+ */
+export function teardropPoints(cu: number, cv: number, R: number, up: P2, segs = 48): P2[] {
+  const a0 = Math.atan2(up[1], up[0]);
+  const out: P2[] = [];
+  // the round part: from 45° past the top, round the bottom, to 45° before it
+  const n = Math.max(8, Math.round((segs * 3) / 4));
+  for (let i = 0; i <= n; i++) {
+    const a = a0 + Math.PI / 4 + (i / n) * (Math.PI * 3 / 2);
+    out.push([cu + R * Math.cos(a), cv + R * Math.sin(a)]);
+  }
+  out.push([cu + up[0] * R * Math.SQRT2, cv + up[1] * R * Math.SQRT2]);
+  return out;
+}
+
 export function profile(f: Feature, segs = 48): P2[] {
+  if (f.teardrop && canTeardrop(f)) {
+    const R = f.type === 'hole' && f.hole ? f.hole.d / 2 : f.r;
+    return teardropPoints(f.cu, f.cv, R, upIn(f.view)!, segs);
+  }
   if (f.type === 'circle') {
     return Array.from({ length: segs }, (_, i) => [f.cu + f.r * Math.cos((i / segs) * 2 * Math.PI), f.cv + f.r * Math.sin((i / segs) * 2 * Math.PI)] as P2);
   }

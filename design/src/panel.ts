@@ -1,7 +1,7 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs } from './model.js';
+import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
 import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
@@ -446,6 +446,10 @@ export class Panel {
         out.push(this.check(`Add printer fit (${this.toUnits(st.p.fit ?? 0).toFixed(st.p.precision)} ${st.p.units})`, takesFit(f), (on) => { f.fit = on; },
           'Make this cut bigger across by the part’s printer fit (Sheet › Printer fit), so a printed peg or screw fits in it'));
       }
+    }
+    if (f.op === 'cut' && canTeardrop(f)) {
+      out.push(this.check('Teardrop (prints without support)', !!f.teardrop, (on) => { if (on) f.teardrop = true; else delete f.teardrop; },
+        'A round hole lying on its side sags at the top. A 45° point on top prints clean with no support.'));
     }
     if (!st.p.stock.off) {
       out.push(this.check('On the far face (hidden)', !!f.far, (on) => {

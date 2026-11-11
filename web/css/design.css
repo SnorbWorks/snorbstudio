@@ -285,3 +285,14 @@
 .ds-menu button small { font-size: 11.5px; opacity: .7; }
 .ds-menu-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 2px; font-size: 12.5px; opacity: .9; }
 .ds-menu-row .ds-select { width: auto; }
+
+/* Printability check */
+.ds-check-dialog { width: 340px !important; max-height: calc(100vh - 160px); overflow: auto; }
+.ds-check-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 4px; }
+.ds-check-item { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.ds-check-item.on { border-color: #ff4d5e; }
+.ds-check-item b { display: block; font-size: 13px; }
+.ds-check-item small { display: block; font-size: 11.5px; opacity: .75; margin-top: 2px; line-height: 1.35; }
+.ds-check-ic { font-size: 15px; text-align: center; color: #ff8a95; line-height: 1.2; }
+.ds-check-tiny .ds-check-ic, .ds-check-gap .ds-check-ic { color: #f5c26b; }
+.ds-check-acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }

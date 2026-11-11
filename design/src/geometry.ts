@@ -6,7 +6,7 @@ import {
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
-import { shellCavity, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
+import { shellCavity, canTeardrop, teardropPoints, upIn, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
 import { hexPoints } from './holes.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
@@ -81,6 +81,7 @@ function arcOutline(f: Feature) {
 
 /** The feature's 2D drawing in its own view (u, v); grow: made this much bigger across (printer fit). */
 function drawing(f: Feature, grow = 0) {
+  if (f.type === 'circle' && f.teardrop && canTeardrop(f)) return f.r + grow / 2 > 1e-6 ? polyline(teardropPoints(f.cu, f.cv, f.r + grow / 2, upIn(f.view)!, 64)) : null;
   if (f.type === 'circle') return f.r + grow / 2 > 1e-6 ? drawCircle(f.r + grow / 2).translate(f.cu, f.cv) : null;
   if (f.type === 'slot') {
     const s = slotPath(f, grow);
@@ -156,9 +157,11 @@ function holeSolid(f: Feature, p: Project, lo: number, hi: number): Solid | null
   const out = -inn;
   // a blind heat-set insert hole goes the insert's length (and a bit) unless set deeper
   const plane = (d: number) => new Plane(V.toWorld(0, 0, d), V.uDir, V.eye);
+  const up = f.teardrop ? upIn(f.view) : null;
   const disc = (r: number, d0: number, d1: number) => {
     const a = Math.min(d0, d1), b = Math.max(d0, d1);
-    return drawCircle(r).translate(f.cu, f.cv).sketchOnPlane(plane(a)).extrude(b - a);
+    const d = up ? polyline(teardropPoints(f.cu, f.cv, r, up, 64)) : drawCircle(r).translate(f.cu, f.cv);
+    return d.sketchOnPlane(plane(a)).extrude(b - a);
   };
   const R = (h.d + fit) / 2;
   const face = f.d0;
