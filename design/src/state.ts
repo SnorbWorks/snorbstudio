@@ -6,7 +6,7 @@ import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rotate' | 'measure' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
+export type Tool = 'select' | 'rotate' | 'measure' | 'section' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';

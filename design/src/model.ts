@@ -2,6 +2,7 @@
 // view, the 3D preview and the STL are made from this and nothing else.
 
 import { VIEWS } from './views.js';
+import type { Section } from './section.js';
 import { type GearSpec, gearOutline, rackOutline, outerRadius, pitchRadius, place } from './gears.js';
 import { type HoleSpec, holeOuterD } from './holes.js';
 
@@ -105,6 +106,7 @@ export interface Project {
   shell?: Shell;                       // the body is hollowed out
   sizes?: { name: string; expr: string }[];   // named sizes: wall = 2
   exprs?: Record<string, string>;      // the body's boxes typed as formulas
+  sections?: Section[];                // section views (SECTION A–A): see section.ts
 }
 
 export function newProject(): Project {

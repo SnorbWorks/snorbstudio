@@ -9,6 +9,7 @@ import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
 import { State, itemFor, viewRanges, type Item } from './state.js';
+import { sectionFor, sectionIn, cuttingLine } from './section.js';
 
 const HANDLE_PX = 5;
 const PICK_PX = 7;
@@ -28,6 +29,7 @@ type Drag =
   | { kind: 'zoom'; x0: number; y0: number; x1: number; y1: number; out: boolean; started: boolean; sx: number; sy: number }
   | { kind: 'rotate'; ids: string[]; view: ViewName; pu: number; pv: number; a0: number; deg: number; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'measure'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
+  | { kind: 'section'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
   | { kind: 'box'; x0: number; y0: number; x1: number; y1: number; add: boolean; onStock: boolean; view: ViewName | null; started: boolean; sx: number; sy: number };
 
 // Tool cursors: a crosshair with the tool's shape beside it (hotspot at the cross).
@@ -545,6 +547,13 @@ export class Sheet {
       this.render();
       return;
     }
+    if (view && tool === 'section') {
+      const [u, v] = this.fromSheet(view, x, y);
+      const [su, sv] = this.measurePoint(view, u, v, e.altKey);
+      this.drag = { kind: 'section', view, u0: su, v0: sv, u1: su, v1: sv };
+      this.render();
+      return;
+    }
     if (view && tool === 'text') {
       const [u, v] = this.fromSheet(view, x, y);
       const [su, sv] = this.snapView(view, u, v, this.snapTargets(new Set()), e.altKey);
@@ -690,6 +699,11 @@ export class Sheet {
     }
     const [u, v] = this.fromSheet(d.view, x, y);
     const free = e.altKey;
+    if (d.kind === 'section') {
+      d.u1 = u; d.v1 = v;
+      this.render();
+      return;
+    }
     if (d.kind === 'measure') {
       [d.u1, d.v1] = this.measurePoint(d.view, u, v, free, [d.u0, d.v0], e.shiftKey);
       this.render();
@@ -780,6 +794,18 @@ export class Sheet {
     this.guides = [];
     if (!d) return;
     if (d.kind === 'draw') this.finishDraw(d);
+    else if (d.kind === 'section') {
+      // level unless dragged more up than across; one section per view (a new one takes its place)
+      const dir = Math.abs(d.v1 - d.v0) > Math.abs(d.u1 - d.u0) ? 'v' : 'u';
+      const sec = { id: newId(), ...sectionFor(this.st.p, d.view, dir, d.u0, d.v0) };
+      this.st.change((p) => {
+        const old = (p.sections || []).find((x) => x.view === sec.view);
+        if (old) sec.label = old.label;
+        p.sections = [...(p.sections || []).filter((x) => x.view !== sec.view), sec];
+        if (!p.views.includes(sec.view)) p.views.push(sec.view);
+      });
+      this.relayout();
+    }
     else if (d.kind === 'measure') {
       if (Math.hypot(d.u1 - d.u0, d.v1 - d.v0) > 1e-9) this.measure = { view: d.view, a: [d.u0, d.v0], b: [d.u1, d.v1] };
       this.status();
@@ -1263,6 +1289,7 @@ export class Sheet {
     const m = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.measure;
     if (m && this.st.tool === 'measure') t += `     ${this.measureText(m)}`;
     else if (this.st.tool === 'measure') t += '     drag from one point to another (Shift: level or plumb, Option: no snapping)';
+    else if (this.st.tool === 'section') t += '     drag a cutting line across a view: level or plumb, it snaps to corners and centres (the view it looks into shows the section)';
     if (this.st.tool === 'edge' && !this.st.built?.edges.length) t += '     Nothing to round yet: make a body first';
     this.onStatus(t);
   }
@@ -1358,6 +1385,8 @@ export class Sheet {
       const b = this.placed[view].box;
       parts.push(`<rect class="ds-viewbox" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"/>`);
       const ve = built?.views[view];
+      const hat = built?.hatch?.[view];
+      if (hat?.length && sectionIn(p, view)) parts.push(`<path class="ds-hatch" fill="url(#ds-hatch)" fill-rule="evenodd" d="${hat.map((l) => path(view, l, true)).join('')}"/>`);
       if (ve) {
         if (ve.hidden.length && st.viewOpts.hidden) parts.push(`<path class="ds-hidden" stroke-dasharray="6 4" d="${ve.hidden.map((l) => path(view, l)).join('')}"/>`);
         parts.push(`<path class="ds-visible" d="${ve.visible.map((l) => path(view, l)).join('')}"/>`);
@@ -1374,6 +1403,38 @@ export class Sheet {
         else if (built && built.effect[f.id] === false) cls = 'ds-faded';
         if (f.id === this.hover && !selected.has(f.id)) cls += ' ds-hover';
         if (cls) parts.push(`<path class="ds-feat ${cls}" d="${polys.map((q) => path(view, q, true)).join('')}"/>`);
+      }
+      // cutting lines drawn on this view (and the one being dragged out): thick dash-dot, arrows looking the way the section does, letters
+      const range = (): [P2, P2] => {
+        const V = VIEWS[view], bb = built?.bbox, ext = px(16);
+        const lo: P2 = [Infinity, Infinity], hi: P2 = [-Infinity, -Infinity];
+        const box: [number[], number[]] = bb ? [bb[0], bb[1]] : [p.stock.min, p.stock.max];
+        for (const x of [box[0][0], box[1][0]]) for (const y of [box[0][1], box[1][1]]) for (const zz of [box[0][2], box[1][2]]) {
+          const q = V.toView([x, y, zz]);
+          lo[0] = Math.min(lo[0], q[0]); lo[1] = Math.min(lo[1], q[1]); hi[0] = Math.max(hi[0], q[0]); hi[1] = Math.max(hi[1], q[1]);
+        }
+        return [[lo[0] - ext, lo[1] - ext], [hi[0] + ext, hi[1] + ext]];
+      };
+      const cuts = (p.sections || []).filter((sc) => sc.from === view).map((sc) => ({ sc, label: sc.label }));
+      const dr = this.drag;
+      if (dr && dr.kind === 'section' && dr.view === view) {
+        const dir = Math.abs(dr.v1 - dr.v0) > Math.abs(dr.u1 - dr.u0) ? 'v' : 'u';
+        cuts.push({ sc: { id: '-', ...sectionFor(p, view, dir, dr.u0, dr.v0) }, label: '' });
+      }
+      for (const { sc, label } of cuts) {
+        const [lo, hi] = range();
+        const cl = cuttingLine(sc, lo, hi);
+        if (!cl) continue;
+        const [ax, ay] = this.toSheet(view, ...cl.a), [bx, by] = this.toSheet(view, ...cl.b);
+        // the look direction on the sheet (y down)
+        const lx = cl.look[0], ly = -cl.look[1], al = px(16), aw = px(5);
+        const arrow = (x: number, y: number) => {
+          const tx = x + lx * al, ty = y + ly * al;
+          return `<line x1="${x}" y1="${y}" x2="${tx}" y2="${ty}"/><path class="ds-cut-head" d="M${tx + lx * aw * 1.6} ${ty + ly * aw * 1.6}L${tx - ly * aw} ${ty + lx * aw}L${tx + ly * aw} ${ty - lx * aw}Z"/>`;
+        };
+        const fs = px(13);
+        const txt = (x: number, y: number) => label ? `<text class="ds-cut-label" x="${x + lx * (al + fs)}" y="${y + ly * (al + fs) + fs * 0.35}" font-size="${fs}">${label}</text>` : '';
+        parts.push(`<g class="ds-cut${label ? '' : ' ds-cut-new'}"><line class="ds-cut-line" x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>${arrow(ax, ay)}${arrow(bx, by)}${txt(ax, ay)}${txt(bx, by)}</g>`);
       }
       // revolved shapes: their centre line, dash-dot, a little past the shape at each end
       for (const f of p.features) {
@@ -1402,7 +1463,8 @@ export class Sheet {
         if (poly) parts.push(`<path class="ds-feat ds-hover" d="${path(view, poly, true)}"/>`);
       }
       const fs = px(12);
-      parts.push(`<text class="ds-label${view === st.activeView ? ' ds-active' : ''}" x="${b.x + b.w / 2}" y="${b.y + b.h + fs * 1.3}" font-size="${fs}">${VIEWS[view].label.toUpperCase()}</text>`);
+      const sec = sectionIn(p, view);
+      parts.push(`<text class="ds-label${view === st.activeView ? ' ds-active' : ''}" x="${b.x + b.w / 2}" y="${b.y + b.h + fs * 1.3}" font-size="${fs}">${sec ? `SECTION ${sec.label}–${sec.label}` : VIEWS[view].label.toUpperCase()}</text>`);
       if (p.views.length > 1) {
         const hb = this.hideBox(view);
         parts.push(`<text class="ds-hide" x="${hb.x + hb.w / 2}" y="${hb.y + hb.h * 0.8}" font-size="${fs}"><title>Hide this view</title>×</text>`);
@@ -1525,7 +1587,9 @@ export class Sheet {
         + `<text x="${tx}" y="${ty + fs * 0.36}" font-size="${fs}"><title>Double-click to type a new size</title>${label}</text></g>`);
     }
 
-    this.svg.innerHTML = `<g transform="matrix(${z} 0 0 ${z} ${this.panX} ${this.panY})">${parts.join('')}</g>`;
+    const hs = px(6);     // hatching: 45° lines, the same spacing on screen at any zoom
+    const defs = `<defs><pattern id="ds-hatch" patternUnits="userSpaceOnUse" width="${hs}" height="${hs}" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="${hs}" class="ds-hatch-line" stroke-width="${px(1)}"/></pattern></defs>`;
+    this.svg.innerHTML = `${defs}<g transform="matrix(${z} 0 0 ${z} ${this.panX} ${this.panY})">${parts.join('')}</g>`;
     this.setCursor();
   }
 }

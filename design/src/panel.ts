@@ -7,6 +7,7 @@ import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
 import { VIEWS, axisOf } from './views.js';
 import type { State } from './state.js';
+import { cutPlane, flipSection } from './section.js';
 import { evalExpr, isFormula, sizeValues, applyFormulas, validName } from './sizes.js';
 import type { Project } from './model.js';
 
@@ -195,6 +196,7 @@ export class Panel {
       }
     }
     if (!none) return out;
+    out.push(...this.sectionsSection());
     out.push(...this.history());
     out.push(this.h('Sheet'));
     out.push(this.labelled('Units', this.seg([['mm', 'mm'], ['in', 'inch']], st.p.units, (v) => st.change((p) => {
@@ -496,6 +498,32 @@ export class Panel {
     }
     out.push(...this.copies(f));
     out.push(this.button('Delete shape', () => st.deleteSelected()));
+    return out;
+  }
+
+  /** Section views (made with the Section tool): where each cut is, which way it looks, remove. */
+  private sectionsSection(): HTMLElement[] {
+    const st = this.st, secs = st.p.sections || [];
+    if (!secs.length) return [];
+    const out: HTMLElement[] = [this.h('Sections')];
+    const AXN = ['X', 'Y', 'Z'];
+    for (const sc of secs) {
+      const { axis, at } = cutPlane(sc);
+      out.push(this.h(`${sc.label}–${sc.label}: cut on the ${VIEWS[sc.from].label.toLowerCase()} view, seen from the ${VIEWS[sc.view].label.toLowerCase()}`, 'ds-note'));
+      out.push(this.num(`Cut at ${AXN[axis]}`, at, (v) => { sc.d = v * VIEWS[sc.view].eye[axis]; }));
+      const row = document.createElement('div');
+      row.className = 'ds-btnrow';
+      row.append(
+        this.button('Look the other way', () => st.change((p) => {
+          const f = flipSection(sc);
+          p.sections = (p.sections || []).filter((x) => x.id !== sc.id && x.view !== f.view);
+          p.sections.push(f);
+          if (!p.views.includes(f.view)) p.views.push(f.view);
+        }), 'btn ghost sm', 'Show what is on the other side of the cut (in the opposite view)'),
+        this.button('Remove', () => st.change((p) => { p.sections = (p.sections || []).filter((x) => x.id !== sc.id); }), 'btn ghost sm', 'Back to the plain view'),
+      );
+      out.push(row);
+    }
     return out;
   }
 

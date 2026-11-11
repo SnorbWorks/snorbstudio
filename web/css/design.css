@@ -297,3 +297,14 @@
 .ds-check-tiny .ds-check-ic, .ds-check-gap .ds-check-ic { color: #f5c26b; }
 .ds-check-acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .ds-axis { fill: none; stroke: #c0508f; stroke-width: 1; stroke-dasharray: 10 3 2 3; }
+
+/* Section views (sheet strokes are screen px: non-scaling) */
+.ds-sheet .ds-hatch { stroke: none; fill: url(#ds-hatch); }
+.ds-sheet .ds-hatch-line { stroke: #7a5a8a; vector-effect: none; }
+.ds-sheet .ds-cut line, .ds-sheet .ds-cut path { stroke: #c0508f; }
+.ds-sheet .ds-cut-line { stroke-width: 2.2; stroke-dasharray: 18 4 3 4; }
+.ds-sheet .ds-cut line:not(.ds-cut-line) { stroke-width: 1.4; }
+.ds-sheet .ds-cut-head { fill: #c0508f; }
+.ds-cut-label { fill: #c0508f; font-weight: 700; text-anchor: middle; font-family: inherit; }
+.ds-cut-new { opacity: .6; }
+.ds-btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }

@@ -42,6 +42,7 @@ const ICONS = {
   gear: ico('<circle cx="12" cy="12" r="3"/><path d="M10.6 3h2.8l.5 2.6 2 .9 2.2-1.5 2 2-1.5 2.2.9 2 2.6.5v2.8l-2.6.5-.9 2 1.5 2.2-2 2-2.2-1.5-2 .9-.5 2.6h-2.8l-.5-2.6-2-.9-2.2 1.5-2-2 1.5-2.2-.9-2L3 13.4v-2.8l2.6-.5.9-2L5 5.9l2-2 2.2 1.5 2-.9z"/>'),
   text: ico('<path d="M5 6V4.5h14V6M12 4.5v15M9 19.5h6"/>'),
   edge: ico('<path d="M4 20V12a8 8 0 0 1 8-8h8"/><path d="M4 20h16V4" stroke-dasharray="2 2.5"/>'),
+  section: ico('<path d="M4 12h3M10 12h4M17 12h3" stroke-width="2"/><path d="M5 12V6M19 12V6"/><path d="M3 8l2-3 2 3M17 8l2-3 2 3"/><path d="M9 15l3 4 3-4" opacity=".55"/>'),
   dim: ico('<path d="M3 8v8M21 8v8M3 12h18M6 9.5L3 12l3 2.5M18 9.5l3 2.5-3 2.5"/>'),
   far: ico('<rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" stroke-dasharray="2.2 1.8"/>'),
   left: ico('<path d="M4 3v18"/><rect x="7" y="6" width="12" height="4"/><rect x="7" y="14" width="7" height="4"/>'),
@@ -69,6 +70,7 @@ const PICKERS: typeof SHAPES = [
 const MEASURES: typeof SHAPES = [
   { tool: 'dim', name: 'Dimension', key: 'D', tip: "Click a shape near the side to dimension it; double-click a dimension's number to type a new size" },
   { tool: 'measure', name: 'Measure', key: 'M', tip: 'Drag from one point to another: snaps to corners and centres' },
+  { tool: 'section', name: 'Section', key: 'X', tip: 'Drag a cutting line across a view (level or plumb): the view it looks into shows SECTION A–A, the cut faces hatched' },
 ];
 const GROUPS: Record<string, typeof SHAPES> = { shapes: SHAPES, pick: PICKERS, measure: MEASURES };
 
@@ -1178,7 +1180,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }
     if (k === 'r' && e.shiftKey) { e.preventDefault(); st.setTool('rotate'); return; }
-    const keys: Record<string, Tool> = { v: 'select', m: 'measure', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
+    const keys: Record<string, Tool> = { v: 'select', m: 'measure', x: 'section', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);
     else if (k === 'h') toggleFar();

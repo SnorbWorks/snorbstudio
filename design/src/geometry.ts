@@ -8,6 +8,8 @@ import {
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
 import { shellCavity, canRevolve, revolveCrosses, canTeardrop, teardropPoints, upIn, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
 import { hexPoints } from './holes.js';
+import { joinLines } from './dxf.js';
+import type { Section } from './section.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
 
@@ -17,6 +19,7 @@ export interface ViewEdges { visible: Line[]; hidden: Line[] }
 
 export interface BuildResult {
   views: Partial<Record<ViewName, ViewEdges>>;
+  hatch: Partial<Record<ViewName, Line[]>>;   // section views: the cut faces, as closed loops in the view's (u, v)
   effect: Record<string, boolean>;   // feature id -> does it change the part
   mesh: { vertices: number[]; triangles: number[] } | null;
   edges: number[][];                 // the part's edges in 3D, flat [x,y,z, ...], for picking edges to round
@@ -381,6 +384,34 @@ function nearPoly(poly: number[], pt: Vec3, tol = 0.05): boolean {
 }
 
 /** Points along an edge, flat [x,y,z, ...]. */
+/**
+ * A section: the part with everything in front of the cut taken away, seen
+ * from the section's view, and the faces the cut made (to hatch).
+ */
+export function sectionView(solid: Solid, s: Section): { edges: ViewEdges; hatch: Line[] } {
+  const V = VIEWS[s.view];
+  const [lo, hi] = solid.boundingBox.bounds as [Vec3, Vec3];
+  const size = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 2 + 20;
+  const c = V.toView([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2]);
+  const front = drawRectFrom(c[0] - size, c[0] + size, c[1] - size, c[1] + size)
+    .sketchOnPlane(new Plane(V.toWorld(0, 0, s.d), V.uDir, V.eye)).extrude(size);
+  const cut = solid.cut(front as Solid);
+  const hatch: Line[] = [];
+  for (const f of (cut as any).faces) {
+    if (f.geomType !== 'PLANE') continue;
+    const n = f.normalAt(), q = f.center;
+    if (Math.abs(n.x * V.eye[0] + n.y * V.eye[1] + n.z * V.eye[2]) < 0.999) continue;
+    if (Math.abs(q.x * V.eye[0] + q.y * V.eye[1] + q.z * V.eye[2] - s.d) > 1e-4) continue;
+    const segs: Line[] = f.edges.map((e: any) => {
+      const w = edgePoints(e, 48), l: number[] = [];
+      for (let i = 0; i < w.length; i += 3) { const t = V.toView([w[i], w[i + 1], w[i + 2]]); l.push(t[0], t[1]); }
+      return l;
+    });
+    hatch.push(...joinLines(segs));
+  }
+  return { edges: projectView(cut as Solid, s.view), hatch };
+}
+
 function edgePoints(e: any, nCurve = 24): number[] {
   const oc = getOC();
   const c = new oc.BRepAdaptor_Curve(e.wrapped);
@@ -535,13 +566,22 @@ export function build(p: Project, views: ViewName[] = VIEW_ORDER, withMesh = tru
   if (baseErr) errors.base = baseErr;
   let baseBox: [Vec3, Vec3] | null = null;
   if (p.base && bases[p.base.model]) { const bb = bases[p.base.model].boundingBox.bounds; baseBox = [bb[0], bb[1]]; }
-  const out: BuildResult = { views: {}, effect, errors, fillets, baseBox, mesh: null, edges: [], textSize: {}, volume: 0, bbox: null };
+  const out: BuildResult = { views: {}, hatch: {}, effect, errors, fillets, baseBox, mesh: null, edges: [], textSize: {}, volume: 0, bbox: null };
   for (const f of p.features) {
     try { const ts = textSize(f); if (ts) out.textSize[f.id] = ts; } catch (e: any) { errors[f.id] = String(e?.message || e); }
   }
   if (!solid) return out;
   out.volume = measureVolume(solid);
   for (const v of views) out.views[v] = projectView(solid, v);
+  // section views stand in for the view they look along
+  for (const s of p.sections || []) {
+    if (!views.includes(s.view)) continue;
+    try {
+      const r = sectionView(solid, s);
+      out.views[s.view] = r.edges;
+      out.hatch[s.view] = r.hatch;
+    } catch (e: any) { errors[`section:${s.id}`] = String(e?.message || e); }
+  }
   if (withMesh) {
     const m = solid.mesh({ tolerance: 0.05, angularTolerance: 0.2 });
     out.mesh = { vertices: m.vertices, triangles: m.triangles };
