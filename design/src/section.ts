@@ -37,14 +37,14 @@ export function flipSection(s: Section): Section {
   const [ax] = axisOf(V.eye);
   const other = (Object.keys(VIEWS) as ViewName[]).find((n) => n !== s.view && axisOf(VIEWS[n].eye)[0] === ax)!;
   // the same plane: world coordinate stays, depth sign follows the eye
-  return { ...s, view: other, d: -s.d };
+  return { ...s, view: other, d: -s.d || 0 };
 }
 
 /** The world axis the cut runs across and where along it (mm). */
 export function cutPlane(s: Section): { axis: 0 | 1 | 2; at: number } {
   const e = VIEWS[s.view].eye;
   const [ax] = axisOf(e);
-  return { axis: ax as 0 | 1 | 2, at: s.d * e[ax] };
+  return { axis: ax as 0 | 1 | 2, at: s.d * e[ax] || 0 };
 }
 
 /**
