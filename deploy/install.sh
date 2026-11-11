@@ -73,6 +73,23 @@ apply() {
     sudo cp "$D/nginx-studio.conf" /etc/nginx/sites-available/studio
     NGINX=yes
   fi
+  # Tailscale: answer on its IPv6 address too (http://snorbstudio from a phone).
+  # nonlocal bind lets nginx start at boot before Tailscale has the address.
+  if command -v tailscale >/dev/null 2>&1; then
+    TS6=$(tailscale ip -6 2>/dev/null | head -1)
+    if [ -n "$TS6" ]; then
+      if [ ! -f /etc/sysctl.d/99-snorbstudio-bind.conf ]; then
+        echo "net.ipv6.ip_nonlocal_bind = 1" | sudo tee /etc/sysctl.d/99-snorbstudio-bind.conf >/dev/null
+        sudo sysctl -q -w net.ipv6.ip_nonlocal_bind=1
+      fi
+      TSCONF="    listen [$TS6]:80;"
+      if [ "$(cat /etc/nginx/snippets/studio-tailscale.conf 2>/dev/null)" != "$TSCONF" ]; then
+        sudo mkdir -p /etc/nginx/snippets
+        echo "$TSCONF" | sudo tee /etc/nginx/snippets/studio-tailscale.conf >/dev/null
+        NGINX=yes
+      fi
+    fi
+  fi
   if [ ! -L /etc/nginx/sites-enabled/studio ]; then
     sudo ln -sf /etc/nginx/sites-available/studio /etc/nginx/sites-enabled/studio
     NGINX=yes
