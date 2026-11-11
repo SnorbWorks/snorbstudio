@@ -51,6 +51,8 @@ buttons.
 
 ## Round 3: enclosures and the library
 
+**Shipped 2026-11-11** (9c1b2fd, 12af413): Body › *Hollow* (walls, open face) and *Make a lid* (opens in the other part tab); named sizes and formulas in any size box (blue = remembers its formula); *Library…* with three shelves: My parts (3D thumbnails, saved with each part), the printer's Models, and Footprints (Pi 4/5 and Pico holes or standoffs, SG90, MG996R, 608 seat, 5/10 mm LED, EC11, M3 insert boss: dropped on the top face, or the floor of a hollow box); *Export ▾* (STL, or a DXF of any view, hidden lines optionally on their own dashed layer). Not done yet: Pi port cut-outs and the 5 V buck board footprint.
+
 - **Shell / hollow**: not a tool; it's in the **Body** properties (what the
   panel shows when nothing is selected): *Hollow: wall 2 mm, open face: top*.
   A **Make a lid** button makes the matching lid as a new part, with a lip and
@@ -91,9 +93,14 @@ buttons.
 Next for SnorbCAM: V-carve and engraving text, drilling (peck) for holes, a
 3D cut preview / step-through, nesting (pack parts on the sheet), Z zero at
 the spoilboard as an option, leads in/out.
-- **DXF export** of any SnorbCAD view (round 3), for the laser.
 
 ## Round 5: checks and new shapes
+
+**Shipped 2026-11-11:**
+- *Check* (75abb25): thin walls under 2 nozzles, gaps under 1, overhangs past 45° (flat bridges under 10 mm pass), round holes on their side (*Make it a teardrop*, also a checkbox on the hole), tiny posts and text under 3 mm. *Show* lights the spot up red and turns the 3D view to it. Runs before Send to Prepare / Library with *Print anyway* (not asked again for the same part). Checked as drawn, bottom face on the bed.
+- *Revolve* (96dc761): any outline's panel › *Revolve: spin it round a side*; centre line on any side, line position, angle (360 = all the way). A sphere today = a half circle (line tool, bow a side) revolved.
+- *Section* tool (4dc02e7, in the Dimension/Measure flyout, key X): drag a level or plumb cutting line on a view; the view it looks into becomes SECTION A–A with the cut faces hatched; Body panel › Sections to move, flip or remove.
+- *Fit test* (2152ae9): Sheet › Printer fit › *Fit test…*: opens an M3 plate (holes 3.0 to 3.4, labelled 0 to .4); print it, then click the hole the screw slid through snugly to set the fit for this and new parts.
 
 - **Printability check**: a *Check* button, and an automatic check on Send to
   Prepare / Send to Library. It flags walls thinner than 2 nozzles, overhangs
@@ -106,9 +113,27 @@ the spoilboard as an option, leads in/out.
 
 ## Later (planned for, not built)
 
-- **Angled faces** (work on a 45° chamfer) and **spheres**.
-  *Don't paint into a corner:* every feature already lives on a sketch plane
-  (its view's face plus depths). New features keep that shape, so later a
-  feature can carry its own plane (origin + normal + direction) and the six
-  views become six presets of it. Spheres become a body primitive or a revolve
-  of a half circle.
+### Angled faces (work on a chamfer or any sloped face): the plan
+Every feature already lives on a sketch plane: its view's face (u, v) plus
+depths along the view's eye. So:
+1. **Data:** a feature may carry its own `plane {origin, x, normal}`; when it
+   does, (u, v, d) map through that plane instead of `VIEWS[view]`. The six
+   views stay as six ready-made planes. `featureSolid` already builds
+   `new Plane(origin, uDir, eye)`, so geometry is a small change.
+2. **Pick the face:** with a new *Work on a face* tool, click a flat face in
+   the 3D preview (or in a view where it shows as a sloped line). SnorbCAD
+   opens an **auxiliary view** that looks square-on at it (the drafting way:
+   placed beside the view where the face is an edge, projected at right
+   angles to that edge), and every tool draws there as usual.
+3. **Sheet:** an auxiliary view gets its own slot after the six; its edges
+   come from `projectView` with a camera along the face's normal (the
+   projection code already takes any direction).
+4. **Elsewhere:** dims and snapping work in the aux view's (u, v); copy,
+   rotate about its normal; SnorbCAM import skips features not on the top.
+   The printability check needs nothing (it reads the built part).
+
+### Spheres
+Possible now with Revolve (a half circle against its centre line). Next: a
+*Sphere* shape in the shapes flyout (click the centre, drag the radius in any
+view; add for a ball or knob, cut for a ball socket or dimple), built as a
+real sphere so it stays smooth, with a *Dome* option (half a sphere on a face).
