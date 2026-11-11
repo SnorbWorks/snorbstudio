@@ -8,6 +8,7 @@
     "test": "node build.mjs && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "clipper-lib": "^6.4.2",
     "replicad": "1.2.1",
     "replicad-opencascadejs": "1.2.1"
   },

@@ -63,19 +63,33 @@ buttons.
 - **Named sizes**: `wall = 2`, `m3 = 3.4`; type a name or a sum (`wall*2+1`)
   in any size box.
 
-## Round 4: SnorbCAM (for the CNC, replacing the trip to Easel)
+## Round 4: SnorbCAM (for the ShopBot, replacing the trip to Easel)
 
-The way SnorbCAD builds parts (a flat outline pushed down to a depth) is
-exactly 2.5D CNC, so CAM fits naturally: a **SnorbCAM** tab next to SnorbCAD
-that opens the same part.
-- Material (size, thickness, which face is up), bit library (end mill, V-bit,
-  ball; Ø, flutes), feeds and speeds per material.
-- Toolpaths made from the features: outside / inside profile with **tabs**,
-  pockets, drilling for holes, V-carve for text. Depth per pass, finishing
-  pass.
-- 3D cut preview, then a G-code file (GRBL) to send.
-- **DXF export** of any view comes first (round 3 or 4), for Easel or the
-  laser in the meantime.
+**v1 shipped 2026-11-11** (code in `design/src/cam/`, built to `web/design/cam.js`):
+- A SnorbCAM tab: a 96"×48" sheet (any size and thickness), zero at the
+  lower-left and on top of the material.
+- Add parts from an **SVG** (Illustrator 1/72" or 96 dpi), a **DXF** (lines,
+  arcs, polylines with bulges, circles, ellipses, splines; loose pieces get
+  joined), or a **SnorbCAD part** (also via *Send to SnorbCAM* in SnorbCAD):
+  the body cuts out, top cuts keep their depths, counterbores become a head
+  pocket over the bore, and stepped cuts start at their own Z.
+- Per outline: Off / On / Inside / Outside / Pocket (rings, or rows ↔ ↕,
+  islands left standing), depth, where it starts (Z), bit, **first pass,
+  equal middle passes, finishing pass**, ramp-in angle, climb or
+  conventional, tabs (count, width, thickness; drag them along the outline,
+  double-click to add or remove).
+- Parts: drag, arrow-key nudge, R turns 90°, ⌘D duplicates (copies cut the
+  same), undo. Bit library with Ø, feed, plunge, depth per pass, stepover.
+- Order: each cut to depth, or Easel-style layers; inside cuts before cut-outs.
+- Toolpaths drawn at the bit's width; time estimate; **Export G-code**
+  in the exact format of the Easel files the ShopBot already runs (G20, G0/G1
+  only, plunge feed for anything going down); one file per bit.
+- Jobs save on the Pi (`~/printer_data/cam`, `/studio-api/cam`).
+
+Next for SnorbCAM: V-carve and engraving text, drilling (peck) for holes, a
+3D cut preview / step-through, nesting (pack parts on the sheet), Z zero at
+the spoilboard as an option, leads in/out.
+- **DXF export** of any SnorbCAD view (round 3), for the laser.
 
 ## Round 5: checks and new shapes
 

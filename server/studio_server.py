@@ -25,6 +25,7 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   PUT    /studio-api/designs/<name>.json  save one (JSON body); 409 if the name
                                            is already used, unless ?replace=1
   DELETE /studio-api/designs/<name>.json
+  GET/PUT/DELETE /studio-api/cam[/<name>.json]   SnorbCAM jobs, the same way
 """
 import base64
 import json
@@ -50,6 +51,9 @@ PROFILES = os.path.join(os.path.dirname(HERE), "profiles")
 SLICER = shutil.which("prusa-slicer") or "/usr/bin/prusa-slicer"
 MODEL_EXT = (".stl", ".3mf", ".obj")
 DESIGNS = os.path.join(HOME, "printer_data", "design")
+CAMJOBS = os.path.join(HOME, "printer_data", "cam")
+# JSON stores: SnorbCAD parts and SnorbCAM jobs
+STORES = {"designs": DESIGNS, "cam": CAMJOBS}
 
 # What the UI offers.  Values are PrusaSlicer config keys.
 QUALITY = {
@@ -562,19 +566,20 @@ class Handler(BaseHTTPRequestHandler):
                 with open(p, "rb") as f:
                     shutil.copyfileobj(f, self.wfile)
                 return
-            if parts == ["designs"]:
-                os.makedirs(DESIGNS, exist_ok=True)
+            if len(parts) == 1 and parts[0] in STORES:
+                store = STORES[parts[0]]
+                os.makedirs(store, exist_ok=True)
                 out = []
-                for n in os.listdir(DESIGNS):
-                    p = os.path.join(DESIGNS, n)
+                for n in os.listdir(store):
+                    p = os.path.join(store, n)
                     if n.lower().endswith(".json") and os.path.isfile(p):
                         st = os.stat(p)
                         out.append({"name": n[:-5], "size": st.st_size,
                                     "modified": st.st_mtime})
                 out.sort(key=lambda m: -m["modified"])
-                return self.send_json({"designs": out})
-            if len(parts) == 2 and parts[0] == "designs":
-                p = os.path.join(DESIGNS, safe_name(parts[1], (".json",)))
+                return self.send_json({parts[0]: out})
+            if len(parts) == 2 and parts[0] in STORES:
+                p = os.path.join(STORES[parts[0]], safe_name(parts[1], (".json",)))
                 if not os.path.isfile(p):
                     return self.error("not found", 404)
                 with open(p, "rb") as f:
@@ -624,16 +629,18 @@ class Handler(BaseHTTPRequestHandler):
                     f.write(data)
                 os.replace(path + ".part", path)
                 return self.send_json({"name": name, "size": len(data)})
-            if len(parts) == 2 and parts[0] == "designs":
-                os.makedirs(DESIGNS, exist_ok=True)
+            if len(parts) == 2 and parts[0] in STORES:
+                store = STORES[parts[0]]
+                os.makedirs(store, exist_ok=True)
                 name = safe_name(parts[1], (".json",))
                 data = self.body()
                 try:
                     json.loads(data)
                 except ValueError:
                     return self.error("not a project")
-                path = os.path.join(DESIGNS, name)
-                if "replace=1" not in self.query() and name_taken(name[:-5]):
+                path = os.path.join(store, name)
+                taken = name_taken(name[:-5]) if store == DESIGNS else os.path.isfile(path)
+                if "replace=1" not in self.query() and taken:
                     return self.error("taken", 409)
                 with open(path + ".part", "wb") as f:
                     f.write(data)
@@ -652,8 +659,8 @@ class Handler(BaseHTTPRequestHandler):
                 if os.path.isfile(p):
                     os.remove(p)
                 return self.send_json({"ok": True})
-            if len(parts) == 2 and parts[0] == "designs":
-                p = os.path.join(DESIGNS, safe_name(parts[1], (".json",)))
+            if len(parts) == 2 and parts[0] in STORES:
+                p = os.path.join(STORES[parts[0]], safe_name(parts[1], (".json",)))
                 if os.path.isfile(p):
                     os.remove(p)
                 return self.send_json({"ok": True})

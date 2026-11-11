@@ -79,7 +79,7 @@ function updateBanner() {
   const show = mr.connected && mr.klippy !== 'ready';
   b.classList.toggle('hidden', !show && mr.connected);
   // designing doesn't need the printer: no banner taking up room on the Design tab
-  if (app.page === 'design') { b.classList.add('hidden'); return; }
+  if (app.page === 'design' || app.page === 'cam') { b.classList.add('hidden'); return; }
   if (!mr.connected) {
     $('#kb-title').textContent = 'Can\'t reach the Pi';
     $('#kb-msg').textContent = 'Reconnecting…';
@@ -131,6 +131,18 @@ function init() {
       .then((m) => m.mount($('#design-root'), app))
       .catch((e) => { design = null; toast(`SnorbCAD failed to load: ${e.message}`, 'err', 10000); });
   });
+  // SnorbCAM (the router's CAM) loads on first visit too
+  let cam = null;
+  const loadCam = () => cam ||= import('../design/cam.js')
+    .then((m) => m.mount($('#cam-root'), app))
+    .catch((e) => { cam = null; toast(`SnorbCAM failed to load: ${e.message}`, 'err', 10000); });
+  app.onPage((p) => { if (p === 'cam') loadCam(); });
+  // SnorbCAD's "Send to SnorbCAM": add that part to the router job
+  app.sendToCam = async (project, name) => {
+    app.show('cam');
+    const api = await loadCam();
+    if (api) api.addCad(project, name);
+  };
   // the library's "Send to Design": open that model in the Design tab
   app.openInDesign = async (name) => {
     app.show('design');
@@ -145,7 +157,7 @@ function init() {
 
   let start = location.hash.slice(1);
   try { start ||= localStorage.getItem('studio.page'); } catch (e) { /* ignore */ }
-  app.show(['design', 'prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
+  app.show(['design', 'cam', 'prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
   window.addEventListener('hashchange', () => {
     const p = location.hash.slice(1);
     if (p && p !== app.page) app.show(p);

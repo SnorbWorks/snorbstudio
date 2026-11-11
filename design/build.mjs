@@ -10,6 +10,7 @@ const common = { bundle: true, format: 'esm', target: 'es2022', sourcemap: false
 
 await esbuild.build({ ...common, entryPoints: ['src/main.ts'], outfile: `${out}/design.js`, platform: 'browser',
   external: ['three', 'three/addons/*'] });
+await esbuild.build({ ...common, entryPoints: ['src/cam/ui.ts'], outfile: `${out}/cam.js`, platform: 'browser' });
 await esbuild.build({ ...common, entryPoints: ['src/worker.ts'], outfile: `${out}/worker.js`, platform: 'browser',
   external: ['module', 'fs', 'path', 'url', 'node:*'] });
 
@@ -22,6 +23,6 @@ mkdirSync(`${out}/fonts`, { recursive: true });
 for (const f of ['DejaVuSans.ttf', 'DejaVuSans-Bold.ttf']) copyFileSync(`node_modules/dejavu-fonts-ttf/ttf/${f}`, `${out}/fonts/${f}`);
 copyFileSync('node_modules/dejavu-fonts-ttf/LICENSE', `${out}/fonts/LICENSE`);
 
-await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts'],
+await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
   outdir: 'test/build', platform: 'node', outExtension: { '.js': '.mjs' }, external: ['replicad', 'replicad-opencascadejs'] });
 console.log('built', out);

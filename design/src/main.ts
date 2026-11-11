@@ -16,6 +16,7 @@ import { takesFit } from './model.js';
 interface Studio {
   prepare: { addFiles(files: { name: string; buffer: ArrayBuffer }[]): Promise<void> };
   show(page: string): void;
+  sendToCam?(project: unknown, name: string): Promise<void>;
   onPage(fn: (p: string) => void): void;
   page: string;
 }
@@ -80,6 +81,7 @@ const html = `
   <button class="btn sm ghost" id="ds-open" title="Open a part saved on the printer">Open…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
   <button class="btn sm ghost" id="ds-stl" title="Download the STL">STL</button>
+  <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
   <button class="btn sm ghost" id="ds-lib" title="Keep the STL in the model library on the Pi (Files tab)">Send to Library</button>
   <button class="btn sm primary" id="ds-send" title="Put it on the plate in Prepare">Send to Prepare</button>
 </div>
@@ -674,6 +676,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       (document.querySelector('#auto-orient') as HTMLButtonElement | null)?.click();
     } finally { b.disabled = false; }
   };
+
+  $('#ds-cam').onclick = () => studio.sendToCam?.(JSON.parse(JSON.stringify(st.p)), st.p.name || 'part');
 
   function syncToolbar() {
     root.querySelectorAll<HTMLButtonElement>('#ds-tool > button[data-tool], .ds-flyout button[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === st.tool));
