@@ -533,3 +533,50 @@ export function fromRef(ref: EdgeRef, p: Project): Vec3 | null {
   const ops = instances(f)[ref.inst];
   return ops ? applyOps(q, ops) : null;
 }
+
+// ------------------------------------------------------------ turning shapes
+
+/**
+ * Turn a feature deg degrees about a line through `pivot` (world) running
+ * along `axis` (a view's eye: anticlockwise as that view sees it). Only
+ * shapes drawn square to that axis can turn; others are left alone (false).
+ * A rectangle turned to an odd angle becomes an outline with the same corners.
+ */
+export function rotateFeature(f: Feature, pivot: Vec3, axis: Vec3, deg: number): boolean {
+  if (!isShape(f)) return false;
+  const V = VIEWS[f.view];
+  const sign = dot(V.eye, axis);
+  if (Math.abs(Math.abs(sign) - 1) > 1e-9) return false;
+  const a = deg * sign;
+  if (Math.abs(a % 360) < 1e-9) return true;
+  const norm = (x: number) => { const r = ((x % 360) + 360) % 360; return Math.abs(r - 360) < 1e-9 ? 0 : +r.toFixed(9); };
+  const pu = dot(pivot, V.uDir), pv = dot(pivot, V.vDir);
+  [[f.cu, f.cv]] = rotatePts([[f.cu, f.cv]], pu, pv, a);
+  f.cu = +f.cu.toFixed(9); f.cv = +f.cv.toFixed(9);
+  const quarter = Math.round(norm(a) / 90);
+  const square = Math.abs(norm(a) - quarter * 90) < 1e-9;
+  if (f.type === 'rect') {
+    if (square) {
+      const q = quarter % 4;
+      if (q % 2) [f.w, f.h] = [f.h, f.w];
+      if (f.corners) { const old = f.corners; f.corners = old.map((_, i) => old[(i - q + 4) % 4]); }
+    } else {
+      const hw = f.w / 2, hh = f.h / 2;
+      f.type = 'poly';
+      f.pts = rotatePts([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]], 0, 0, a);
+      f.w = 0; f.h = 0;
+    }
+  } else if (f.type === 'poly' && f.pts) {
+    f.pts = rotatePts(f.pts, 0, 0, a).map(([u, v]) => [+u.toFixed(9), +v.toFixed(9)] as P2);
+  } else if (f.type === 'polygon' || f.type === 'gear' || f.type === 'text' || f.type === 'slot') {
+    f.rot = norm((f.rot || 0) + a);
+  } else if (f.type === 'hole' && f.hole) {
+    f.hole.nutRot = norm((f.hole.nutRot || 0) + a);
+  }
+  if (f.pattern) {
+    const pt = f.pattern;
+    if (pt.kind === 'linear') pt.step = rotateAbout(pt.step, [0, 0, 0], axis, deg);
+    else pt.center = rotateAbout(pt.center, pivot, axis, deg);
+  }
+  return true;
+}

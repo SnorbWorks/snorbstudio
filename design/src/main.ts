@@ -11,6 +11,8 @@ import { Panel, featureName } from './panel.js';
 import { Preview3D } from './preview3d.js';
 import { openGearDialog } from './geardialog.js';
 import { openHoleDialog } from './holedialog.js';
+import { openRotateDialog } from './rotatedialog.js';
+import { axisOf } from './views.js';
 import { takesFit } from './model.js';
 
 interface Studio {
@@ -24,6 +26,8 @@ interface Studio {
 const ico = (body: string) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${body}</svg>`;
 const ICONS = {
   select: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="currentColor" stroke-width="1.2"/>'),
+  rotate: ico('<path d="M5 13a7 7 0 1 0 2.6-5.5"/><path d="M7.5 3.5v4.2h4.2"/><rect x="9.5" y="10.5" width="5" height="5" transform="rotate(20 12 13)"/>'),
+  measure: ico('<path d="M3.5 16.5l13-13 4 4-13 13z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
   rect: ico('<rect x="4" y="6" width="16" height="12" rx="0.5"/>'),
   slot: ico('<rect x="3" y="8" width="18" height="8" rx="4"/>'),
   hole: ico('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3" stroke-width="1.2"/>'),
@@ -54,13 +58,21 @@ const SHAPES: { tool: Tool; name: string; key: string; tip: string }[] = [
   { tool: 'circle', name: 'Circle', key: 'C', tip: 'Drag out from the centre' },
   { tool: 'polygon', name: 'Polygon', key: 'P', tip: 'Drag out from the centre; set the sides on the right' },
 ];
-const GROUPS: Record<string, typeof SHAPES> = { shapes: SHAPES };
+const PICKERS: typeof SHAPES = [
+  { tool: 'select', name: 'Select', key: 'V', tip: 'Click or drag a box to select; Shift-click for more; drag just outside a corner to turn' },
+  { tool: 'rotate', name: 'Rotate', key: '⇧R', tip: 'Click the shapes to turn, then set the angle and the point to turn about' },
+];
+const MEASURES: typeof SHAPES = [
+  { tool: 'dim', name: 'Dimension', key: 'D', tip: "Click a shape near the side to dimension it; double-click a dimension's number to type a new size" },
+  { tool: 'measure', name: 'Measure', key: 'M', tip: 'Drag from one point to another: snaps to corners and centres' },
+];
+const GROUPS: Record<string, typeof SHAPES> = { shapes: SHAPES, pick: PICKERS, measure: MEASURES };
 
 function toolGroup(name: string, list: typeof SHAPES): string {
   const first = list[0];
   const items = list.map((t) => `<button data-tool="${t.tool}" title="${t.tip}">${(ICONS as any)[t.tool]}<span>${t.name}</span><kbd>${t.key}</kbd></button>`).join('');
   return `<div class="ds-tgroup" data-group="${name}">
-    <button class="ds-tgroup-main" data-tool="${first.tool}" title="${first.name} (${first.key})&#10;Hold for the other shapes">${(ICONS as any)[first.tool]}<i class="ds-tgroup-more"></i></button>
+    <button class="ds-tgroup-main" data-tool="${first.tool}" title="${first.name} (${first.key})&#10;Hold for the others">${(ICONS as any)[first.tool]}<i class="ds-tgroup-more"></i></button>
     <div class="ds-flyout hidden">${items}</div>
   </div>`;
 }
@@ -87,7 +99,7 @@ const html = `
 </div>
 <div class="ds-body">
   <nav class="ds-toolbox" id="ds-tool">
-    <button data-tool="select" title="Select (V)&#10;Shift-click or drag a box to select several.&#10;Option-click a side of a rectangle.">${ICONS.select}</button>
+    ${toolGroup('pick', PICKERS)}
     ${toolGroup('shapes', SHAPES)}
     <button data-tool="line" title="Line (L): click each corner of an outline,&#10;click the first one (or press Return) to close it.&#10;Shift keeps a side level or plumb.&#10;Then drag the ◆ in the middle of a side to bow it into an arc.">${ICONS.line}</button>
     <span class="ds-tool-sep"></span>
@@ -98,11 +110,11 @@ const html = `
     <button data-toggle="far" title="Hidden lines (H): draw on the far face of the part,&#10;seen through it. New shapes go on the back as pockets.">${ICONS.far}</button>
     <span class="ds-tool-sep"></span>
     <button data-tool="edge" title="Edges (E): click edges in any view to fillet or chamfer them.&#10;Shift-click for more.">${ICONS.edge}</button>
-    <button data-tool="dim" title="Dimension (D): click a shape near the side to measure.&#10;Double-click a dimension's number to type a new size.">${ICONS.dim}</button>
+    ${toolGroup('measure', MEASURES)}
     <span class="ds-tool-sep"></span>
     <button data-tool="zoom" title="Zoom (Z)&#10;Click to zoom in, Option-click to zoom out,&#10;drag a box to zoom to it.">${ICONS.zoom}</button>
   </nav>
-  <div class="ds-sheet-wrap" id="ds-sheet"><div class="ds-loading" id="ds-loading">Loading the CAD engine…</div></div>
+  <div class="ds-sheet-wrap" id="ds-sheet"><div class="ds-doctabs" id="ds-doctabs"></div><div class="ds-loading" id="ds-loading">Loading the CAD engine…</div></div>
   <div class="ds-splitter" id="ds-splitter" title="Drag to resize the panel (double-click to reset)"></div>
   <aside class="ds-side" id="ds-side">
     <div class="ds-3d" id="ds-3d"></div>
@@ -122,6 +134,8 @@ export function mount(root: HTMLElement, studio: Studio) {
   root.innerHTML = html;
   const $ = (s: string) => root.querySelector(s) as HTMLElement;
   const st = new State();
+  // the other part tab (two parts open at once), kept here while this one is shown
+  const docs: { other: null | { p: Project; undo: string[]; redo: string[]; sels: string[]; savedAs: string | null; cleanSig: string | null; first: boolean } } = { other: null };
   const sheet = new Sheet($('#ds-sheet'), st);
   new Panel($('#ds-panel'), st, {
     gear: (id) => editGear(id, false),
@@ -347,6 +361,8 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (w === 'view') { sheet.fit(); if (!$('#ds-views').classList.contains('hidden')) renderViews(); }
     if (w === 'tool') {
       sheet.cancelLine();
+      if (st.tool !== 'measure') sheet.measure = null;
+      if (st.tool === 'rotate' && st.sels.some((id) => id !== 'stock')) queueMicrotask(editRotate);
       if (st.tool === 'edge' && st.built && !st.built.edges.length) requestBuild();
       // leaving a re-pick without applying: the part with its fillet again
       if (st.tool !== 'edge' && wasRepick) requestBuild();
@@ -354,6 +370,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     }
     sheet.render();
     syncToolbar();
+    renderTabs();
   });
 
   // ---------------------------------------------------------- toolbar
@@ -488,6 +505,95 @@ export function mount(root: HTMLElement, studio: Studio) {
     sheet.fit();
     flash(msg);
   };
+  // ---------------------------------------------------------- two part tabs
+  const OTHER_KEY = 'studio.design.other';
+  try {
+    const o = JSON.parse(localStorage.getItem(OTHER_KEY) || 'null');
+    if (o?.p) docs.other = { ...o, undo: [], redo: [], sels: [] };
+  } catch { /* none */ }
+  const keepOther = () => {
+    const o = docs.other;
+    try {
+      if (o) localStorage.setItem(OTHER_KEY, JSON.stringify({ p: o.p, savedAs: o.savedAs, cleanSig: o.cleanSig, first: o.first }));
+      else localStorage.removeItem(OTHER_KEY);
+    } catch { /* too big or private mode */ }
+  };
+  /** This part's saved name and clean state (kept across reloads). */
+  const setDocMarks = (sa: string | null, cs: string | null) => {
+    savedAs = sa; cleanSig = cs;
+    try {
+      if (sa) localStorage.setItem(SAVED_KEY, sa); else localStorage.removeItem(SAVED_KEY);
+      if (cs) localStorage.setItem(CLEAN_KEY, cs); else localStorage.removeItem(CLEAN_KEY);
+    } catch { /* private mode */ }
+  };
+  function switchDoc() {
+    const o = docs.other;
+    if (!o) return;
+    commitName();
+    const mine = { savedAs, cleanSig };
+    const cur = st.swap({ p: o.p, undo: o.undo, redo: o.redo, sels: o.sels });
+    setDocMarks(o.savedAs, o.cleanSig);
+    docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: !o.first };
+    keepOther();
+    name.classList.remove('ds-name-taken');
+    sheet.fit();
+  }
+  function newTab() {
+    if (docs.other) { switchDoc(); return; }
+    commitName();
+    const mine = { savedAs, cleanSig };
+    const cur = st.swap({ p: newProject(), undo: [], redo: [], sels: [] });
+    docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: true };
+    keepOther();
+    setSavedAs(null);
+    sheet.fit();
+    flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
+  }
+  async function closeTab(active: boolean) {
+    if (!active) switchDoc();
+    if (!await okToLeave()) { renderTabs(); return; }
+    const o = docs.other;
+    if (!o) { startBlank('Closed. Here is a blank part.'); return; }
+    st.swap({ p: o.p, undo: o.undo, redo: o.redo, sels: o.sels });
+    setDocMarks(o.savedAs, o.cleanSig);
+    docs.other = null;
+    keepOther();
+    sheet.fit();
+  }
+  function renderTabs() {
+    const bar = root.querySelector('#ds-doctabs') as HTMLElement | null;
+    if (!bar) return;
+    let dirty = false;
+    try { dirty = unsaved(); } catch { /* not set up yet */ }
+    const o = docs.other;
+    const tab = (label: string, active: boolean, changed: boolean) => {
+      const t = document.createElement('div');
+      t.className = `ds-doctab${active ? ' active' : ''}`;
+      const b = document.createElement('button');
+      b.textContent = `${label}${changed ? ' •' : ''}`;
+      b.title = active ? 'This part' : 'Switch to this part';
+      b.onclick = () => { if (!active) switchDoc(); };
+      const x = document.createElement('button');
+      x.className = 'ds-doctab-x'; x.textContent = '×'; x.title = 'Close this part (asks to save it first)';
+      x.onclick = (e) => { e.stopPropagation(); closeTab(active); };
+      t.append(b, x);
+      return t;
+    };
+    const kids: HTMLElement[] = [];
+    if (o) {
+      const otherSig = (() => { try { return o.cleanSig !== sig(o.p) && !blank(o.p); } catch { return false; } })();
+      const a = tab(st.p.name || 'part', true, dirty), b = tab(o.p.name || 'part', false, otherSig);
+      kids.push(...(o.first ? [b, a] : [a, b]));
+    } else {
+      const plus = document.createElement('button');
+      plus.className = 'ds-doctab-new'; plus.textContent = '+ Part';
+      plus.title = 'Open a second part beside this one, to copy and paste between them';
+      plus.onclick = newTab;
+      kids.push(plus);
+    }
+    bar.replaceChildren(...kids);
+  }
+  renderTabs();
   $('#ds-new').onclick = () => startBlank('A new part.');
   $('#ds-close').onclick = () => startBlank('Closed. Here is a blank part.');
   // ---------------------------------------------------------- library
@@ -691,7 +797,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       if (main.dataset.tool !== shown.tool) {
         main.dataset.tool = shown.tool;
         main.innerHTML = `${(ICONS as any)[shown.tool]}<i class="ds-tgroup-more"></i>`;
-        main.title = `${shown.name} (${shown.key})\nHold for the other shapes`;
+        main.title = `${shown.name} (${shown.key})\n${shown.tip}\nHold for the others`;
       }
       main.classList.toggle('active', !!inUse);
     });
@@ -879,6 +985,42 @@ export function mount(root: HTMLElement, studio: Studio) {
     ctx.replaceChildren(...kids);
   }
 
+  // ---------------------------------------------------------- rotate
+  const ROT_KEY = 'studio.design.lastRotate';
+  let rotating = false;
+  function editRotate() {
+    if (rotating || root.querySelector('.ds-modal')) return;
+    const view = st.activeView;
+    const b = sheet.selBox(view);
+    if (!b) return;
+    const V = VIEWS[view];
+    const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir);
+    const orig = JSON.stringify(st.p);
+    const restore = () => { st.p = JSON.parse(orig); st.changed(); };
+    let last = 90;
+    try { last = parseFloat(localStorage.getItem(ROT_KEY) || '90') || 90; } catch { /* default */ }
+    const ids = st.sels.filter((id) => id !== 'stock');
+    rotating = true;
+    openRotateDialog(root, {
+      box: b, axes: ['XYZ'[ua], 'XYZ'[va]], signs: [us, vs], units: st.p.units, count: ids.length, last,
+      preview(deg, pu, pv) { st.p = JSON.parse(orig); st.sels = ids; st.rotateSelected(deg, V.toWorld(pu, pv, 0), V.eye, false); },
+      apply(deg, pu, pv, copy) {
+        rotating = false;
+        st.p = JSON.parse(orig);
+        st.sels = ids;
+        try { localStorage.setItem(ROT_KEY, String(deg)); } catch { /* fine */ }
+        if (copy) { st.duplicate(view, 0); st.rotateSelected(deg, V.toWorld(pu, pv, 0), V.eye, false); }
+        else {
+          const skipped = st.rotateSelected(deg, V.toWorld(pu, pv, 0), V.eye);
+          if (skipped) flash(`${skipped} shape${skipped > 1 ? 's' : ''} drawn on another face didn't turn (they turn in a view that looks at them square on)`);
+        }
+        sheet.relayout();
+      },
+      cancel() { rotating = false; restore(); },
+    });
+  }
+  sheet.onRotate = editRotate;
+
   // ---------------------------------------------------------- keys
   window.addEventListener('keydown', (e) => {
     if (studio.page !== 'design' || isTyping()) return;
@@ -891,10 +1033,15 @@ export function mount(root: HTMLElement, studio: Studio) {
     if ((e.metaKey || e.ctrlKey) && k === '1') { e.preventDefault(); sheet.zoomBy(100 / sheet.zoomPct); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'a') { e.preventDefault(); st.select(st.p.features.filter(isShape).map((f) => f.id)); return; }
     if ((e.metaKey || e.ctrlKey) && k === 's') { e.preventDefault(); save(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === 'c') { if (st.copy()) { e.preventDefault(); flash('Copied: ⌘V pastes here or in the other part tab'); } return; }
+    if ((e.metaKey || e.ctrlKey) && k === 'x') { if (st.copy()) { e.preventDefault(); st.deleteSelected(); } return; }
+    if ((e.metaKey || e.ctrlKey) && k === 'v') { e.preventDefault(); if (st.paste(st.activeView)) sheet.relayout(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === 'd') { e.preventDefault(); if (st.duplicate(st.activeView)) sheet.relayout(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }
-    const keys: Record<string, Tool> = { v: 'select', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
+    if (k === 'r' && e.shiftKey) { e.preventDefault(); st.setTool('rotate'); return; }
+    const keys: Record<string, Tool> = { v: 'select', m: 'measure', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);
     else if (k === 'h') toggleFar();

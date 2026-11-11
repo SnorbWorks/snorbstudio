@@ -1,18 +1,22 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newProject, DEFAULT_FIT, type P2 } from './model.js';
+import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
+export type Tool = 'select' | 'rotate' | 'measure' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
 const VIEW_KEY = 'studio.design.viewOpts';
 const HOLE_KEY = 'studio.design.lastHole';
 const FIT_KEY = 'studio.design.fit';
+const CLIP_KEY = 'studio.design.clip';
+
+/** Everything that belongs to one open part (for switching between part tabs). */
+export interface Doc { p: Project; undo: string[]; redo: string[]; sels: string[] }
 
 /** The printer fit new parts start with: the owner's last setting, else 0.2 mm. */
 export function defaultFit(): number {
@@ -132,6 +136,88 @@ export class State {
     });
     this.select([]);
   }
+  /** Put this part away and take up another (the part tabs). */
+  swap(next: Doc): Doc {
+    const out: Doc = { p: this.p, undo: this.undoStack, redo: this.redoStack, sels: this.sels };
+    this.p = { ...newProject(), ...next.p };
+    if (this.p.fit === undefined) this.p.fit = defaultFit();
+    this.undoStack = next.undo; this.redoStack = next.redo;
+    this.sels = next.sels; this.sides = null;
+    this.prune();
+    this.changed();
+    this.emit('select');
+    return out;
+  }
+
+  /** Turn the selected shapes about a point (world), anticlockwise as the view looks along `axis`. Returns how many couldn't turn. */
+  rotateSelected(deg: number, pivot: Vec3, axis: Vec3, record = true): number {
+    let skipped = 0;
+    this.change((p) => {
+      for (const id of this.sels) {
+        const f = p.features.find((x) => x.id === id);
+        if (f && !rotateFeature(f, pivot, axis, deg)) skipped++;
+      }
+    }, record);
+    return skipped;
+  }
+
+  /** Copy the selected shapes (and the roundings and dimensions that only touch them) to a clipboard every part tab shares. */
+  copy(): number {
+    const ids = new Set(this.sels.filter((id) => id !== 'stock' && this.feature(id)));
+    if (!ids.size) return 0;
+    const feats = this.p.features.filter((f) => ids.has(f.id) || (f.type === 'fillet' && f.fillet?.refs?.length && f.fillet.refs.every((r) => r && ids.has(r.owner))));
+    const dims = (this.p.dims || []).filter((d) => ids.has(d.target));
+    try { localStorage.setItem(CLIP_KEY, JSON.stringify({ features: feats, dims, n: 0 })); } catch { return 0; }
+    return ids.size;
+  }
+
+  get canPaste(): boolean { try { return !!localStorage.getItem(CLIP_KEY); } catch { return false; } }
+
+  /**
+   * Paste the clipboard. Into the part it came from, each paste lands a
+   * little further down and right (in `view`) so it doesn't hide the
+   * original; into another part, in the same place.
+   */
+  paste(view: ViewName, step = 5): number {
+    let clip: { features: Feature[]; dims: any[]; n: number } | null = null;
+    try { clip = JSON.parse(localStorage.getItem(CLIP_KEY) || 'null'); } catch { /* none */ }
+    if (!clip || !clip.features.length) return 0;
+    const same = clip.features.some((f) => this.feature(f.id));
+    clip.n = same ? (clip.n || 0) + 1 : 0;
+    try { localStorage.setItem(CLIP_KEY, JSON.stringify(clip)); } catch { /* fine */ }
+    const V = VIEWS[view];
+    const off: Vec3 = same ? V.toWorld(step * clip.n, -step * clip.n, 0) : [0, 0, 0];
+    const map = new Map<string, string>();
+    for (const f of clip.features) map.set(f.id, newId());
+    const added: Feature[] = clip.features.map((f) => {
+      const g: Feature = JSON.parse(JSON.stringify(f));
+      g.id = map.get(f.id)!;
+      if (g.fillet?.refs) {
+        g.fillet.refs = g.fillet.refs.map((r) => (r ? { ...r, owner: map.get(r.owner) ?? r.owner } : r));
+        g.fillet.edges = g.fillet.edges.map((e) => [e[0] + off[0], e[1] + off[1], e[2] + off[2]] as Vec3);
+      } else if (isShape(g)) featureItem(g, this.p).move(off);
+      if (g.pattern) {
+        if (g.pattern.kind === 'circular') g.pattern.center = [g.pattern.center[0] + off[0], g.pattern.center[1] + off[1], g.pattern.center[2] + off[2]];
+      }
+      if (g.mirror) g.mirror = { ...g.mirror, at: g.mirror.at + off[g.mirror.axis] };
+      return g;
+    });
+    const dims = clip.dims.map((d) => ({ ...d, id: newId(), target: map.get(d.target) ?? d.target }));
+    this.change((p) => { p.features.push(...added); p.dims = [...(p.dims || []), ...dims]; });
+    this.select(added.filter(isShape).map((f) => f.id));
+    return added.filter(isShape).length;
+  }
+
+  /** A copy of the selection, just down and right of it. */
+  duplicate(view: ViewName, step = 5): number {
+    // leave whatever was copied on the clipboard
+    let keep: string | null = null;
+    try { keep = localStorage.getItem(CLIP_KEY); } catch { /* none */ }
+    const n = this.copy() ? this.paste(view, step) : 0;
+    try { if (keep) localStorage.setItem(CLIP_KEY, keep); else localStorage.removeItem(CLIP_KEY); } catch { /* fine */ }
+    return n;
+  }
+
   rememberHole(h: HoleSpec) { this.lastHole = { ...h }; try { localStorage.setItem(HOLE_KEY, JSON.stringify(h)); } catch { /* private mode */ } }
   setTool(t: Tool) { this.tool = t; if (t !== 'edge') { this.edges = []; this.repick = null; } this.emit('tool'); }
 

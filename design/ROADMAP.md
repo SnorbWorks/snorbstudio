@@ -38,6 +38,8 @@ buttons.
 
 ## Round 2: move things around
 
+**Shipped 2026-11-11:** corner-drag rotate (1° steps, Shift 15°, Option free), rotate tool ⇧R with angle, 3×3 pivot or typed point, live preview and Copy; ⌘C/⌘X/⌘V/⌘D through a clipboard shared by two part tabs (+ Part); measure tool M (snaps to corners and centres, Shift level/plumb). A rectangle turned to an odd angle becomes an outline.
+
 - **Rotate.** Hover just outside a selected shape's corner: the cursor turns
   into curved arrows; drag to turn it round its centre (Shift = 15° steps).
   Plus a **Rotate tool** that selects like the select tool and opens a box:

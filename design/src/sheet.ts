@@ -4,7 +4,7 @@
 // picks (Option-click), handles, dimensions, T-square guides and pan/zoom.
 
 import type { Dim, Feature, ViewName, Vec3, P2 } from './model.js';
-import { newId, profile, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath } from './model.js';
+import { newId, profile, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
 import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
@@ -26,6 +26,8 @@ type Drag =
   | { kind: 'edge'; id: string; view: ViewName; axis: number; side: 0 | 1; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'move'; ids: string[]; view: ViewName; u0: number; v0: number; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'zoom'; x0: number; y0: number; x1: number; y1: number; out: boolean; started: boolean; sx: number; sy: number }
+  | { kind: 'rotate'; ids: string[]; view: ViewName; pu: number; pv: number; a0: number; deg: number; orig: string; started: boolean; sx: number; sy: number }
+  | { kind: 'measure'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
   | { kind: 'box'; x0: number; y0: number; x1: number; y1: number; add: boolean; onStock: boolean; view: ViewName | null; started: boolean; sx: number; sy: number };
 
 // Tool cursors: a crosshair with the tool's shape beside it (hotspot at the cross).
@@ -51,6 +53,13 @@ const CURSORS: Record<string, string> = {
   text: cursorSvg("<path d='M15 15h10M20 15v12'/>"),
   edge: cursorSvg("<path d='M15 27v-5a6 6 0 0 1 6-6h6'/>"),
   dim: cursorSvg("<path d='M14 22h13M14 18v8M27 18v8'/>"),
+  measure: cursorSvg("<path d='M14 26l12-12M17 23l-2-2M20 20l-2-2M23 17l-2-2'/>"),
+  rotateTool: cursorSvg("<path d='M16 24a6 6 0 1 1 9 0'/><path d='M23 25l2-1 1 2'/>"),
+  // the turn arrows by a selection's corner (hotspot in the middle)
+  rotate: `url("data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><g fill='none' stroke-linecap='round' stroke-linejoin='round'>`
+    + `<g stroke='white' stroke-width='4'><path d='M5 15a8 8 0 0 1 10-10'/><path d='M3 11l2 4 4-2M12 3l3 2-2 4'/></g>`
+    + `<g stroke='black' stroke-width='1.6'><path d='M5 15a8 8 0 0 1 10-10'/><path d='M3 11l2 4 4-2M12 3l3 2-2 4'/></g></g></svg>`)}") 9 9, alias`,
 };
 
 export class Sheet {
@@ -79,6 +88,8 @@ export class Sheet {
   private dimHits: { id: string; view: ViewName; x: number; y: number; w: number; h: number }[] = [];
   private dimInput: HTMLInputElement | null = null;
   private lastClick: { t: number; x: number; y: number } | null = null;
+  onRotate: () => void = () => {};               // the rotate tool picked shapes: open its box
+  measure: { view: ViewName; a: P2; b: P2 } | null = null;   // the measure tool's last reading
 
   constructor(private host: HTMLElement, private st: State) {
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -292,6 +303,67 @@ export class Sheet {
     return this.handles(view, one).find((h) => Math.abs(h.u - u) <= tol && Math.abs(h.v - v) <= tol) || null;
   }
 
+  /** The box round the selected shapes in a view (u0, v0, u1, v1), or null. */
+  selBox(view: ViewName): [number, number, number, number] | null {
+    let b: [number, number, number, number] | null = null;
+    for (const id of this.st.sels) {
+      if (id === 'stock') continue;
+      const it = itemFor(this.st, id);
+      if (!it) continue;
+      const [ur, vr] = viewRanges(view, it);
+      b = b ? [Math.min(b[0], ur[0]), Math.min(b[1], vr[0]), Math.max(b[2], ur[1]), Math.max(b[3], vr[1])] : [ur[0], vr[0], ur[1], vr[1]];
+    }
+    return b;
+  }
+
+  /** Just outside a corner of the selection: drag there to turn it. */
+  private rotateCornerAt(view: ViewName, u: number, v: number): boolean {
+    if (this.st.sides || (this.st.tool !== 'select' && this.st.tool !== 'rotate')) return false;
+    const b = this.selBox(view);
+    if (!b) return false;
+    // only shapes drawn square to this view can turn in it
+    if (!this.st.sels.some((id) => { const f = this.st.feature(id); return f && isShape(f) && parallel(f.view, view); })) return false;
+    const inside = u > b[0] && u < b[2] && v > b[1] && v < b[3];
+    if (inside) return false;
+    for (const cu of [b[0], b[2]]) for (const cv of [b[1], b[3]]) {
+      const dpx = Math.hypot(u - cu, v - cv) * this.zoom;
+      if (dpx >= 2 && dpx <= 22) return true;
+    }
+    return false;
+  }
+
+  /** Corners and centres of everything in a view (the measure tool snaps to them). */
+  private keyPoints(view: ViewName): P2[] {
+    const out: P2[] = [];
+    for (const f of this.st.p.features) {
+      if (!isShape(f)) continue;
+      for (const poly of this.outlines(view, f.id)) {
+        if (poly.length <= 12) out.push(...poly);
+        let su = 0, sv = 0;
+        for (const [a, b] of poly) { su += a; sv += b; }
+        if (poly.length > 12) out.push([su / poly.length, sv / poly.length]);
+      }
+    }
+    const body = this.outline(view, 'stock');
+    if (body) out.push(...body);
+    return out;
+  }
+
+  private measurePoint(view: ViewName, u: number, v: number, free: boolean, from?: P2, ortho = false): P2 {
+    if (ortho && from) {
+      const du = Math.abs(u - from[0]), dv = Math.abs(v - from[1]);
+      if (du > dv) v = from[1]; else u = from[0];
+    }
+    if (!free) {
+      const tol = SNAP_PX / this.zoom;
+      let best: P2 | null = null, bd = tol;
+      for (const q of this.keyPoints(view)) { const d = Math.hypot(q[0] - u, q[1] - v); if (d < bd) { bd = d; best = q; } }
+      if (best) return [best[0], best[1]];
+    }
+    const [su, sv] = this.snapView(view, u, v, this.snapTargets(new Set()), free);
+    return ortho && from ? (Math.abs(su - from[0]) > Math.abs(sv - from[1]) ? [su, from[1]] : [from[0], sv]) : [su, sv];
+  }
+
   /** The feature under a point (outlines first, then the smallest shape), else 'stock', else null. */
   private pick(view: ViewName, u: number, v: number): string | null {
     const tol = PICK_PX / this.zoom;
@@ -465,6 +537,14 @@ export class Sheet {
       return;
     }
     if (view && tool === 'line') { this.lineClick(view, x, y, e); return; }
+    if (view && tool === 'measure') {
+      const [u, v] = this.fromSheet(view, x, y);
+      const [su, sv] = this.measurePoint(view, u, v, e.altKey);
+      this.measure = null;
+      this.drag = { kind: 'measure', view, u0: su, v0: sv, u1: su, v1: sv };
+      this.render();
+      return;
+    }
     if (view && tool === 'text') {
       const [u, v] = this.fromSheet(view, x, y);
       const [su, sv] = this.snapView(view, u, v, this.snapTargets(new Set()), e.altKey);
@@ -523,12 +603,27 @@ export class Sheet {
       return;
     }
     // a handle of the one selected item
-    const h = this.handleAt(view, u, v);
+    const h = tool === 'select' ? this.handleAt(view, u, v) : null;
+    if (!h && this.rotateCornerAt(view, u, v)) {
+      const b = this.selBox(view)!;
+      const pu = (b[0] + b[2]) / 2, pv = (b[1] + b[3]) / 2;
+      this.drag = { kind: 'rotate', ids: this.st.sels.filter((id) => id !== 'stock'), view, pu, pv, a0: Math.atan2(v - pv, u - pu), deg: 0, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
+      return;
+    }
     if (h) {
       this.drag = { kind: 'edge', id: this.st.one!, view, axis: h.axis, side: h.side, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
       return;
     }
     const hit = this.pick(view, u, v);
+    if (tool === 'rotate') {
+      // the rotate tool picks like the select tool, then asks how far to turn
+      if (!hit || hit === 'stock') { startBox(false); return; }
+      const s = this.st.sels;
+      this.st.select(e.shiftKey ? (s.includes(hit) ? s.filter((id) => id !== hit) : [...s, hit]) : [hit]);
+      this.render();
+      if (this.st.sels.length) this.onRotate();
+      return;
+    }
     if (hit === 'stock' && e.shiftKey) {
       // shift-click the body: in or out of the selection, like any shape
       const s = this.st.sels;
@@ -595,6 +690,37 @@ export class Sheet {
     }
     const [u, v] = this.fromSheet(d.view, x, y);
     const free = e.altKey;
+    if (d.kind === 'measure') {
+      [d.u1, d.v1] = this.measurePoint(d.view, u, v, free, [d.u0, d.v0], e.shiftKey);
+      this.render();
+      this.status();
+      return;
+    }
+    if (d.kind === 'rotate') {
+      if (!d.started) {
+        if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return;
+        d.started = true;
+        this.st.snapshot();
+      }
+      const orig = JSON.parse(d.orig);
+      let deg = ((Math.atan2(v - d.pv, u - d.pu) - d.a0) * 180) / Math.PI;
+      deg = ((deg + 540) % 360) - 180;
+      const stepDeg = free ? 0.1 : e.shiftKey ? 15 : 1;
+      deg = Math.round(deg / stepDeg) * stepDeg;
+      d.deg = deg;
+      const V = VIEWS[d.view];
+      const pivot = V.toWorld(d.pu, d.pv, 0);
+      for (const id of d.ids) {
+        const fo = orig.features.find((f: Feature) => f.id === id);
+        const fi = this.st.p.features.findIndex((f) => f.id === id);
+        if (!fo || fi < 0) continue;
+        this.st.p.features[fi] = fo;
+        rotateFeature(fo, pivot, V.eye, deg);
+      }
+      this.st.changed();
+      this.status();
+      return;
+    }
     if (d.kind === 'draw') {
       [d.u1, d.v1] = this.snapView(d.view, u, v, this.snapTargets(new Set()), free);
       this.render();
@@ -654,7 +780,12 @@ export class Sheet {
     this.guides = [];
     if (!d) return;
     if (d.kind === 'draw') this.finishDraw(d);
-    else if (d.kind === 'box') this.finishBox(d);
+    else if (d.kind === 'measure') {
+      if (Math.hypot(d.u1 - d.u0, d.v1 - d.v0) > 1e-9) this.measure = { view: d.view, a: [d.u0, d.v0], b: [d.u1, d.v1] };
+      this.status();
+    }
+    else if (d.kind === 'rotate') { if (d.started) { this.relayout(); this.st.changed(); } }
+    else if (d.kind === 'box') { this.finishBox(d); if (this.st.tool === 'rotate' && this.st.sels.some((id) => id !== 'stock')) this.onRotate(); }
     else if (d.kind === 'zoom') {
       const r = this.svg.getBoundingClientRect();
       if (d.started && !d.out) this.zoomToRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1));
@@ -669,6 +800,7 @@ export class Sheet {
     } else if (d.kind !== 'pan' && 'started' in d && d.started) { this.relayout(); this.st.changed(); }
     this.setCursor();
     this.render();
+    this.status();
   }
 
   private finishBox(d: Extract<Drag, { kind: 'box' }>) {
@@ -1054,15 +1186,30 @@ export class Sheet {
     this.onZoom();
   }
 
+  /** "25.4 mm  (X 20, Y 15.6, 38°)": a measured distance, and along the view's axes. */
+  private measureText(m: { view: ViewName; a: P2; b: P2 }, short = false): string {
+    const fmt = (v: number) => fmtLen(v, this.st.p);
+    const V = VIEWS[m.view];
+    const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir);
+    const du = (m.b[0] - m.a[0]) * us, dv = (m.b[1] - m.a[1]) * vs;
+    const L = Math.hypot(du, dv);
+    const ang = (Math.atan2(m.b[1] - m.a[1], m.b[0] - m.a[0]) * 180) / Math.PI;
+    const unit = this.st.p.units === 'mm' ? ' mm' : '';
+    const along = `${'XYZ'[ua]} ${fmt(Math.abs(du))}, ${'XYZ'[va]} ${fmt(Math.abs(dv))}`;
+    return short ? `${fmt(L)}${unit}` : `${fmt(L)}${unit}   (${along}, ${+ang.toFixed(1)}°)`;
+  }
+
   // ------------------------------------------------------------ hover + cursor
 
   private hoverAt(x: number, y: number, alt: boolean) {
     const view = this.viewAt(x, y);
     let h: string | null = null, cur = '';
-    if (view && this.st.tool === 'select') {
+    if (view && (this.st.tool === 'select' || this.st.tool === 'rotate')) {
       const [u, v] = this.fromSheet(view, x, y);
-      const hd = this.handleAt(view, u, v);
-      if (this.bulgeAt(view, u, v)) cur = 'grab';
+      const hd = this.st.tool === 'select' ? this.handleAt(view, u, v) : null;
+      if (this.rotateCornerAt(view, u, v) && !hd) cur = CURSORS.rotate;
+      else if (this.st.tool === 'rotate') { h = this.pick(view, u, v); if (h === 'stock') h = null; }
+      else if (this.bulgeAt(view, u, v)) cur = 'grab';
       else if (hd) cur = hd.horiz ? 'ew-resize' : 'ns-resize';
       else if (alt && this.pickSide(view, u, v)) cur = 'pointer';
       else {
@@ -1078,6 +1225,8 @@ export class Sheet {
     if (this.drag?.kind === 'pan') c = 'grabbing';
     else if (this.spaceDown) c = 'grab';
     else if (this.st.tool === 'zoom') c = this.altDown ? CURSORS.zoomOut : CURSORS.zoom;
+    else if (this.drag?.kind === 'rotate') c = CURSORS.rotate;
+    else if (this.st.tool === 'rotate') c = this.hoverCursor || CURSORS.rotateTool;
     else if (this.st.tool !== 'select') c = CURSORS[this.st.tool] || 'crosshair';
     else c = this.hoverCursor || 'default';
     if (this.svg.style.cursor !== c) this.svg.style.cursor = c;
@@ -1110,6 +1259,10 @@ export class Sheet {
       const s = f?.bulges?.[d.k] || 0;
       t += s ? `     arc: bowed ${fmt(Math.abs(s))}   (Option: no snapping; drag back to the side to straighten it)` : '     straight side';
     }
+    if (d && d.kind === 'rotate' && d.started) t += `     turned ${+d.deg.toFixed(1)}°   (Shift: 15° steps, Option: free)`;
+    const m = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.measure;
+    if (m && this.st.tool === 'measure') t += `     ${this.measureText(m)}`;
+    else if (this.st.tool === 'measure') t += '     drag from one point to another (Shift: level or plumb, Option: no snapping)';
     if (this.st.tool === 'edge' && !this.st.built?.edges.length) t += '     Nothing to round yet: make a body first';
     this.onStatus(t);
   }
@@ -1316,6 +1469,23 @@ export class Sheet {
     }
     if (d && (d.kind === 'box' || (d.kind === 'zoom' && !d.out)) && d.started) {
       parts.push(`<rect class="ds-marquee" x="${Math.min(d.x0, d.x1)}" y="${Math.min(d.y0, d.y1)}" width="${Math.abs(d.x1 - d.x0)}" height="${Math.abs(d.y1 - d.y0)}"/>`);
+    }
+
+    // the measure tool's reading
+    const mm = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.st.tool === 'measure' ? this.measure : null;
+    if (mm && p.views.includes(mm.view)) {
+      const [ax, ay] = this.toSheet(mm.view, ...mm.a), [bx, by] = this.toSheet(mm.view, ...mm.b);
+      const lab = this.measureText(mm, true), fs = px(11);
+      const tw = lab.length * fs * 0.6 + px(8), th = fs * 1.5;
+      const tx = (ax + bx) / 2, ty = (ay + by) / 2 - px(14);
+      parts.push(`<g class="ds-measure"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>`
+        + `<circle cx="${ax}" cy="${ay}" r="${px(3)}"/><circle cx="${bx}" cy="${by}" r="${px(3)}"/>`
+        + `<rect x="${tx - tw / 2}" y="${ty - th / 2}" width="${tw}" height="${th}" rx="${px(3)}"/>`
+        + `<text x="${tx}" y="${ty + fs * 0.36}" font-size="${fs}">${lab}</text></g>`);
+    }
+    if (d && d.kind === 'rotate' && d.started) {
+      const [cx, cy] = this.toSheet(d.view, d.pu, d.pv);
+      parts.push(`<g class="ds-pivot"><circle cx="${cx}" cy="${cy}" r="${px(4)}"/><path d="M${cx - px(8)} ${cy}h${px(16)}M${cx} ${cy - px(8)}v${px(16)}"/></g>`);
     }
 
     // dimensions

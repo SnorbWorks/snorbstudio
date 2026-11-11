@@ -218,3 +218,29 @@
 .cm-stack .cm-seg { display: flex; width: 100%; }
 .cm-stack .cm-seg button { flex: 1; padding: 5px 4px; }
 .cm-stack .cm-select { width: 100%; }
+
+/* round 2: rotate box (sits to the side so the turn shows on the sheet), measure, pivot */
+.ds-modal.ds-modal-clear { background: transparent; pointer-events: none; place-items: start end; padding: 110px 330px 0 0; }
+.ds-modal-clear .ds-dialog { pointer-events: auto; box-shadow: 0 10px 40px rgba(0,0,0,.45); width: 300px; }
+.ds-rot-quick { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 8px; }
+.ds-rot-pivot { display: flex; gap: 14px; align-items: center; }
+.ds-rot-grid { display: grid; grid-template-columns: repeat(3, 18px); gap: 9px; padding: 8px; border: 1px dashed var(--muted); border-radius: 4px; flex: none; }
+.ds-rot-cell { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--muted); background: var(--card); padding: 0; cursor: pointer; }
+.ds-rot-cell.active { background: var(--accent); border-color: var(--accent); }
+.ds-rot-pt { flex: 1; }
+.ds-rot-dialog .ds-field { grid-template-columns: 50px 1fr 34px; }
+.ds-measure line { stroke: #e0662a; stroke-width: 1.6; stroke-dasharray: 6 3; }
+.ds-measure circle { fill: #fff; stroke: #e0662a; stroke-width: 1.5; }
+.ds-measure rect { fill: #e0662a; stroke: none; }
+.ds-measure text { fill: #fff; text-anchor: middle; font-family: -apple-system, sans-serif; font-weight: 600; }
+.ds-pivot circle { fill: #fff; stroke: #b04aa5; stroke-width: 1.5; }
+.ds-pivot path { stroke: #b04aa5; stroke-width: 1.2; }
+.ds-doctabs { position: absolute; left: 8px; top: 6px; z-index: 2; display: flex; gap: 4px; }
+.ds-doctab { display: flex; align-items: center; background: #eef0f3; border: 1px solid #d6d9de; border-radius: 7px; overflow: hidden; }
+.ds-doctab.active { background: #fff; border-color: #b04aa5; box-shadow: 0 1px 4px rgba(176,74,165,.25); }
+.ds-doctab button { background: none; border: 0; color: #333; font-size: 12px; padding: 3px 8px; cursor: pointer; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-doctab.active button { color: #6b2a63; font-weight: 600; }
+.ds-doctab .ds-doctab-x { padding: 3px 6px 3px 2px; color: #999; }
+.ds-doctab .ds-doctab-x:hover { color: #d33; }
+.ds-doctab-new { background: rgba(255,255,255,.85); border: 1px dashed #c9ccd2; border-radius: 7px; color: #888; font-size: 12px; padding: 3px 9px; cursor: pointer; }
+.ds-doctab-new:hover { color: #b04aa5; border-color: #b04aa5; }
