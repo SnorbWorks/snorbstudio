@@ -4,7 +4,7 @@
 import type { Feature, Project, ViewName } from './model.js';
 import { newProject, newId, isShape, findRef, profile, type P2 } from './model.js';
 import { FOOTPRINTS, placeFootprint } from './footprints.js';
-import { State, align, distribute, type AlignHow, type Tool } from './state.js';
+import { State, align, distribute, rememberFit, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
 import { Sheet, isTyping } from './sheet.js';
@@ -17,7 +17,8 @@ import { axisOf } from './views.js';
 import { viewDxf } from './dxf.js';
 import { checkPrint, type Issue } from './check.js';
 import { openCheckDialog } from './checkdialog.js';
-import { takesFit } from './model.js';
+import { openFitDialog } from './fitdialog.js';
+import { takesFit, fitPlate } from './model.js';
 
 interface Studio {
   prepare: { addFiles(files: { name: string; buffer: ArrayBuffer }[]): Promise<void> };
@@ -156,6 +157,19 @@ export function mount(root: HTMLElement, studio: Studio) {
       newTab(lid);
       flash(`“${lid.name}”: lip down, it slips into the opening. Save it, then send both to Prepare.`);
     },
+    fitTest: () => openFitDialog(document.body, {
+      current: st.p.fit ?? 0,
+      pick: (fit) => {
+        st.change((p) => { p.fit = fit; });
+        rememberFit(fit);
+        flash(`Printer fit set to ${fit} mm: holes and cut slots are made that much bigger across, here and in every new part.`);
+      },
+      openPlate: () => {
+        if (docs.other) { flash('Close the other part tab first: the test plate opens there.'); return; }
+        newTab(fitPlate());
+        flash('The M3 fit test plate. Send it to Prepare and print it, then Sheet › Fit test… to pick the hole that fits.');
+      },
+    }),
   });
   // the side panel's tabs: the selection's properties, or how the views are drawn
   const showTab = (t: string) => {

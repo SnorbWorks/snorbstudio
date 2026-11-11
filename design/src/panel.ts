@@ -21,6 +21,7 @@ export interface PanelHooks {
   repick(id: string): void;                     // pick a fillet's edges again
   unbase(): void;                               // the body back to a plain block
   lid(lid: Project): void;                      // open the matching lid as the other part tab
+  fitTest(): void;                              // the fit test plate: find the printer fit
 }
 
 const NAMES: Record<string, string> = {
@@ -212,6 +213,7 @@ export class Panel {
     out.push(this.num('Holes print small by', st.p.fit ?? 0, (v) => { st.p.fit = v; rememberFit(v); }, { min: 0, max: 2,
       title: 'Printed holes come out a little small. Holes and cut slots are made this much bigger across so they fit; the sizes you type stay the real ones. New parts start with this.' }));
     out.push(this.h('Holes and cut slots grow by this. Any other cut can take it too (its “Add printer fit” box).', 'ds-note'));
+    out.push(this.button('Fit test…', () => this.hooks.fitTest(), 'btn ghost sm', 'Print a little plate of M3 holes, then click the one a screw fits: that sets this for you'));
     out.push(this.h('Tips', 'ds-h'));
     out.push(this.h('V select (drag just outside a selection’s corner to turn it) · ⇧R rotate (angle and pivot) · M measure · ⌘C / ⌘V copy and paste, also between the two part tabs (+ Part, top left) · ⌘D duplicate · R rectangle · S slot · C circle · P polygon · L line (click corners, click the first to close; drag a side’s ◆ to bow it into an arc) · O hole · G gear · T text · E edges (fillet/chamfer) · D dimension (double-click its number to type a size) · H draw on the far face (hidden lines) · Z zoom · Shift-click or drag a box to select several · Option-click a side, Option-Shift-click the side next to it for their corner · Delete removes · ⌘Z undo · F fit · Space-drag or right-drag to pan · pinch or ⌘-scroll to zoom · hold Option while dragging for no snapping', 'ds-note'));
     return out;

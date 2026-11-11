@@ -71,3 +71,31 @@ test('small text and tiny posts are flagged', () => {
   const is = checkPrint(p, null);
   assert.deepEqual(kinds(is), ['tiny']);
 });
+
+test('the fit test plate: five M3 holes 3.0 to 3.4 mm, no fit added on top', async () => {
+  const { fitPlate, profile: prof } = await import('./build/model.mjs');
+  const p = fitPlate();
+  const holes = p.features.filter((f) => f.type === 'circle');
+  assert.deepEqual(holes.map((f) => +(f.r * 2).toFixed(3)), [3, 3.1, 3.2, 3.3, 3.4]);
+  assert.ok(holes.every((f) => f.fit === false && f.through));
+  assert.deepEqual(p.features.filter((f) => f.type === 'text').map((f) => f.text.s), ['0', '.1', '.2', '.3', '.4']);
+  // the holes sit inside the plate with room round them
+  const xs = holes.map((f) => f.cu);
+  assert.ok(Math.min(...xs) - 1.7 > p.stock.min[0] + 1 && Math.max(...xs) + 1.7 < p.stock.max[0] - 1);
+  const r = build({ ...p, features: holes }, [], false, false);
+  assert.ok(!Object.keys(r.errors).length, JSON.stringify(r.errors));
+  const plate = (p.stock.max[0] - p.stock.min[0]) * (p.stock.max[1] - p.stock.min[1]) * 3;
+  const cut = holes.reduce((a, f) => a + Math.PI * f.r * f.r * 3, 0);
+  assert.ok(Math.abs(r.volume - (plate - cut)) < 0.5, `${r.volume} vs ${plate - cut}`);
+  void prof;
+});
+
+test('a 0.3 mm slot is a narrow gap; a 1 mm one is not', () => {
+  const p = newProject();
+  p.features.push(feat({ w: 0.3, h: 12, d0: 20, d1: 14 }));
+  let is = run(p);
+  assert.ok(is.some((i) => i.kind === 'gap'), is.map((i) => i.title).join('; '));
+  p.features[0].w = 1;
+  is = run(p);
+  assert.ok(!is.some((i) => i.kind === 'gap'), is.map((i) => i.title).join('; '));
+});

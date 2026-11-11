@@ -308,3 +308,15 @@
 .ds-cut-label { fill: #c0508f; font-weight: 700; text-anchor: middle; font-family: inherit; }
 .ds-cut-new { opacity: .6; }
 .ds-btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }
+
+/* Fit test */
+.ds-fit-dialog { width: min(460px, calc(100vw - 32px)); }
+.ds-fit-steps { margin: 4px 0 10px 18px; padding: 0; font-size: 13px; line-height: 1.5; }
+.ds-fit-plate { width: 100%; height: auto; display: block; margin: 4px 0 6px; }
+.ds-fit-body { fill: #eadcec; stroke: #2b1a33; stroke-width: 1.5; }
+.ds-fit-hole { cursor: pointer; outline: none; }
+.ds-fit-hole .ds-fit-hit { fill: transparent; stroke: transparent; stroke-width: 2; }
+.ds-fit-hole:hover .ds-fit-hit, .ds-fit-hole:focus .ds-fit-hit { fill: rgba(192, 80, 143, .14); stroke: #c0508f; }
+.ds-fit-hole.on .ds-fit-hit { stroke: #c0508f; stroke-dasharray: 4 3; }
+.ds-fit-hole circle { fill: #2a1c31; stroke: #2b1a33; stroke-width: 1.5; }
+.ds-fit-hole text { fill: #2b1a33; font-size: 15px; font-weight: 700; text-anchor: middle; font-family: inherit; }

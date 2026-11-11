@@ -21,6 +21,9 @@ export interface Issue {
 
 export interface CheckOpts { nozzle?: number; layer?: number }
 
+/** Thin walls and narrow gaps smaller than this (mm² of surface) are left out: sharp tips, not walls. */
+const MIN_PATCH = 2;
+
 // ------------------------------------------------------------ mesh helpers
 
 type V3 = [number, number, number];
@@ -62,8 +65,13 @@ class Grid {
   }
   cell(p: V3): V3 { return [Math.floor((p[0] - this.lo[0]) / this.size), Math.floor((p[1] - this.lo[1]) / this.size), Math.floor((p[2] - this.lo[2]) / this.size)]; }
   key(i: number, j: number, k: number) { return (i * 4096 + j) * 4096 + k; }
-  /** The nearest hit along o + t·d for 0 < t ≤ len, skipping triangle `skip`. */
-  cast(o: V3, d: V3, len: number, skip: number): number {
+  /**
+   * The nearest hit along o + t·d for 0 < t ≤ len, skipping triangle `skip`,
+   * on a surface that faces the ray the given way (+1: it looks along the ray,
+   * as the far side of a wall does; -1: back at it, as across a gap). Grazing
+   * hits (a wall the ray runs alongside) don't count.
+   */
+  cast(o: V3, d: V3, len: number, skip: number, facing: 1 | -1): number {
     const e: V3 = [o[0] + d[0] * len, o[1] + d[1] * len, o[2] + d[2] * len];
     const [i0, j0, k0] = this.cell([Math.min(o[0], e[0]), Math.min(o[1], e[1]), Math.min(o[2], e[2])]);
     const [i1, j1, k1] = this.cell([Math.max(o[0], e[0]), Math.max(o[1], e[1]), Math.max(o[2], e[2])]);
@@ -73,6 +81,7 @@ class Grid {
       for (const ti of this.cells.get(this.key(x, y, z)) || []) {
         if (ti === skip || seen.has(ti)) continue;
         seen.add(ti);
+        if (dot(this.tris[ti].n, d) * facing < 0.5) continue;
         const t = rayTri(o, d, this.tris[ti]);
         if (t > 1e-4 && t <= len && t < best) best = t;
       }
@@ -140,6 +149,7 @@ export function checkPrint(p: Project, mesh: Mesh | null, o: CheckOpts = {}): Is
     const thinLen = nozzle * 2, gapLen = nozzle;
     const thin: number[] = [], gap: number[] = [];
     let thinnest = Infinity, narrowest = Infinity;
+    const thinIn: Record<number, number> = {}, gapOut: Record<number, number> = {};
     tris.forEach((t, i) => {
       if (t.area < 1e-6) return;
       const c: V3 = [(t.a[0] + t.b[0] + t.c[0]) / 3, (t.a[1] + t.b[1] + t.c[1]) / 3, (t.a[2] + t.b[2] + t.c[2]) / 3];
@@ -148,14 +158,20 @@ export function checkPrint(p: Project, mesh: Mesh | null, o: CheckOpts = {}): Is
       const inw: V3 = [-t.n[0], -t.n[1], -t.n[2]];
       let tIn = Infinity, tOut = Infinity;
       for (const q of pts) {
-        tIn = Math.min(tIn, grid.cast(q, inw, thinLen, i));
-        tOut = Math.min(tOut, grid.cast(q, t.n, gapLen, i));
+        tIn = Math.min(tIn, grid.cast(q, inw, thinLen, i, 1));
+        tOut = Math.min(tOut, grid.cast(q, t.n, gapLen, i, -1));
       }
-      if (tIn < thinLen) { thin.push(i); thinnest = Math.min(thinnest, tIn); }
-      if (tOut < gapLen) { gap.push(i); narrowest = Math.min(narrowest, tOut); }
+      if (tIn < thinLen) { thin.push(i); thinIn[i] = tIn; }
+      if (tOut < gapLen) { gap.push(i); gapOut[i] = tOut; }
     });
+    // the sharp tip of a wedge is thin for a hair's breadth: only patches big enough to matter
+    const keep = (ids: number[]) => patches(tris, ids).filter((g) => g.reduce((a, k) => a + tris[k].area, 0) >= MIN_PATCH);
+    const thinPs = keep(thin), gapPs = keep(gap);
+    thin.length = 0; gap.length = 0;
+    for (const g of thinPs) for (const k of g) { thin.push(k); thinnest = Math.min(thinnest, thinIn[k]); }
+    for (const g of gapPs) for (const k of g) { gap.push(k); narrowest = Math.min(narrowest, gapOut[k]); }
     if (thin.length) {
-      const ps = patches(tris, thin);
+      const ps = thinPs;
       issues.push({
         kind: 'thin', tris: thin, at: mid(boxOf(tris, ps[0])),
         title: `Thin wall${ps.length > 1 ? `s in ${ps.length} places` : ''}: ${mm(thinnest)} at the thinnest`,

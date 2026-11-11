@@ -719,3 +719,29 @@ export function makeLid(p: Project): Project | null {
   ];
   return lid;
 }
+
+// ------------------------------------------------------------ fit test plate
+
+/** The fits the test plate tries (mm added across an M3's 3 mm). */
+export const FIT_STEPS = [0, 0.1, 0.2, 0.3, 0.4];
+
+/**
+ * A small plate with five M3 holes made 3.0, 3.1 … 3.4 mm, each labelled
+ * with how much was added. Print it, push an M3 screw through each: the one
+ * it slides through snugly is the printer's fit.
+ */
+export function fitPlate(): Project {
+  const p = newProject();
+  p.name = 'M3 fit test';
+  p.fit = 0;
+  const pitch = 11, n = FIT_STEPS.length, w = pitch * n + 4, d = 17, t = 3;
+  p.stock = { min: [-w / 2, -d / 2, 0], max: [w / 2, d / 2, t] };
+  p.views = ['top', 'front'];
+  FIT_STEPS.forEach((fit, i) => {
+    const x = +(-((n - 1) * pitch) / 2 + i * pitch).toFixed(6);
+    p.features.push({ id: newId(), type: 'circle', view: 'top', cu: x, cv: 3, w: 0, h: 0, r: (3 + fit) / 2, corner: 0, d0: t, d1: 0, op: 'cut', through: true, fit: false });
+    const label = fit === 0 ? '0' : `.${Math.round(fit * 10)}`;
+    p.features.push({ id: newId(), type: 'text', view: 'top', cu: x, cv: -4.5, w: 0, h: 0, r: 0, corner: 0, d0: t, d1: t - 0.6, op: 'cut', through: false, rot: 0, text: { s: label, size: 5, bold: true } });
+  });
+  return p;
+}
