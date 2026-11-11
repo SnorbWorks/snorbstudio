@@ -1,7 +1,7 @@
 // The Design tab: an orthographic drafting sheet that builds a printable
 // solid. Studio loads this module the first time the tab is opened.
 
-import type { Feature, Project } from './model.js';
+import type { Feature, Project, ViewName } from './model.js';
 import { newProject, newId, isShape, findRef, profile, type P2 } from './model.js';
 import { FOOTPRINTS, placeFootprint } from './footprints.js';
 import { State, align, distribute, type AlignHow, type Tool } from './state.js';
@@ -14,6 +14,7 @@ import { openGearDialog } from './geardialog.js';
 import { openHoleDialog } from './holedialog.js';
 import { openRotateDialog } from './rotatedialog.js';
 import { axisOf } from './views.js';
+import { viewDxf } from './dxf.js';
 import { takesFit } from './model.js';
 
 interface Studio {
@@ -93,7 +94,7 @@ const html = `
   <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
   <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
-  <button class="btn sm ghost" id="ds-stl" title="Download the STL">STL</button>
+  <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Download the STL, or a DXF drawing of a view">Export ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
   <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
   <button class="btn sm ghost" id="ds-lib" title="Keep the STL in the model library on the Pi (Files tab)">Send to Library</button>
   <button class="btn sm primary" id="ds-send" title="Put it on the plate in Prepare">Send to Prepare</button>
@@ -812,13 +813,44 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   const fileName = () => `${(st.p.name || 'part').replace(/\.stl$/i, '')}.stl`;
   const getSTL = async (): Promise<ArrayBuffer> => call({ type: 'stl', project: JSON.parse(JSON.stringify(st.p)) });
-  $('#ds-stl').onclick = async () => {
-    const buf = await getSTL();
+  const download = (data: BlobPart, type: string, name: string) => {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([buf], { type: 'model/stl' }));
-    a.download = fileName();
+    a.href = URL.createObjectURL(new Blob([data], { type }));
+    a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  // Export: the STL, or a flat DXF of one view (what the sheet draws there)
+  const exportMenu = $('#ds-export-menu');
+  const closeExport = () => { exportMenu.classList.add('hidden'); window.removeEventListener('pointerdown', outsideExport, true); };
+  const outsideExport = (e: Event) => { if (!(e.target as HTMLElement).closest('.ds-export')) closeExport(); };
+  const dxfOf = (view: ViewName, hidden: boolean) => {
+    const edges = st.built?.views[view];
+    if (!edges) { flash('The drawing is still being worked out: try again in a moment.'); return; }
+    const stem = (st.p.name || 'part').replace(/\.stl$/i, '');
+    download(viewDxf(edges, { hidden }), 'application/dxf', `${stem} ${VIEWS[view].label.toLowerCase()}.dxf`);
+    flash(`${VIEWS[view].label} view saved as a DXF in mm${hidden ? ', hidden lines dashed on their own layer' : ''}.`);
+  };
+  $('#ds-stl').onclick = () => {
+    if (!exportMenu.classList.contains('hidden')) { closeExport(); return; }
+    const v = st.activeView, label = VIEWS[v].label;
+    exportMenu.innerHTML = '';
+    const item = (text: string, sub: string, run: () => void) => {
+      const b = document.createElement('button');
+      b.innerHTML = `<b>${text}</b><small>${sub}</small>`;
+      b.onclick = () => { closeExport(); run(); };
+      exportMenu.appendChild(b);
+    };
+    item('STL', 'The 3D part, for any slicer', async () => download(await getSTL(), 'model/stl', fileName()));
+    item(`DXF of the ${label} view`, 'Its outlines, flat, in mm: for a laser, the router or other CAD', () => dxfOf(v, false));
+    item(`DXF of the ${label} view + hidden lines`, 'Hidden lines dashed on their own layer', () => dxfOf(v, true));
+    const other = document.createElement('label');
+    other.className = 'ds-menu-row';
+    other.innerHTML = `<span>Another view</span><select class="ds-select">${(['top', 'front', 'right', 'left', 'back', 'bottom'] as ViewName[]).map((n) => `<option value="${n}" ${n === v ? 'selected' : ''}>${VIEWS[n].label}</option>`).join('')}</select>`;
+    (other.querySelector('select') as HTMLSelectElement).onchange = (e) => { closeExport(); dxfOf((e.target as HTMLSelectElement).value as ViewName, false); };
+    exportMenu.appendChild(other);
+    exportMenu.classList.remove('hidden');
+    window.addEventListener('pointerdown', outsideExport, true);
   };
   $('#ds-send').onclick = async () => {
     const b = $('#ds-send') as HTMLButtonElement;
