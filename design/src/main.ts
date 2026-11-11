@@ -2,7 +2,8 @@
 // solid. Studio loads this module the first time the tab is opened.
 
 import type { Feature, Project } from './model.js';
-import { newProject, newId, isShape, findRef } from './model.js';
+import { newProject, newId, isShape, findRef, profile, type P2 } from './model.js';
+import { FOOTPRINTS, placeFootprint } from './footprints.js';
 import { State, align, distribute, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
@@ -90,7 +91,7 @@ const html = `
   <input class="ds-name" id="ds-name" title="Part name" spellcheck="false">
   <button class="btn sm ghost" id="ds-new" title="Start a new part">New</button>
   <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
-  <button class="btn sm ghost" id="ds-open" title="Open a part saved on the printer">Open…</button>
+  <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
   <button class="btn sm ghost" id="ds-stl" title="Download the STL">STL</button>
   <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
@@ -144,6 +145,11 @@ export function mount(root: HTMLElement, studio: Studio) {
     dimSize: (dm, size) => sheet.resizeTo(dm, size),
     repick: (id) => repick(id),
     unbase: () => st.change((p) => { delete p.base; p.stock.off = false; }),
+    lid: (lid) => {
+      if (docs.other) { flash('Close the other part tab first: the lid opens there.'); return; }
+      newTab(lid);
+      flash(`“${lid.name}”: lip down, it slips into the opening. Save it, then send both to Prepare.`);
+    },
   });
   // the side panel's tabs: the selection's properties, or how the views are drawn
   const showTab = (t: string) => {
@@ -538,16 +544,17 @@ export function mount(root: HTMLElement, studio: Studio) {
     name.classList.remove('ds-name-taken');
     sheet.fit();
   }
-  function newTab() {
+  function newTab(start?: Project) {
     if (docs.other) { switchDoc(); return; }
     commitName();
     const mine = { savedAs, cleanSig };
-    const cur = st.swap({ p: newProject(), undo: [], redo: [], sels: [] });
+    const cur = st.swap({ p: start || newProject(), undo: [], redo: [], sels: [] });
     docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: true };
     keepOther();
     setSavedAs(null);
+    if (start) cleanSig = null;      // a made lid counts as unsaved
     sheet.fit();
-    flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
+    if (!start) flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
   }
   async function closeTab(active: boolean) {
     if (!active) switchDoc();
@@ -588,7 +595,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       const plus = document.createElement('button');
       plus.className = 'ds-doctab-new'; plus.textContent = '+ Part';
       plus.title = 'Open a second part beside this one, to copy and paste between them';
-      plus.onclick = newTab;
+      plus.onclick = () => newTab();
       kids.push(plus);
     }
     bar.replaceChildren(...kids);
@@ -673,7 +680,9 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (!checked && !await nameFree()) { if (quiet) throw new Error('that name is taken'); return false; }
     const nm = (st.p.name || 'part').trim();
     try {
-      const r = await fetch(`${API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(st.p), headers: { 'Content-Type': 'application/json' } });
+      // a small picture of the part goes in the saved file, for the library
+      const thumb = preview.snapshot();
+      const r = await fetch(`${API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(thumb ? { ...st.p, thumb } : st.p), headers: { 'Content-Type': 'application/json' } });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
       setSavedAs(nm);
       name.classList.remove('ds-name-taken');
@@ -682,84 +691,124 @@ export function mount(root: HTMLElement, studio: Studio) {
     } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; return false; }
   };
   $('#ds-save').onclick = () => save();
+  // ---------------------------------------------------------- the library
+  // Three shelves: parts saved on the printer (with a picture of each),
+  // models from the printer's library (STL), and footprints to drop on.
+  const LIB_SHELF = 'studio.design.libShelf';
   $('#ds-open').onclick = async () => {
-    let list: { name: string; modified: number }[] = [];
+    let list: { name: string; modified: number; thumb?: string }[] = [];
     let lib: { name: string; size: number }[] = [];
-    try { list = (await (await fetch(API.slice(0, -1))).json()).designs || []; } catch (e: any) { flash(`Couldn't list saved parts: ${e.message}`); return; }
+    let listErr = '';
+    try { list = (await (await fetch(API.slice(0, -1))).json()).designs || []; } catch (e: any) { listErr = `Couldn't reach the printer for saved parts (${e.message}).`; }
     try { lib = ((await (await fetch('/studio-api/models')).json()).models || []).filter((m: any) => /\.stl$/i.test(m.name)); } catch { /* no library */ }
+    const designs = new Set(list.map((d) => d.name));
+    const libOnly = lib.filter((m) => !designs.has(m.name.replace(/\.stl$/i, '')));
+    let shelf = 'parts';
+    try { shelf = localStorage.getItem(LIB_SHELF) || 'parts'; } catch { /* default */ }
+
     const box = document.createElement('div');
     box.className = 'ds-modal';
     const card = document.createElement('div');
-    card.className = 'ds-dialog';
-    card.innerHTML = `<h3>Open a part</h3>${list.length ? '' : '<p class="ds-note">Nothing saved on the printer yet. Use Save.</p>'}`;
-    const ul = document.createElement('div');
-    ul.className = 'ds-list ds-open-list';
-    for (const d of list) {
-      const row = document.createElement('div');
-      row.className = 'ds-open-row';
-      const b = document.createElement('button');
-      b.textContent = d.name;
-      b.title = new Date(d.modified * 1000).toLocaleString();
-      b.onclick = async () => {
-        close();
-        if (!await okToLeave()) return;
-        try {
-          const p = await (await fetch(`${API}${encodeURIComponent(d.name)}.json`)).json();
-          st.load(p);
-          setSavedAs(d.name);
-          sheet.fit();
-          close();
-          flash(`Opened “${d.name}”.`);
-        } catch (e: any) { flash(`Couldn't open it: ${e.message}`); }
-      };
-      const del = document.createElement('button');
-      del.className = 'ds-open-del';
-      del.textContent = '×';
-      del.title = 'Delete this saved part from the printer';
-      let armed = false;
-      del.onclick = async () => {
-        // two clicks to delete: no browser dialogs
-        if (!armed) { armed = true; del.textContent = 'Delete?'; del.classList.add('armed'); return; }
-        await fetch(`${API}${encodeURIComponent(d.name)}.json`, { method: 'DELETE' });
-        row.remove();
-      };
-      row.append(b, del);
-      ul.appendChild(row);
-    }
-    card.appendChild(ul);
-    const designs = new Set(list.map((d) => d.name));
-    const libOnly = lib.filter((m) => !designs.has(m.name.replace(/\.stl$/i, '')));
-    if (libOnly.length) {
-      const h = document.createElement('div');
-      h.className = 'ds-h';
-      h.textContent = 'From the model library (STL)';
-      const note = document.createElement('p');
-      note.className = 'ds-note';
-      note.textContent = 'Opens as the body: add or cut shapes on it and round its edges.';
-      const ul2 = document.createElement('div');
-      ul2.className = 'ds-list ds-open-list';
-      for (const m of libOnly) {
-        const b = document.createElement('button');
-        b.textContent = m.name;
-        b.title = `${Math.round(m.size / 1024)} KB`;
-        b.onclick = () => { close(); openModel(m.name); };
-        ul2.appendChild(b);
-      }
-      card.append(h, note, ul2);
-    }
-    const foot = document.createElement('div');
-    foot.className = 'ds-dialog-foot';
-    const cancel = document.createElement('button');
-    cancel.className = 'btn sm ghost';
-    cancel.textContent = 'Cancel';
-    foot.appendChild(cancel);
-    card.appendChild(foot);
+    card.className = 'ds-dialog ds-lib';
+    card.innerHTML = `<h3>Library</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
+      <div class="ds-dialog-foot"><button class="btn sm ghost" id="ds-lib-cancel">Close</button></div>`;
     box.appendChild(card);
     root.appendChild(box);
-    const close = () => box.remove();
-    cancel.onclick = close;
+    const close = () => { box.remove(); window.removeEventListener('keydown', onKey, true); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
+    window.addEventListener('keydown', onKey, true);
+    (card.querySelector('#ds-lib-cancel') as HTMLButtonElement).onclick = close;
     box.addEventListener('pointerdown', (e) => { if (e.target === box) close(); });
+    const tabs = card.querySelector('.ds-lib-tabs') as HTMLElement, body = card.querySelector('.ds-lib-body') as HTMLElement;
+    const shelves: [string, string][] = [['parts', `My parts (${list.length})`], ['models', `Models (${libOnly.length})`], ['footprints', 'Footprints']];
+
+    const tile = (title: string, sub: string, pic: string, open: () => void, extra?: HTMLElement) => {
+      const t = document.createElement('div');
+      t.className = 'ds-tile';
+      const b = document.createElement('button');
+      b.className = 'ds-tile-main';
+      b.innerHTML = `<div class="ds-tile-pic">${pic}</div><b></b><span></span>`;
+      b.querySelector('b')!.textContent = title;
+      b.querySelector('span')!.textContent = sub;
+      b.onclick = open;
+      t.appendChild(b);
+      if (extra) t.appendChild(extra);
+      return t;
+    };
+    const show = (which: string) => {
+      shelf = which;
+      try { localStorage.setItem(LIB_SHELF, which); } catch { /* fine */ }
+      tabs.replaceChildren(...shelves.map(([k, label]) => {
+        const b = document.createElement('button');
+        b.textContent = label; b.classList.toggle('active', k === which);
+        b.onclick = () => show(k);
+        return b;
+      }));
+      const grid = document.createElement('div');
+      grid.className = 'ds-tiles';
+      let note = '';
+      if (which === 'parts') {
+        note = listErr || (list.length ? 'Click one to open it.' : 'Nothing saved on the printer yet: Save puts the part here.');
+        for (const d of list) {
+          const del = document.createElement('button');
+          del.className = 'ds-tile-del'; del.textContent = '×'; del.title = 'Delete this saved part from the printer';
+          let armed = false;
+          del.onclick = async () => {
+            // two clicks to delete: no browser dialogs
+            if (!armed) { armed = true; del.textContent = 'Delete?'; del.classList.add('armed'); return; }
+            await fetch(`${API}${encodeURIComponent(d.name)}.json`, { method: 'DELETE' });
+            list = list.filter((x) => x !== d);
+            show('parts');
+          };
+          const pic = d.thumb ? `<img src="${d.thumb}" alt="">` : '<i class="ds-tile-none">no picture yet<br>(saved before pictures)</i>';
+          grid.appendChild(tile(d.name, new Date(d.modified * 1000).toLocaleDateString(), pic, async () => {
+            close();
+            if (!await okToLeave()) return;
+            try {
+              const p = await (await fetch(`${API}${encodeURIComponent(d.name)}.json`)).json();
+              st.load(p);
+              setSavedAs(d.name);
+              sheet.fit();
+              flash(`Opened “${d.name}”.`);
+            } catch (e: any) { flash(`Couldn't open it: ${e.message}`); }
+          }, del));
+        }
+      } else if (which === 'models') {
+        note = libOnly.length ? 'STL models from the printer’s library: one opens as the body, to add and cut shapes on.' : 'No other models in the printer’s library.';
+        for (const m of libOnly) grid.appendChild(tile(m.name, `${Math.round(m.size / 1024)} KB`, '<i class="ds-tile-none">STL</i>', () => { close(); openModel(m.name); }));
+      } else {
+        note = 'Click one to drop it on the middle of this part (on the floor of a hollow box), then drag it where it goes. They are ordinary shapes: change or delete any of them. Sizes are the usual ones: check against your part.';
+        for (const fp of FOOTPRINTS) {
+          grid.appendChild(tile(fp.name, fp.note, footprintSvg(fp), () => {
+            close();
+            const feats = placeFootprint(fp, st.p);
+            st.change((p) => { p.features.push(...feats); });
+            st.setTool('select');
+            st.select(feats.map((f) => f.id));
+            st.activeView = 'top';
+            flash(`${fp.name}: drag it into place (the group moves together).`);
+          }));
+        }
+      }
+      const n = document.createElement('p'); n.className = 'ds-note'; n.textContent = note;
+      body.replaceChildren(n, grid);
+    };
+    show(shelves.some(([k]) => k === shelf) ? shelf : 'parts');
   };
+
+  /** A footprint drawn small: its outlines from the top, cuts dark, standoffs light. */
+  function footprintSvg(fp: (typeof FOOTPRINTS)[number]): string {
+    const feats = fp.make();
+    const polys = feats.map((f) => ({ pts: profile(f, 32), add: f.op === 'add' }));
+    const all = polys.flatMap((q) => q.pts);
+    if (!all.length) return '';
+    const xs = all.map((q) => q[0]), ys = all.map((q) => q[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+    const pad = Math.max(x1 - x0, y1 - y0) * 0.12 + 1;
+    const d = (pts: P2[]) => `M${pts.map(([x, y]) => `${x.toFixed(2)} ${(-y).toFixed(2)}`).join('L')}Z`;
+    return `<svg viewBox="${x0 - pad} ${-y1 - pad} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad}" preserveAspectRatio="xMidYMid meet">`
+      + polys.sort((a, b) => Number(b.add) - Number(a.add)).map((q) => `<path d="${d(q.pts)}" class="${q.add ? 'add' : 'cut'}"/>`).join('') + '</svg>';
+  }
 
   const fileName = () => `${(st.p.name || 'part').replace(/\.stl$/i, '')}.stl`;
   const getSTL = async (): Promise<ArrayBuffer> => call({ type: 'stl', project: JSON.parse(JSON.stringify(st.p)) });

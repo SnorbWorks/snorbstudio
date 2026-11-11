@@ -6,7 +6,7 @@ import {
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
-import { bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
+import { shellCavity, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
 import { hexPoints } from './holes.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
@@ -288,8 +288,15 @@ export function stockSolid(p: Project): Solid | null {
   }
   if (p.stock.off) return null;
   const [a, b] = [p.stock.min, p.stock.max];
-  return makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2])
+  let box = makeBaseBox(b[0] - a[0], b[1] - a[1], b[2] - a[2])
     .translate((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, a[2]);
+  // a hollow body: the inside taken out, open on one face
+  const cav = shellCavity(p);
+  if (cav) {
+    const [m, n] = cav;
+    box = box.cut(makeBaseBox(n[0] - m[0], n[1] - m[1], n[2] - m[2]).translate((m[0] + n[0]) / 2, (m[1] + n[1]) / 2, m[2]));
+  }
+  return box;
 }
 
 /** Does an edge pass within tol of a point? (Rounds and chamfers find their edges this way.) */

@@ -77,4 +77,21 @@ export class Preview3D {
   }
 
   draw() { this.renderer.render(this.scene, this.camera); }
+
+  /** A small JPEG of the part as it looks now (for the library), or null with nothing to show. */
+  snapshot(w = 200, h = 150): string | null {
+    if (!this.mesh) return null;
+    const src = this.renderer.domElement;
+    if (!src.width || !src.height) return null;
+    this.draw();     // the drawing buffer is only good straight after a render
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    if (!g) return null;
+    g.fillStyle = '#f4f5f7'; g.fillRect(0, 0, w, h);
+    const k = Math.min(w / src.width, h / src.height);
+    const dw = src.width * k, dh = src.height * k;
+    g.drawImage(src, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    try { return c.toDataURL('image/jpeg', 0.82); } catch { return null; }
+  }
 }

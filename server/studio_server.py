@@ -574,8 +574,18 @@ class Handler(BaseHTTPRequestHandler):
                     p = os.path.join(store, n)
                     if n.lower().endswith(".json") and os.path.isfile(p):
                         st = os.stat(p)
-                        out.append({"name": n[:-5], "size": st.st_size,
-                                    "modified": st.st_mtime})
+                        item = {"name": n[:-5], "size": st.st_size,
+                                "modified": st.st_mtime}
+                        # SnorbCAD keeps a small picture in each saved part (the library shows it)
+                        if store == DESIGNS:
+                            try:
+                                with open(p, "rb") as f:
+                                    thumb = json.load(f).get("thumb")
+                                if isinstance(thumb, str) and thumb.startswith("data:image/") and len(thumb) < 300000:
+                                    item["thumb"] = thumb
+                            except (OSError, ValueError, AttributeError):
+                                pass
+                        out.append(item)
                 out.sort(key=lambda m: -m["modified"])
                 return self.send_json({parts[0]: out})
             if len(parts) == 2 and parts[0] in STORES:

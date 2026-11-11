@@ -1,12 +1,14 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs } from './model.js';
+import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
 import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
 import { VIEWS, axisOf } from './views.js';
 import type { State } from './state.js';
+import { evalExpr, isFormula, sizeValues, applyFormulas, validName } from './sizes.js';
+import type { Project } from './model.js';
 
 const AX = 'XYZ';
 
@@ -17,6 +19,7 @@ export interface PanelHooks {
   dimSize(dm: Dim, size: number): void;
   repick(id: string): void;                     // pick a fillet's edges again
   unbase(): void;                               // the body back to a plain block
+  lid(lid: Project): void;                      // open the matching lid as the other part tab
 }
 
 const NAMES: Record<string, string> = {
@@ -48,26 +51,45 @@ export class Panel {
   private fromUnits(v: number) { return this.st.p.units === 'in' ? v * 25.4 : v; }
 
   /** A number field in the project's units, writing back through set(). */
-  private num(label: string, mm: number, set: (mm: number) => void, opts: { min?: number; max?: number; title?: string; raw?: boolean; unit?: string; step?: number } = {}): HTMLElement {
+  private num(label: string, mm: number, set: (mm: number) => void, opts: { min?: number; max?: number; title?: string; raw?: boolean; unit?: string; step?: number; bind?: { key: string; f: Feature | null } } = {}): HTMLElement {
     const wrap = document.createElement('label');
     wrap.className = 'ds-field';
     if (opts.title) wrap.title = opts.title;
     const span = document.createElement('span');
     span.textContent = label;
     const inp = document.createElement('input');
-    inp.type = 'number';
-    inp.step = opts.step ? String(opts.step) : 'any';
+    // text, not number: a box takes a sum or a named size too (wall*2+1)
+    inp.type = 'text';
+    inp.inputMode = 'decimal';
+    inp.spellcheck = false;
     const shown = opts.raw ? mm : this.toUnits(mm);
-    inp.value = String(+shown.toFixed(opts.raw ? 4 : this.st.p.precision + 2));
+    const plain = String(+shown.toFixed(opts.raw ? 4 : this.st.p.precision + 2));
+    inp.value = plain;
+    const b = opts.bind;
+    const exprsOf = () => (b ? (b.f ? (b.f.exprs ||= {}) : (this.st.p.exprs ||= {})) : null);
+    const formula = b ? (b.f ? b.f.exprs : this.st.p.exprs)?.[b.key] : undefined;
+    if (formula) {
+      inp.classList.add('ds-formula');
+      wrap.title = `= ${formula}${opts.title ? `\n${opts.title}` : ''}\nType a number to drop the formula.`;
+      inp.addEventListener('focus', () => { inp.value = formula; inp.select(); });
+      inp.addEventListener('blur', () => { if (inp.value.trim() === formula) inp.value = plain; });
+    }
     const unit = document.createElement('i');
     unit.textContent = opts.unit ?? (opts.raw ? '' : this.st.p.units);
     const commit = () => {
-      const v = parseFloat(inp.value);
-      if (!Number.isFinite(v)) return;
-      let mmv = opts.raw ? v : this.fromUnits(v);
+      const text = inp.value.trim();
+      if (!text || (formula && text === formula)) return;
+      let v: number;
+      try { v = evalExpr(text, sizeValues(this.st.p)); }
+      catch (e: any) { inp.classList.add('ds-bad'); wrap.title = `Can't work that out: ${e.message}`; return; }
+      let mmv = +(opts.raw ? v : this.fromUnits(v)).toFixed(9);
       if (opts.min !== undefined) mmv = Math.max(opts.min, mmv);
       if (opts.max !== undefined) mmv = Math.min(opts.max, mmv);
-      this.st.change(() => set(mmv));
+      this.st.change(() => {
+        set(mmv);
+        const ex = exprsOf();
+        if (ex && b) { if (isFormula(text)) ex[b.key] = text; else delete ex[b.key]; }
+      });
     };
     inp.addEventListener('change', commit);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { inp.blur(); } e.stopPropagation(); });
@@ -100,9 +122,10 @@ export class Panel {
     return lab;
   }
 
-  private button(label: string, fn: () => void, cls = 'btn ghost sm ds-del'): HTMLElement {
+  private button(label: string, fn: () => void, cls = 'btn ghost sm ds-del', title = ''): HTMLElement {
     const b = document.createElement('button');
     b.className = cls;
+    if (title) b.title = title;
     b.textContent = label;
     b.onclick = fn;
     return b;
@@ -153,9 +176,23 @@ export class Panel {
     out.push(this.check('Start from a block', !s.off, (on) => { s.off = !on; },
       'Off: no block, the shapes you add stand on their own (a gear, say). Cuts then only cut those shapes.'));
     if (!s.off) {
-      out.push(this.num('Width (X)', s.max[0] - s.min[0], (v) => { const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; }, { min: 0.1 }));
-      out.push(this.num('Depth (Y)', s.max[1] - s.min[1], (v) => { const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; }, { min: 0.1 }));
-      out.push(this.num('Height (Z)', s.max[2] - s.min[2], (v) => { s.max[2] = s.min[2] + v; }, { min: 0.1 }));
+      out.push(this.num('Width (X)', s.max[0] - s.min[0], (v) => { const c = (s.min[0] + s.max[0]) / 2; s.min[0] = c - v / 2; s.max[0] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.x', f: null } }));
+      out.push(this.num('Depth (Y)', s.max[1] - s.min[1], (v) => { const c = (s.min[1] + s.max[1]) / 2; s.min[1] = c - v / 2; s.max[1] = c + v / 2; }, { min: 0.1, bind: { key: 'stock.y', f: null } }));
+      out.push(this.num('Height (Z)', s.max[2] - s.min[2], (v) => { s.max[2] = s.min[2] + v; }, { min: 0.1, bind: { key: 'stock.z', f: null } }));
+      // hollow: an enclosure, open on one face, and its lid
+      const sh = st.p.shell;
+      out.push(this.check('Hollow', !!sh, (on) => { if (on) st.p.shell = { wall: 2, open: 'top' }; else delete st.p.shell; },
+        'Take the inside out, leaving walls: a box or an enclosure. Holes and shapes still cut and add as usual.'));
+      if (sh) {
+        out.push(this.num('Walls', sh.wall, (v) => { sh.wall = v; }, { min: 0.2, bind: { key: 'shell.wall', f: null } }));
+        const sel = document.createElement('select');
+        sel.className = 'ds-select';
+        for (const [v, t] of [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'], ['none', 'None (closed)']]) sel.appendChild(new Option(t, v, false, v === sh.open));
+        sel.onchange = () => st.change(() => { sh.open = sel.value as any; });
+        out.push(this.labelled('Open face', sel));
+        if (sh.open !== 'none') out.push(this.button('Make a lid', () => { const lid = makeLid(st.p); if (lid) this.hooks.lid(lid); }, 'btn ghost sm',
+          'A lid for the open face, with a lip that slips inside (the printer fit plus a little play). It opens as the other part tab.'));
+      }
     }
     if (!none) return out;
     out.push(...this.history());
@@ -168,12 +205,66 @@ export class Panel {
     }))));
     out.push(this.num('Grid snap', st.p.grid, (v) => { st.p.grid = v; }, { min: 0, title: 'Snap increment (0 = off). Hold Option while dragging to place freely.' }));
     out.push(this.num('Decimals', st.p.precision, (v) => { st.p.precision = Math.round(Math.max(0, Math.min(4, v))); }, { raw: true }));
+    out.push(...this.sizesSection());
     out.push(this.h('Printer fit'));
     out.push(this.num('Holes print small by', st.p.fit ?? 0, (v) => { st.p.fit = v; rememberFit(v); }, { min: 0, max: 2,
       title: 'Printed holes come out a little small. Holes and cut slots are made this much bigger across so they fit; the sizes you type stay the real ones. New parts start with this.' }));
     out.push(this.h('Holes and cut slots grow by this. Any other cut can take it too (its “Add printer fit” box).', 'ds-note'));
     out.push(this.h('Tips', 'ds-h'));
     out.push(this.h('V select (drag just outside a selection’s corner to turn it) · ⇧R rotate (angle and pivot) · M measure · ⌘C / ⌘V copy and paste, also between the two part tabs (+ Part, top left) · ⌘D duplicate · R rectangle · S slot · C circle · P polygon · L line (click corners, click the first to close; drag a side’s ◆ to bow it into an arc) · O hole · G gear · T text · E edges (fillet/chamfer) · D dimension (double-click its number to type a size) · H draw on the far face (hidden lines) · Z zoom · Shift-click or drag a box to select several · Option-click a side, Option-Shift-click the side next to it for their corner · Delete removes · ⌘Z undo · F fit · Space-drag or right-drag to pan · pinch or ⌘-scroll to zoom · hold Option while dragging for no snapping', 'ds-note'));
+    return out;
+  }
+
+  /** Named sizes: wall = 2. Any size box takes a name or a sum of them. */
+  private sizesSection(): HTMLElement[] {
+    const st = this.st;
+    const out: HTMLElement[] = [this.h('Sizes')];
+    const list = st.p.sizes || [];
+    const vals = sizeValues(st.p);
+    const commit = (fn: (l: { name: string; expr: string }[]) => void) => st.change((p) => {
+      p.sizes = [...(p.sizes || [])].map((x) => ({ ...x }));
+      fn(p.sizes);
+      if (!p.sizes.length) delete p.sizes;
+      applyFormulas(p, (v) => this.fromUnits(v));
+    });
+    list.forEach((sz, i) => {
+      const row = document.createElement('div');
+      row.className = 'ds-size';
+      const n = document.createElement('input');
+      n.value = sz.name; n.spellcheck = false; n.className = 'ds-size-name';
+      const e = document.createElement('input');
+      e.value = sz.expr; e.spellcheck = false; e.className = 'ds-size-expr';
+      const v = document.createElement('i');
+      const ok = sz.name in vals;
+      v.textContent = ok ? (isFormula(sz.expr) ? `= ${+vals[sz.name].toFixed(4)}` : '') : '?';
+      if (!ok) { row.classList.add('ds-bad'); try { evalExpr(sz.expr, vals); } catch (er: any) { row.title = er.message; } }
+      const x = document.createElement('button');
+      x.className = 'ds-size-x'; x.textContent = '×'; x.title = 'Remove this size (boxes using it keep their numbers)';
+      for (const inp of [n, e]) inp.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') inp.blur(); });
+      n.onchange = () => {
+        const nm = n.value.trim();
+        if (!validName(nm) || list.some((o, j) => j !== i && o.name === nm)) { n.classList.add('ds-bad'); n.title = 'A name: letters, digits and _, starting with a letter, not used yet'; return; }
+        const old = sz.name;
+        commit((l) => {
+          l[i].name = nm;
+          // boxes and other sizes that used the old name follow
+          const re = new RegExp(`\\b${old}\\b`, 'g');
+          for (const o of l) o.expr = o.expr.replace(re, nm);
+          const fix = (ex?: Record<string, string>) => { for (const k in ex || {}) ex![k] = ex![k].replace(re, nm); };
+          fix(st.p.exprs); for (const f of st.p.features) fix(f.exprs);
+        });
+      };
+      e.onchange = () => commit((l) => { l[i].expr = e.value.trim() || '0'; });
+      x.onclick = () => commit((l) => { l.splice(i, 1); });
+      row.append(n, document.createTextNode('='), e, v, x);
+      out.push(row);
+    });
+    out.push(this.button('+ Size', () => {
+      let k = 1; const taken = new Set(list.map((x) => x.name));
+      const nm = list.length ? (() => { while (taken.has(`size${k}`)) k++; return `size${k}`; })() : 'wall';
+      commit((l) => { l.push({ name: nm, expr: nm === 'wall' ? (st.p.units === 'in' ? '0.08' : '2') : '1' }); });
+    }, 'btn ghost sm', 'A name for a size: type it (or a sum like wall*2+1) in any size box, and changing it here changes them all'));
+    if (list.length) out.push(this.h('Type a name or a sum (wall*2+1) in a size box. Blue boxes follow their formula.', 'ds-note'));
     return out;
   }
 
@@ -212,7 +303,7 @@ export class Panel {
     const out: HTMLElement[] = [];
     const lim = f.type === 'rect' ? Math.min(f.w, f.h) / 2 : Infinity;
     if (r.every((x) => Math.abs(x - r[0]) < 1e-9)) {
-      out.push(this.num('Corner radius', r[0], (v) => { f.corner = Math.min(v, lim); delete f.corners; }, { min: 0, title: 'Every corner. Option-click two sides that meet to round just their corner.' }));
+      out.push(this.num('Corner radius', r[0], (v) => { f.corner = Math.min(v, lim); delete f.corners; }, { min: 0, bind: { key: 'corner', f }, title: 'Every corner. Option-click two sides that meet to round just their corner.' }));
     } else {
       const names = this.cornerNames(f);
       r.forEach((x, i) => out.push(this.num(`${names[i]} corner`, x, (v) => { const c = [...cornerRadii(f)]; c[i] = Math.min(v, lim); f.corners = c; }, { min: 0 })));
@@ -300,8 +391,8 @@ export class Panel {
     if (f.type === 'text' && f.text) out.push(...this.textFields(f));
 
     out.push(this.h('Position'));
-    out.push(this.num(`Centre ${AX[ua]}`, us * f.cu, (v) => { f.cu = us * v; }));
-    out.push(this.num(`Centre ${AX[va]}`, vs * f.cv, (v) => { f.cv = vs * v; }));
+    out.push(this.num(`Centre ${AX[ua]}`, us * f.cu, (v) => { f.cu = us * v; }, { bind: { key: 'cu', f } }));
+    out.push(this.num(`Centre ${AX[va]}`, vs * f.cv, (v) => { f.cv = vs * v; }, { bind: { key: 'cv', f } }));
     if (f.type === 'polygon' || f.type === 'gear' || f.type === 'text' || f.type === 'slot') {
       out.push(this.num('Turned', f.rot || 0, (v) => { f.rot = v; }, { raw: true, unit: '°', title: 'Degrees, anticlockwise as the drawing view sees it' }));
     }
@@ -309,7 +400,7 @@ export class Panel {
     if (f.type !== 'gear' && f.type !== 'text' && f.type !== 'hole') {
       out.push(this.h('Size'));
       if (f.type === 'circle') {
-        out.push(this.num('Diameter', 2 * f.r, (v) => { f.r = v / 2; }, { min: 0 }));
+        out.push(this.num('Diameter', 2 * f.r, (v) => { f.r = v / 2; }, { min: 0, bind: { key: 'dia', f } }));
       } else if (f.type === 'slot') {
         out.push(this.num('Length', Math.max(f.w, f.h), (v) => { if (f.w >= f.h) f.w = Math.max(v, f.h); else f.h = Math.max(v, f.w); }, { min: 0.01, title: 'End to end, round ends included' }));
         out.push(this.num('Width', Math.min(f.w, f.h), (v) => { if (f.w >= f.h) f.h = Math.min(v, f.w); else f.w = Math.min(v, f.h); }, { min: 0.01, title: 'Across: the screw or pin that slides in it' }));
@@ -332,8 +423,8 @@ export class Panel {
         out.push(...this.cornerFields(f));
         out.push(...this.arcFields(f));
       } else {
-        out.push(this.num(`Width (${AX[ua]})`, f.w, (v) => { f.w = v; }, { min: 0 }));
-        out.push(this.num(`Height (${AX[va]})`, f.h, (v) => { f.h = v; }, { min: 0 }));
+        out.push(this.num(`Width (${AX[ua]})`, f.w, (v) => { f.w = v; }, { min: 0, bind: { key: 'w', f } }));
+        out.push(this.num(`Height (${AX[va]})`, f.h, (v) => { f.h = v; }, { min: 0, bind: { key: 'h', f } }));
         out.push(...this.cornerFields(f));
       }
     }
@@ -343,7 +434,7 @@ export class Panel {
       { title: f.far ? 'The far face the shape sits on, seen through the part.' : 'The face the shape sits on. It starts on the nearest surface under it.' }));
     const throughCut = f.op === 'cut' && f.through;
     if (!throughCut) {
-      out.push(this.num('Depth', Math.abs(f.d1 - f.d0), (v) => { f.d1 = f.d0 + dirOf(f) * v; }, { min: 0 }));
+      out.push(this.num('Depth', Math.abs(f.d1 - f.d0), (v) => { f.d1 = f.d0 + dirOf(f) * v; }, { min: 0, bind: { key: 'depth', f } }));
       out.push(this.num(`Ends at ${AX[da]}`, ds * f.d1, (v) => { f.d1 = ds * v; }));
     } else {
       const [lo, hi] = depthRange(f, st.p);

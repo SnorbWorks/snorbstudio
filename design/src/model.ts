@@ -66,7 +66,11 @@ export interface Feature {
   far?: boolean;      // drawn on the far face, seen through the part (the hidden-line tool)
   pattern?: Pattern;
   mirror?: Mirror;
+  exprs?: Record<string, string>;   // boxes typed as a formula of named sizes (see sizes.ts BINDS)
 }
+
+/** A hollow body: walls this thick, one face left open (or none: a closed box). */
+export interface Shell { wall: number; open: ViewName | 'none' }
 
 /** A drafting dimension on a view: the size of a shape along one of the view's axes. */
 export interface Dim {
@@ -89,6 +93,9 @@ export interface Project {
   views: ViewName[];  // shown views
   features: Feature[];
   dims?: Dim[];
+  shell?: Shell;                       // the body is hollowed out
+  sizes?: { name: string; expr: string }[];   // named sizes: wall = 2
+  exprs?: Record<string, string>;      // the body's boxes typed as formulas
 }
 
 export function newProject(): Project {
@@ -579,4 +586,49 @@ export function rotateFeature(f: Feature, pivot: Vec3, axis: Vec3, deg: number):
     else pt.center = rotateAbout(pt.center, pivot, axis, deg);
   }
   return true;
+}
+
+/** The empty space inside a hollow body (world min, max), or null when it's solid. */
+export function shellCavity(p: Project): [Vec3, Vec3] | null {
+  const sh = p.shell;
+  if (!sh || p.stock.off || p.base || !(sh.wall > 0)) return null;
+  const min = p.stock.min.map((v) => v + sh.wall) as Vec3, max = p.stock.max.map((v) => v - sh.wall) as Vec3;
+  if (sh.open !== 'none') {
+    const eye = VIEWS[sh.open].eye;
+    for (let i = 0; i < 3; i++) {
+      if (eye[i] > 0) max[i] = p.stock.max[i] + 1;
+      if (eye[i] < 0) min[i] = p.stock.min[i] - 1;
+    }
+  }
+  for (let i = 0; i < 3; i++) if (max[i] - min[i] <= 0.01) return null;
+  return [min, max];
+}
+
+/**
+ * A lid for a hollow body's open face: a plate as big as the face and a wall
+ * thick, with a lip underneath that slips inside the opening (the printer fit
+ * plus a little play all round). Drawn lying flat, lip down.
+ */
+export function makeLid(p: Project): Project | null {
+  const sh = p.shell, cav = shellCavity(p);
+  if (!sh || sh.open === 'none' || !cav) return null;
+  const V = VIEWS[sh.open];
+  const [ua] = [V.uDir.findIndex((x) => x !== 0)], [va] = [V.vDir.findIndex((x) => x !== 0)];
+  const W = p.stock.max[ua] - p.stock.min[ua], H = p.stock.max[va] - p.stock.min[va];
+  const iw = cav[1][ua] - cav[0][ua], ih = cav[1][va] - cav[0][va];
+  const play = Math.max(0, p.fit ?? DEFAULT_FIT) / 2 + 0.1;
+  const lipW = Math.max(1.2, sh.wall), deep = (() => { const ax = V.eye.findIndex((x) => x !== 0); return p.stock.max[ax] - p.stock.min[ax] - sh.wall; })();
+  const lipH = Math.max(2, Math.min(5, deep / 3));
+  const ow = iw - 2 * play, oh = ih - 2 * play;
+  const lid = newProject();
+  lid.name = `${p.name || 'part'} lid`;
+  lid.units = p.units; lid.precision = p.precision; lid.grid = p.grid; lid.fit = p.fit;
+  lid.stock = { min: [-W / 2, -H / 2, 0], max: [W / 2, H / 2, sh.wall] };
+  lid.views = ['top', 'front', 'right'];
+  const base = { view: 'bottom' as ViewName, cu: 0, cv: 0, r: 0, corner: 0, d0: 0, d1: lipH, through: false };
+  lid.features = [
+    { ...base, id: newId(), type: 'rect', w: ow, h: oh, op: 'add' },
+    ...(ow - 2 * lipW > 1 && oh - 2 * lipW > 1 ? [{ ...base, id: newId(), type: 'rect' as const, w: ow - 2 * lipW, h: oh - 2 * lipW, op: 'cut' as const }] : []),
+  ];
+  return lid;
 }

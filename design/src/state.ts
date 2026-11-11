@@ -112,6 +112,7 @@ export class State {
   load(p: Project) {
     this.snapshot();
     this.p = { ...newProject(), ...p };
+    delete (this.p as any).thumb;     // the library's picture lives in the saved file only
     // parts from before printer fit: the owner's current fit (it only touches holes and slots, which they didn't have)
     if (this.p.fit === undefined) this.p.fit = defaultFit();
     this.sels = []; this.sides = null; this.changed();

@@ -23,6 +23,6 @@ mkdirSync(`${out}/fonts`, { recursive: true });
 for (const f of ['DejaVuSans.ttf', 'DejaVuSans-Bold.ttf']) copyFileSync(`node_modules/dejavu-fonts-ttf/ttf/${f}`, `${out}/fonts/${f}`);
 copyFileSync('node_modules/dejavu-fonts-ttf/LICENSE', `${out}/fonts/LICENSE`);
 
-await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
+await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/sizes.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
   outdir: 'test/build', platform: 'node', outExtension: { '.js': '.mjs' }, external: ['replicad', 'replicad-opencascadejs'] });
 console.log('built', out);

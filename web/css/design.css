@@ -244,3 +244,32 @@
 .ds-doctab .ds-doctab-x:hover { color: #d33; }
 .ds-doctab-new { background: rgba(255,255,255,.85); border: 1px dashed #c9ccd2; border-radius: 7px; color: #888; font-size: 12px; padding: 3px 9px; cursor: pointer; }
 .ds-doctab-new:hover { color: #b04aa5; border-color: #b04aa5; }
+/* round 3: formulas, sizes */
+.ds-field input.ds-formula { color: #6ea8ff; font-weight: 600; }
+.ds-field input.ds-bad, .ds-size input.ds-bad { border-color: var(--bad); }
+.ds-size { display: grid; grid-template-columns: 1fr 10px 1fr 46px 18px; gap: 4px; align-items: center; margin: 4px 0; font-size: 13px; }
+.ds-size input { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--text); min-width: 0; }
+.ds-size i { font-style: normal; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; }
+.ds-size.ds-bad i { color: var(--bad); }
+.ds-size-x { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0; }
+.ds-size-x:hover { color: var(--bad); }
+.ds-panel select.ds-select { grid-column: 2 / 4; width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--text); }
+/* the library */
+.ds-dialog.ds-lib { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 80px); display: flex; flex-direction: column; }
+.ds-lib-tabs { align-self: flex-start; margin-bottom: 6px; }
+.ds-lib-body { overflow: auto; min-height: 200px; }
+.ds-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.ds-tile { position: relative; }
+.ds-tile-main { width: 100%; display: flex; flex-direction: column; gap: 3px; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 6px 6px 8px; color: var(--text); cursor: pointer; }
+.ds-tile-main:hover { border-color: var(--accent); }
+.ds-tile-main b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-tile-main span { font-size: 11px; color: var(--muted); line-height: 1.3; }
+.ds-tile-pic { height: 104px; border-radius: 6px; background: #f4f5f7; display: grid; place-items: center; overflow: hidden; }
+.ds-tile-pic img { width: 100%; height: 100%; object-fit: contain; }
+.ds-tile-pic svg { width: 88%; height: 88%; }
+.ds-tile-pic svg path { vector-effect: non-scaling-stroke; stroke-width: 1.3; }
+.ds-tile-pic svg .cut { fill: rgba(43,26,51,.12); stroke: #2b1a33; }
+.ds-tile-pic svg .add { fill: #eadcec; stroke: #b04aa5; }
+.ds-tile-none { color: #9a9ca3; font-size: 11px; font-style: normal; text-align: center; }
+.ds-tile-del { position: absolute; top: 9px; right: 9px; background: rgba(255,255,255,.9); border: 1px solid #ddd; border-radius: 6px; color: #888; font-size: 12px; padding: 1px 6px; cursor: pointer; }
+.ds-tile-del:hover, .ds-tile-del.armed { color: #fff; background: var(--bad); border-color: var(--bad); }
