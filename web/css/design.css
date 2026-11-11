@@ -296,3 +296,4 @@
 .ds-check-ic { font-size: 15px; text-align: center; color: #ff8a95; line-height: 1.2; }
 .ds-check-tiny .ds-check-ic, .ds-check-gap .ds-check-ic { color: #f5c26b; }
 .ds-check-acts { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.ds-axis { fill: none; stroke: #c0508f; stroke-width: 1; stroke-dasharray: 10 3 2 3; }

@@ -68,7 +68,15 @@ export interface Feature {
   mirror?: Mirror;
   exprs?: Record<string, string>;   // boxes typed as a formula of named sizes (see sizes.ts BINDS)
   teardrop?: boolean; // circle / hole drawn sideways to the bed: a 45° point on top so it prints without support
+  revolve?: Revolve;  // spun round a centre line in its view instead of pushed straight in
 }
+
+/**
+ * A shape spun round a centre line lying in its view (a knob, spacer, pulley):
+ * the line goes through (cu, cv) + at in the direction dir, on the shape's
+ * face (d0). angle: how far round, 360 for all the way.
+ */
+export interface Revolve { at: P2; dir: P2; angle: number; prev?: [number, number] }
 
 /** A hollow body: walls this thick, one face left open (or none: a closed box). */
 export interface Shell { wall: number; open: ViewName | 'none' }
@@ -310,6 +318,31 @@ export function upIn(view: ViewName): P2 | null {
   return l < 1e-9 ? null : [u / l, v / l];
 }
 
+/** Can this shape be spun round (revolved)? Plain outlines: rectangles, line outlines, circles, slots, polygons. */
+export const canRevolve = (f: Feature) => ['rect', 'poly', 'circle', 'slot', 'polygon'].includes(f.type);
+
+export type RevolveSide = 'left' | 'right' | 'bottom' | 'top';
+
+/** A centre line along one side of the shape's box (where half a profile is usually drawn against it). */
+export function revolveAxis(f: Feature, side: RevolveSide): Pick<Revolve, 'at' | 'dir'> {
+  const pts = profile({ ...f, revolve: undefined }, 48).map(([u, v]) => [u - f.cu, v - f.cv] as P2);
+  const us = pts.map((q) => q[0]), vs = pts.map((q) => q[1]);
+  const r = (x: number) => +x.toFixed(9);
+  if (side === 'left') return { at: [r(Math.min(...us)), 0], dir: [0, 1] };
+  if (side === 'right') return { at: [r(Math.max(...us)), 0], dir: [0, 1] };
+  if (side === 'bottom') return { at: [0, r(Math.min(...vs))], dir: [1, 0] };
+  return { at: [0, r(Math.max(...vs))], dir: [1, 0] };
+}
+
+/** Does the shape cross its centre line (which makes a solid that folds through itself)? */
+export function revolveCrosses(f: Feature): boolean {
+  if (!f.revolve) return false;
+  const { at, dir } = f.revolve;
+  const side = profile({ ...f, revolve: undefined }, 48).map(([u, v]) => (u - f.cu - at[0]) * dir[1] - (v - f.cv - at[1]) * dir[0]);
+  const tol = 1e-6;
+  return side.some((s) => s > tol) && side.some((s) => s < -tol);
+}
+
 /** Can this shape be a teardrop? A round hole or circle drawn on a side view. */
 export const canTeardrop = (f: Feature) => (f.type === 'circle' || f.type === 'hole') && upIn(f.view) !== null;
 
@@ -446,6 +479,20 @@ export function depthExtent(f: Feature, p: Project): [number, number] {
 /** The 8 corners of the feature's bounding prism, in world coordinates (through cuts: just their drawn depth). */
 export function featureCorners(f: Feature, p?: Project): Vec3[] {
   const v = VIEWS[f.view];
+  if (f.revolve && canRevolve(f)) {
+    // the box round the spun shape: its length along the centre line, its radius every way across
+    const { at, dir } = f.revolve;
+    const ou = f.cu + at[0], ov = f.cv + at[1];
+    let s0 = Infinity, s1 = -Infinity, R = 0;
+    for (const [u, w] of profile({ ...f, revolve: undefined }, 48)) {
+      const du = u - ou, dv = w - ov, s = du * dir[0] + dv * dir[1];
+      s0 = Math.min(s0, s); s1 = Math.max(s1, s); R = Math.max(R, Math.abs(du * dir[1] - dv * dir[0]));
+    }
+    const out: Vec3[] = [];
+    for (const s of [s0, s1]) for (const a of [-R, R]) for (const d of [-R, R])
+      out.push(v.toWorld(ou + dir[0] * s - dir[1] * a, ov + dir[1] * s + dir[0] * a, f.d0 + d));
+    return out;
+  }
   const [lo, hi] = p ? depthExtent(f, p) : [Math.min(f.d0, f.d1), Math.max(f.d0, f.d1)];
   const [u0, v0, u1, v1] = bounds2d(f);
   const out: Vec3[] = [];
@@ -611,6 +658,12 @@ export function rotateFeature(f: Feature, pivot: Vec3, axis: Vec3, deg: number):
     f.rot = norm((f.rot || 0) + a);
   } else if (f.type === 'hole' && f.hole) {
     f.hole.nutRot = norm((f.hole.nutRot || 0) + a);
+  }
+  if (f.revolve) {
+    const r = f.revolve;
+    const fix = ([u, v]: P2): P2 => [+u.toFixed(9), +v.toFixed(9)];
+    r.at = fix(rotatePts([r.at], 0, 0, a)[0]);
+    r.dir = fix(rotatePts([r.dir], 0, 0, a)[0]);
   }
   if (f.pattern) {
     const pt = f.pattern;

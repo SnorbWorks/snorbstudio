@@ -1,7 +1,7 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop } from './model.js';
+import { makeLid, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
 import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
@@ -377,7 +377,7 @@ export class Panel {
     const V = VIEWS[f.view];
     const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir), [da, ds] = axisOf(V.eye);
     const out: HTMLElement[] = [];
-    const sketch = Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through);
+    const sketch = Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through) && !f.revolve;
     out.push(this.h(`${featureName(f)} · drawn on ${V.label.toLowerCase()}${f.far ? ' (far face)' : ''}`));
     const err = st.built?.errors[f.id];
     if (err) out.push(this.h(`Couldn't build this shape: ${err}`, 'ds-note ds-err'));
@@ -429,6 +429,30 @@ export class Panel {
       }
     }
 
+    if (f.revolve && canRevolve(f)) {
+      // spun round a centre line: no depth, just where the line is and how far round
+      const r = f.revolve;
+      out.push(this.h('Revolve'));
+      out.push(this.h('Spun round the dash-dot centre line. Draw half the outline against it: a knob, spacer, pulley, button cap.', 'ds-note'));
+      const sides: [RevolveSide, string][] = [['left', 'Left side'], ['right', 'Right side'], ['bottom', 'Bottom'], ['top', 'Top']];
+      const sel = document.createElement('select');
+      sel.className = 'ds-select';
+      const now = sides.find(([k]) => { const a = revolveAxis(f, k); return Math.hypot(a.at[0] - r.at[0], a.at[1] - r.at[1]) < 1e-6 && Math.abs(a.dir[0] * r.dir[1] - a.dir[1] * r.dir[0]) < 1e-6; })?.[0];
+      for (const [k, t] of sides) sel.appendChild(new Option(t, k, false, k === now));
+      if (!now) sel.appendChild(new Option('Where it was turned to', '', false, true));
+      sel.onchange = () => { if (sel.value) st.change(() => { Object.assign(r, revolveAxis(f, sel.value as RevolveSide)); }); };
+      out.push(this.labelled('Centre line', sel));
+      out.push(this.num(`Line at ${AX[da]}`, ds * f.d0, (v) => { f.d0 = f.d1 = ds * v; }, { title: 'How far in the centre line sits, across this view' }));
+      out.push(this.num('Angle', r.angle, (v) => { r.angle = Math.max(1, Math.min(360, v)); }, { raw: true, unit: '°', title: '360 for all the way round' }));
+      out.push(this.button('Stop spinning', () => st.change(() => {
+        const [a, b] = r.prev ?? [f.d0, f.d0 + into(f) * 5];
+        f.d0 = a; f.d1 = b; delete f.revolve;
+      }), 'btn ghost sm', 'Back to an ordinary shape pushed straight in'));
+      out.push(...this.copies(f));
+      out.push(this.button('Delete shape', () => st.deleteSelected()));
+      return out;
+    }
+
     out.push(this.h('Depth'));
     out.push(this.num(`Starts at ${AX[da]}`, ds * f.d0, (v) => { const dep = f.d1 - f.d0; f.d0 = ds * v; f.d1 = f.d0 + dep; },
       { title: f.far ? 'The far face the shape sits on, seen through the part.' : 'The face the shape sits on. It starts on the nearest surface under it.' }));
@@ -462,6 +486,14 @@ export class Panel {
       }, 'Drawn on the back of the part, seen through it: shows as hidden (dashed) lines in this view'));
     }
 
+    if (canRevolve(f)) {
+      out.push(this.button('Revolve: spin it round a side', () => st.change(() => {
+        const [lo, hi] = depthRange(f, st.p);
+        const mid = f.op === 'cut' && f.through ? (lo + hi) / 2 : (f.d0 + f.d1) / 2;
+        f.revolve = { ...revolveAxis(f, 'left'), angle: 360, prev: [f.d0, f.d1] };
+        f.d0 = f.d1 = +mid.toFixed(9);
+      }), 'btn ghost sm', 'Spin this outline round a centre line on its left side (change the side after): knobs, spacers, pulleys, button caps'));
+    }
     out.push(...this.copies(f));
     out.push(this.button('Delete shape', () => st.deleteSelected()));
     return out;

@@ -1,7 +1,7 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, DEFAULT_FIT, type P2 } from './model.js';
+import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
@@ -281,6 +281,7 @@ export function featureItem(f: Feature, p: Project): Item {
   return {
     id: f.id, movable: true,
     resizable(axis) {
+      if (f.revolve) return false;                    // a spun shape: sized by its outline's corners and the panel
       const [a] = featAxis(f, axis);
       if (a === 2) return true;
       if (f.type === 'gear' || f.type === 'hole') return false;      // sized in their boxes
@@ -288,6 +289,11 @@ export function featureItem(f: Feature, p: Project): Item {
       return true;
     },
     extents() {
+      if (f.revolve) {
+        // the spun shape's box (round the centre line), not its flat outline
+        const cs = featureCorners(f);
+        return [[0, 1, 2].map((k) => Math.min(...cs.map((c) => c[k]))) as Vec3, [0, 1, 2].map((k) => Math.max(...cs.map((c) => c[k]))) as Vec3];
+      }
       const r = ranges();
       const min: Vec3 = [0, 0, 0], max: Vec3 = [0, 0, 0];
       for (let i = 0; i < 3; i++) {

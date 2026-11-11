@@ -6,7 +6,7 @@ import {
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
-import { shellCavity, canTeardrop, teardropPoints, upIn, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
+import { shellCavity, canRevolve, revolveCrosses, canTeardrop, teardropPoints, upIn, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
 import { hexPoints } from './holes.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
@@ -125,6 +125,7 @@ export function textSize(f: Feature): [number, number] | null {
 /** The feature's own solid (one copy), before patterns and mirrors. */
 export function featureSolid(f: Feature, p: Project): Solid | null {
   if (!isShape(f)) return null;
+  if (f.revolve && canRevolve(f)) return revolveSolid(f);
   const [lo, hi] = depthRange(f, p);
   if (hi - lo < 1e-6) return null;
   if (f.type === 'hole') return holeSolid(f, p, lo, hi);
@@ -141,6 +142,20 @@ export function featureSolid(f: Feature, p: Project): Solid | null {
   } else solid = d.sketchOnPlane(plane).extrude(hi - lo);
   if (g && g.kind !== 'rack') solid = gearExtras(f, solid);
   return solid;
+}
+
+/** A shape spun round its centre line (see model.Revolve). */
+function revolveSolid(f: Feature): Solid | null {
+  const r = f.revolve!;
+  if (revolveCrosses(f)) throw new Error('the shape crosses its centre line: keep it all on one side');
+  const d = drawing(f);
+  if (!d) return null;
+  const V = VIEWS[f.view];
+  const plane = new Plane(V.toWorld(0, 0, f.d0), V.uDir, V.eye);
+  const origin = V.toWorld(f.cu + r.at[0], f.cv + r.at[1], f.d0);
+  const dir: Vec3 = [0, 1, 2].map((k) => V.uDir[k] * r.dir[0] + V.vDir[k] * r.dir[1]) as Vec3;
+  const angle = Math.max(1, Math.min(360, r.angle || 360));
+  return (d.sketchOnPlane(plane) as any).revolve(dir, { origin, angle }) as Solid;
 }
 
 /**

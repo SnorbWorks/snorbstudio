@@ -1367,13 +1367,24 @@ export class Sheet {
         if (!isShape(f)) continue;
         const polys = this.outlines(view, f.id);
         if (!polys.length) continue;
-        const sketch = Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through);
+        const sketch = Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through) && !f.revolve;
         let cls = '';
         if (built?.errors[f.id]) cls = 'ds-error';
         else if (sketch) cls = 'ds-sketch';
         else if (built && built.effect[f.id] === false) cls = 'ds-faded';
         if (f.id === this.hover && !selected.has(f.id)) cls += ' ds-hover';
         if (cls) parts.push(`<path class="ds-feat ${cls}" d="${polys.map((q) => path(view, q, true)).join('')}"/>`);
+      }
+      // revolved shapes: their centre line, dash-dot, a little past the shape at each end
+      for (const f of p.features) {
+        if (!f.revolve || !isShape(f) || !parallel(f.view, view)) continue;
+        const { at, dir } = f.revolve;
+        const ou = f.cu + at[0], ov = f.cv + at[1];
+        const ss = profile({ ...f, revolve: undefined }).map(([u, v]) => (u - ou) * dir[0] + (v - ov) * dir[1]);
+        const ext = px(14);
+        const a = Math.min(...ss) - ext, z = Math.max(...ss) + ext;
+        const ends = [a, z].map((t) => this.featToView(f, view, ou + dir[0] * t, ov + dir[1] * t));
+        parts.push(`<path class="ds-axis" d="${path(view, ends)}"/>`);
       }
       // the edge tool: picked edges, and the one under the pointer
       if (st.tool === 'edge' && built?.edges) {
