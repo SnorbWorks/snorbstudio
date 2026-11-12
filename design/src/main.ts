@@ -18,7 +18,9 @@ import { viewDxf } from './dxf.js';
 import { checkPrint, type Issue } from './check.js';
 import { openCheckDialog } from './checkdialog.js';
 import { openFitDialog } from './fitdialog.js';
-import { takesFit, fitPlate, bodyShape, BODY_NAMES } from './model.js';
+import { readSvg, openSvgDialog, type SvgRead } from './svgdialog.js';
+import { openNewPartDialog, lastNewPart, type NewPart } from './newpartdialog.js';
+import { takesFit, fitPlate, bodyShape, BODY_NAMES, sketchLoops } from './model.js';
 
 interface Studio {
   prepare: { addFiles(files: { name: string; buffer: ArrayBuffer }[]): Promise<void> };
@@ -99,7 +101,7 @@ const html = `
   <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
   <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
   <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
-  <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Download the STL, or a DXF drawing of a view">Export ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
+  <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Import an SVG drawing; download the STL, or a DXF drawing of a view">File ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
   <button class="btn sm ghost" id="ds-check" title="Will it print? Looks for thin walls, steep overhangs, holes on their side and bits too small (it also runs on Send to Prepare / Library)">Check</button>
   <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
   <button class="btn sm ghost" id="ds-lib" title="Keep the STL in the model library on the Pi (Files tab)">Send to Library</button>
@@ -345,6 +347,7 @@ export function mount(root: HTMLElement, studio: Studio) {
         }
         $('#ds-loading').classList.add('hidden');
         preview.setMesh(r.mesh);
+        preview.setSketches(sketchLoops(st.p));
         sheet.rebuilt();
         sheet.relayout();
         sheet.autoFit();
@@ -523,9 +526,20 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (e.key === 'Enter') name.blur();
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
   };
-  const startBlank = async (msg: string) => {
+  /** A blank part set up as the New part dialog said (units, drawing area). */
+  const freshPart = (np: NewPart) => {
+    const p = newProject();
+    p.units = np.units;
+    if (np.units === 'in') p.grid = 1.27;
+    if (np.area) p.area = { ...np.area };
+    return p;
+  };
+  const askNewPart = () => new Promise<Project | null>((res) => openNewPartDialog(document.body, (np) => res(np ? freshPart(np) : null)));
+  const startBlank = async (msg: string, ask = false) => {
     if (!await okToLeave()) return;
-    st.load(newProject());
+    const fresh = ask ? await askNewPart() : freshPart(lastNewPart());
+    if (!fresh) return;
+    st.load(fresh);
     setSavedAs(null);
     name.classList.remove('ds-name-taken');
     sheet.fit();
@@ -564,17 +578,20 @@ export function mount(root: HTMLElement, studio: Studio) {
     name.classList.remove('ds-name-taken');
     sheet.fit();
   }
-  function newTab(start?: Project) {
+  async function newTab(start?: Project) {
     if (docs.other) { switchDoc(); return; }
+    const fresh = !start;
+    const p = start || await askNewPart();
+    if (!p) return;
     commitName();
     const mine = { savedAs, cleanSig };
-    const cur = st.swap({ p: start || newProject(), undo: [], redo: [], sels: [] });
+    const cur = st.swap({ p, undo: [], redo: [], sels: [] });
     docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: true };
     keepOther();
     setSavedAs(null);
-    if (start) cleanSig = null;      // a made lid counts as unsaved
+    if (!fresh) cleanSig = null;      // a made lid counts as unsaved
     sheet.fit();
-    if (!start) flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
+    if (fresh) flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
   }
   async function closeTab(active: boolean) {
     if (!active) switchDoc();
@@ -621,7 +638,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     bar.replaceChildren(...kids);
   }
   renderTabs();
-  $('#ds-new').onclick = () => startBlank('A new part.');
+  $('#ds-new').onclick = () => startBlank('A new part.', true);
   $('#ds-close').onclick = () => startBlank('Closed. Here is a blank part.');
   // ---------------------------------------------------------- library
   // ---------------------------------------------------------------- printability
@@ -891,6 +908,39 @@ export function mount(root: HTMLElement, studio: Studio) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   };
+  // Import an SVG: its outlines become shapes on a view, after a check of size and units
+  const importSvg = async (file: File) => {
+    let read: SvgRead;
+    try { read = readSvg(await file.text(), file.name); } catch (e: any) { flash(String(e?.message || e)); return; }
+    if (!read.loops.length) {
+      flash(read.texts ? 'No outlines in that SVG, only text: turn the text into paths in your drawing program, then import it again.' : 'No closed outlines in that SVG to make shapes from.');
+      return;
+    }
+    openSvgDialog(document.body, {
+      read, p: st.p, view: st.activeView,
+      add: (fs, view) => {
+        st.change((p) => { if (!p.views.includes(view)) p.views = [...p.views, view]; p.features.push(...fs); });
+        st.select(fs.map((f) => f.id));
+        sheet.fit();
+        flash(`${fs.length} shape${fs.length > 1 ? 's' : ''} from “${read.name}” on the ${VIEWS[view].label.toLowerCase()} view.${fs.some((f) => f.d0 === f.d1) ? ' They are flat sketches: give them a depth.' : ''}`);
+      },
+    });
+  };
+  const pickSvg = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.svg,image/svg+xml';
+    inp.onchange = () => { const f = inp.files?.[0]; if (f) importSvg(f); };
+    inp.click();
+  };
+  const dropTarget = $('#ds-sheet') as HTMLElement;
+  dropTarget.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file')) e.preventDefault(); });
+  dropTarget.addEventListener('drop', (e) => {
+    const f = [...(e.dataTransfer?.files || [])].find((x) => /\.svg$/i.test(x.name) || x.type === 'image/svg+xml');
+    if (!f) return;
+    e.preventDefault();
+    e.stopPropagation();          // Prepare's drop catcher would say it only takes STL
+    importSvg(f);
+  });
   // Export: the STL, or a flat DXF of one view (what the sheet draws there)
   const exportMenu = $('#ds-export-menu');
   const closeExport = () => { exportMenu.classList.add('hidden'); window.removeEventListener('pointerdown', outsideExport, true); };
@@ -912,6 +962,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       b.onclick = () => { closeExport(); run(); };
       exportMenu.appendChild(b);
     };
+    item('Import SVG…', 'Outlines from a drawing (Inkscape, Illustrator, a laser file) as shapes on a view. Or drop one on the sheet', pickSvg);
     item('STL', 'The 3D part, for any slicer', async () => download(await getSTL(), 'model/stl', fileName()));
     item(`DXF of the ${label} view`, 'Its outlines, flat, in mm: for a laser, the router or other CAD', () => dxfOf(v, false));
     item(`DXF of the ${label} view + hidden lines`, 'Hidden lines dashed on their own layer', () => dxfOf(v, true));

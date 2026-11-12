@@ -94,12 +94,56 @@ export class Preview3D {
     if (!this.fitted || c.distanceTo(this.fitC) > this.fitR * 0.75 || r > this.fitR * 1.8 || r < this.fitR * 0.4) this.fit();
     this.draw();
   }
+  /**
+   * Shapes drawn but not given a height yet: flat outlines with a light fill
+   * where they'll be, so a sketch is never invisible (dashed for cuts).
+   */
+  setSketches(loops: { pts: [number, number, number][]; cut: boolean }[]) {
+    if (this.sketches) {
+      this.scene.remove(this.sketches);
+      this.sketches.traverse((o: any) => { o.geometry?.dispose(); o.material?.dispose(); });
+    }
+    this.sketches = null;
+    if (loops.length) {
+      const g = new THREE.Group();
+      for (const { pts, cut } of loops) {
+        if (pts.length < 3) continue;
+        const v3 = pts.map((q) => new THREE.Vector3(q[0], q[1], q[2]));
+        // which way the loop faces: drop that axis to triangulate it flat
+        const n = new THREE.Vector3();
+        for (let i = 0; i < v3.length; i++) {
+          const a = v3[i], b = v3[(i + 1) % v3.length];
+          n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y);
+        }
+        const ax = Math.abs(n.x) >= Math.abs(n.y) && Math.abs(n.x) >= Math.abs(n.z) ? 0 : Math.abs(n.y) >= Math.abs(n.z) ? 1 : 2;
+        const [i0, i1] = ax === 0 ? [1, 2] : ax === 1 ? [0, 2] : [0, 1];
+        const flat = pts.map((q) => new THREE.Vector2(q[i0], q[i1]));
+        const tris = THREE.ShapeUtils.triangulateShape(flat, []);
+        const fg = new THREE.BufferGeometry();
+        fg.setAttribute('position', new THREE.Float32BufferAttribute(pts.flat(), 3));
+        fg.setIndex(tris.flat());
+        const colour = cut ? 0xd04a6a : 0xb04aa5;
+        g.add(new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })));
+        const lg = new THREE.BufferGeometry().setFromPoints(v3);
+        const line = new THREE.LineLoop(lg, cut ? new THREE.LineDashedMaterial({ color: colour, dashSize: 1.2, gapSize: 0.8 }) : new THREE.LineBasicMaterial({ color: colour }));
+        if (cut) line.computeLineDistances();
+        g.add(line);
+      }
+      this.sketches = g;
+      this.scene.add(g);
+      if (!this.mesh) this.fit();
+    }
+    this.draw();
+  }
+  private sketches: THREE.Group | null = null;
+
   private fitC = new THREE.Vector3();
   private fitR = 10;
 
   fit() {
-    if (!this.mesh) return;
-    const box = new THREE.Box3().setFromObject(this.mesh);
+    const what = this.mesh || this.sketches;
+    if (!what) return;
+    const box = new THREE.Box3().setFromObject(what);
     const c = box.getCenter(new THREE.Vector3());
     const r = box.getSize(new THREE.Vector3()).length() / 2 || 10;
     this.controls.target.copy(c);

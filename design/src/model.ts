@@ -147,6 +147,24 @@ export interface Project {
   sizes?: { name: string; expr: string }[];   // named sizes: wall = 2
   exprs?: Record<string, string>;      // the body's boxes typed as formulas
   sections?: Section[];                // section views (SECTION A–A): see section.ts
+  area?: Area;                         // the drawing area (printer bed, sheet of stock): framed on every view
+}
+
+/** The drawing area: width (X) × depth (Y) × height (Z) in mm, centred on X/Y, standing on Z = 0. */
+export interface Area { w: number; d: number; h: number }
+
+export const AREA_PRESETS: { id: string; name: string; area: Area | null }[] = [
+  { id: 'ender3', name: 'Ender 3 bed (220 × 220 × 250 mm)', area: { w: 220, d: 220, h: 250 } },
+  { id: 'small', name: 'Small (100 × 100 × 100 mm)', area: { w: 100, d: 100, h: 100 } },
+  { id: 'shopbot', name: 'ShopBot sheet (4 × 8 ft, 3/4 in)', area: { w: 2438.4, d: 1219.2, h: 19.05 } },
+  { id: 'none', name: 'No drawing area', area: null },
+];
+
+/** The drawing area as a world box, or null. */
+export function areaBox(p: Project): [Vec3, Vec3] | null {
+  const a = p.area;
+  if (!a || !(a.w > 0) || !(a.d > 0) || !(a.h > 0)) return null;
+  return [[-a.w / 2, -a.d / 2, 0], [a.w / 2, a.d / 2, a.h]];
 }
 
 export function newProject(): Project {
@@ -793,4 +811,38 @@ export function fitPlate(): Project {
     p.features.push({ id: newId(), type: 'text', view: 'top', cu: x, cv: -4.5, w: 0, h: 0, r: 0, corner: 0, d0: t, d1: t - 0.6, op: 'cut', through: false, rot: 0, text: { s: label, size: 5, bold: true } });
   });
   return p;
+}
+
+
+/** A shape with no depth yet (drawn, not given a height): it has no solid. */
+export function isSketch(f: Feature): boolean {
+  return isShape(f) && Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through) && !f.revolve;
+}
+
+/** The sketches' outlines in the world (every copy), for the 3D preview to draw flat. */
+export function sketchLoops(p: Project): { pts: Vec3[]; cut: boolean }[] {
+  const out: { pts: Vec3[]; cut: boolean }[] = [];
+  for (const f of p.features) {
+    if (!isSketch(f)) continue;
+    const V = VIEWS[f.view];
+    const base = profile(f).map(([u, v]) => V.toWorld(u, v, f.d0));
+    for (const ops of instances(f)) out.push({ pts: base.map((q) => applyOps(q, ops)), cut: f.op === 'cut' });
+  }
+  return out;
+}
+
+/**
+ * The point b kept square to a: on the nearest of the level, plumb and 45°
+ * lines through a, as far along as b is (to the grid, when there is one).
+ */
+export function squareTo(a: P2, b: P2, grid = 0): P2 {
+  const du = b[0] - a[0], dv = b[1] - a[1];
+  const step = Math.PI / 4;
+  const ang = Math.round(Math.atan2(dv, du) / step) * step;
+  const cu = Math.round(Math.cos(ang) * 1e12) / 1e12, cv = Math.round(Math.sin(ang) * 1e12) / 1e12;
+  let along = du * cu + dv * cv;
+  // a diagonal: the grid on each axis, so its ends land on grid points
+  const diag = cu !== 0 && cv !== 0;
+  if (grid > 0) along = diag ? Math.round((along * Math.SQRT1_2) / grid) * grid * Math.SQRT2 : Math.round(along / grid) * grid;
+  return [a[0] + cu * along, a[1] + cv * along];
 }

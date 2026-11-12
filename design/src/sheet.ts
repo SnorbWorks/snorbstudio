@@ -4,7 +4,7 @@
 // picks (Option-click), handles, dimensions, T-square guides and pan/zoom.
 
 import type { Dim, Feature, ViewName, Vec3, P2 } from './model.js';
-import { newId, profile, bodyOutline, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
+import { squareTo, newId, profile, bodyOutline, areaBox, boxCorners, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
 import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
@@ -79,6 +79,7 @@ export class Sheet {
   private userView = false;      // the owner zoomed or panned: stop re-fitting on resize
   private spaceDown = false;
   private altDown = false;
+  private shiftDown = false;          // Shift held: the line tool keeps to 45° steps (shown while moving, not just on the click)
   onStatus: (text: string) => void = () => {};
   onZoom: () => void = () => {};
   onGear: (id: string) => void = () => {};       // a gear was just drawn: open its dialog
@@ -109,6 +110,7 @@ export class Sheet {
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space' && !isTyping() && !this.spaceDown) { this.spaceDown = true; this.setCursor(); }
       if (e.key === 'Alt') { this.altDown = true; this.setCursor(); }
+      if (e.key === 'Shift' && !this.shiftDown) { this.shiftDown = true; if (this.line) this.render(); }
       if (this.line && !isTyping()) {
         if (e.key === 'Enter') { e.preventDefault(); this.finishLine(); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); this.line = null; this.render(); }
@@ -118,8 +120,9 @@ export class Sheet {
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') { this.spaceDown = false; this.setCursor(); }
       if (e.key === 'Alt') { this.altDown = false; this.setCursor(); }
+      if (e.key === 'Shift') { this.shiftDown = false; if (this.line) this.render(); }
     });
-    window.addEventListener('blur', () => { this.altDown = this.spaceDown = false; });
+    window.addEventListener('blur', () => { this.altDown = this.spaceDown = this.shiftDown = false; });
     new ResizeObserver(() => { if (!this.userView && host.clientWidth > 0) this.fit(); else this.render(); }).observe(host);
   }
 
@@ -139,6 +142,8 @@ export class Sheet {
     }
     const bb = this.st.built?.bbox;
     if (bb) grow(bb[0] as Vec3, bb[1] as Vec3);
+    const ab = areaBox(p);
+    if (ab) grow(ab[0], ab[1]);
     // round out to 5 mm so small edits don't shuffle the sheet
     if (min[0] === Infinity) { min.splice(0, 3, ...p.stock.min); max.splice(0, 3, ...p.stock.max); }
     for (let i = 0; i < 3; i++) { min[i] = Math.floor((min[i] + 0.01) / 5) * 5; max[i] = Math.ceil((max[i] - 0.01) / 5) * 5; }
@@ -662,6 +667,7 @@ export class Sheet {
   private moveEvt(e: PointerEvent) {
     const d = this.drag;
     const [x, y] = this.screenToSheet(e);
+    this.shiftDown = e.shiftKey; this.altDown = e.altKey;
     const cv = d && 'view' in d && d.view ? d.view : this.viewAt(x, y);
     if (cv && d?.kind !== 'box') { const [u, v] = this.fromSheet(cv, x, y); this.cursor = { view: cv, u, v }; } else this.cursor = null;
     if (!d) {
@@ -997,11 +1003,11 @@ export class Sheet {
     this.render();
   }
 
-  /** The next point: snapped, and (Shift) kept level or plumb with the last one. */
-  private linePoint(view: ViewName, u: number, v: number, ortho: boolean, free: boolean): P2 {
+  /** The next point: snapped, and (Shift) kept square to the last one: level, plumb or 45°. */
+  private linePoint(view: ViewName, u: number, v: number, square: boolean, free: boolean): P2 {
     [u, v] = this.snapView(view, u, v, this.snapTargets(new Set()), free);
     const last = this.line?.pts[this.line.pts.length - 1];
-    if (ortho && last) { if (Math.abs(u - last[0]) > Math.abs(v - last[1])) v = last[1]; else u = last[0]; }
+    if (square && last) [u, v] = squareTo(last, [u, v], free ? 0 : this.st.p.grid);
     return [u, v];
   }
 
@@ -1282,7 +1288,7 @@ export class Sheet {
     }
     if (this.line && c) {
       const last = this.line.pts[this.line.pts.length - 1];
-      t += `     line ${fmt(Math.hypot(c.u - last[0], c.v - last[1]))}   (click the first point or press Return to close, Shift keeps it level)`;
+      t += `     line ${fmt(Math.hypot(c.u - last[0], c.v - last[1]))}   (click the first point or press Return to close, Shift keeps it square: level, plumb or 45°)`;
     }
     if (d && d.kind === 'bulge') {
       const f = this.st.feature(d.id);
@@ -1388,6 +1394,14 @@ export class Sheet {
     for (const view of p.views) {
       const b = this.placed[view].box;
       parts.push(`<rect class="ds-viewbox" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"/>`);
+      // the drawing area, faint, behind everything
+      const ab = areaBox(p);
+      if (ab) {
+        const V = VIEWS[view], lo: P2 = [Infinity, Infinity], hi: P2 = [-Infinity, -Infinity];
+        for (const c of boxCorners(ab[0], ab[1])) { const q = V.toView(c); lo[0] = Math.min(lo[0], q[0]); lo[1] = Math.min(lo[1], q[1]); hi[0] = Math.max(hi[0], q[0]); hi[1] = Math.max(hi[1], q[1]); }
+        const [x0, y0] = this.toSheet(view, lo[0], hi[1]), [x1, y1] = this.toSheet(view, hi[0], lo[1]);
+        parts.push(`<rect class="ds-area" x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}"/>`);
+      }
       const ve = built?.views[view];
       const hat = built?.hatch?.[view];
       if (hat?.length && sectionIn(p, view)) parts.push(`<path class="ds-hatch" fill="url(#ds-hatch)" fill-rule="evenodd" d="${hat.map((l) => path(view, l, true)).join('')}"/>`);
@@ -1539,8 +1553,27 @@ export class Sheet {
     if (this.line) {
       const pts = [...this.line.pts];
       const c = this.cursor;
-      if (c && c.view === this.line.view) pts.push(this.linePoint(this.line.view, c.u, c.v, false, true));
+      const next = c && c.view === this.line.view ? this.linePoint(this.line.view, c.u, c.v, this.shiftDown, this.altDown) : null;
+      if (next) pts.push(next);
       parts.push(`<path class="ds-feat ds-drawing" d="${path(this.line.view, pts)}"/>`);
+      // the ruler: a dimension alongside the side being drawn, its length (and angle) by the cursor
+      const last = this.line.pts[this.line.pts.length - 1];
+      if (next && Math.hypot(next[0] - last[0], next[1] - last[1]) > 1e-6) {
+        const [ax, ay] = this.toSheet(this.line.view, ...last), [bx, by] = this.toSheet(this.line.view, ...next);
+        const L = Math.hypot(bx - ax, by - ay), nx = (ay - by) / L, ny = (bx - ax) / L, off = px(14), tk = px(5);
+        const [a2x, a2y, b2x, b2y] = [ax + nx * off, ay + ny * off, bx + nx * off, by + ny * off];
+        const lenMm = Math.hypot(next[0] - last[0], next[1] - last[1]);
+        let deg = (Math.atan2(next[1] - last[1], next[0] - last[0]) * 180) / Math.PI;
+        if (deg < 0) deg += 360;
+        const lab = `${fmtLen(lenMm, p)}${p.units === 'mm' ? ' mm' : ' in'} · ${+deg.toFixed(1)}°`, fs = px(11);
+        const tw = lab.length * fs * 0.6 + px(10), th = fs * 1.55;
+        const tx = bx + px(18) + tw / 2, ty = by - px(18);
+        parts.push(`<g class="ds-ruler"><line x1="${a2x}" y1="${a2y}" x2="${b2x}" y2="${b2y}"/>`
+          + `<line x1="${a2x - nx * tk}" y1="${a2y - ny * tk}" x2="${a2x + nx * tk}" y2="${a2y + ny * tk}"/>`
+          + `<line x1="${b2x - nx * tk}" y1="${b2y - ny * tk}" x2="${b2x + nx * tk}" y2="${b2y + ny * tk}"/>`
+          + `<rect x="${tx - tw / 2}" y="${ty - th / 2}" width="${tw}" height="${th}" rx="${px(3)}"/>`
+          + `<text x="${tx}" y="${ty + fs * 0.36}" font-size="${fs}">${lab}</text></g>`);
+      }
       const [fx, fy] = this.toSheet(this.line.view, ...this.line.pts[0]);
       parts.push(`<circle class="ds-corner" cx="${fx}" cy="${fy}" r="${px(4)}"/>`);
     }
@@ -1656,3 +1689,4 @@ function segsCross(a: [number, number], b: [number, number], c: [number, number]
   const o = (p: [number, number], q: [number, number], r: [number, number]) => Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
   return o(a, b, c) !== o(a, b, d) && o(c, d, a) !== o(c, d, b);
 }
+

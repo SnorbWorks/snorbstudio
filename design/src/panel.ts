@@ -1,7 +1,8 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
 import type { Dim, Feature, Vec3 } from './model.js';
-import { makeLid, bodyShape, setBodyShape, BODY_NAMES, type BodyShape, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
+import { presetOf } from './newpartdialog.js';
+import { AREA_PRESETS, makeLid, bodyShape, setBodyShape, BODY_NAMES, type BodyShape, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
 import { rememberFit } from './state.js';
 import { pitchRadius, outerRadius } from './gears.js';
@@ -225,6 +226,25 @@ export class Panel {
       if (v === 'in' && p.grid === 1) p.grid = 1.27;
       if (v === 'mm' && Math.abs(p.grid - 1.27) < 1e-9) p.grid = 1;
     }))));
+    // the drawing area: printer bed, a sheet of stock, or none
+    const area = st.p.area;
+    const ap = document.createElement('select');
+    ap.className = 'ds-select';
+    const cur = presetOf(area);
+    for (const x of [...AREA_PRESETS.map((a) => [a.id, a.name]), ['custom', 'Custom size']]) ap.appendChild(new Option(x[1], x[0], false, x[0] === cur));
+    ap.onchange = () => st.change((p) => {
+      const pr = AREA_PRESETS.find((a) => a.id === ap.value);
+      if (pr) { if (pr.area) p.area = { ...pr.area }; else delete p.area; }
+      else if (!p.area) p.area = { w: 220, d: 220, h: 250 };
+    });
+    const arow = this.labelled('Drawing area', ap);
+    arow.classList.add('ds-field-wide');
+    out.push(arow);
+    if (area) {
+      out.push(this.num('Area width (X)', area.w, (v) => { area.w = v; }, { min: 1 }));
+      out.push(this.num('Area depth (Y)', area.d, (v) => { area.d = v; }, { min: 1 }));
+      out.push(this.num('Area height (Z)', area.h, (v) => { area.h = v; }, { min: 1 }));
+    }
     out.push(this.num('Grid snap', st.p.grid, (v) => { st.p.grid = v; }, { min: 0, title: 'Snap increment (0 = off). Hold Option while dragging to place freely.' }));
     out.push(this.num('Decimals', st.p.precision, (v) => { st.p.precision = Math.round(Math.max(0, Math.min(4, v))); }, { raw: true }));
     out.push(...this.sizesSection());
