@@ -58,13 +58,13 @@ export function initControl(app) {
   const filTemp = () => mats[pick.value]?.temp || 210;
   $('#load-fil').onclick = async () => {
     if (!guardFilament()) return;
-    if (await confirmBox('Load filament', `Heats the nozzle to ${filTemp()} °C, then feeds about 39 cm of filament through the tube. Push the new filament into the extruder until the gears grab it before pressing Start.`, 'Start')) {
+    if (await confirmBox('Load filament', `Heats the nozzle to ${filTemp()} °C, then feeds about 7 cm of filament through the extruder to the nozzle. Push the new filament into the extruder until the gears grab it before pressing Start.`, 'Start')) {
       attempt(() => mr.gcode(`LOAD_FILAMENT TEMP=${filTemp()}`));
     }
   };
   $('#unload-fil').onclick = async () => {
     if (!guardFilament()) return;
-    if (await confirmBox('Unload filament', `Heats the nozzle to ${filTemp()} °C and pulls the filament back out of the tube.`, 'Start')) {
+    if (await confirmBox('Unload filament', `Heats the nozzle to ${filTemp()} °C and backs the filament out of the extruder.`, 'Start')) {
       attempt(() => mr.gcode(`UNLOAD_FILAMENT TEMP=${filTemp()}`));
     }
   };

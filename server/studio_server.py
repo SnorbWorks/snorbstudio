@@ -70,7 +70,7 @@ QUALITY = {
                  "first_layer_height": 0.2, "perimeters": 4,
                  "top_solid_layers": 5, "bottom_solid_layers": 5},
 }
-# Filament presets.  Slicer keys are PrusaSlicer config keys; the rest:
+# Filament presets (direct drive extruder since 2026-11-11: short retraction).  Slicer keys are PrusaSlicer config keys; the rest:
 #   squish      default first-layer nozzle height change in mm vs. PLA
 #               (+ = higher = less squish).  PRINT_START applies it with
 #               SET_GCODE_OFFSET; a value saved on the printer (SAVE_VARIABLE
@@ -88,8 +88,8 @@ MATERIAL = {
             "temperature": 205, "first_layer_temperature": 210,
             "bed_temperature": 60, "first_layer_bed_temperature": 60,
             "min_fan_speed": 100, "max_fan_speed": 100,
-            "disable_fan_first_layers": 1, "retract_length": 5,
-            "retract_speed": 40, "deretract_speed": 40,
+            "disable_fan_first_layers": 1, "retract_length": 0.8,
+            "retract_speed": 35, "deretract_speed": 35,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
     "pla_plus": {"label": "PLA+ / Tough PLA", "squish": 0.0, "speed_pct": 100,
             "tower": (230, 205),
@@ -98,8 +98,8 @@ MATERIAL = {
             "temperature": 215, "first_layer_temperature": 220,
             "bed_temperature": 60, "first_layer_bed_temperature": 60,
             "min_fan_speed": 100, "max_fan_speed": 100,
-            "disable_fan_first_layers": 1, "retract_length": 5,
-            "retract_speed": 40, "deretract_speed": 40,
+            "disable_fan_first_layers": 1, "retract_length": 0.8,
+            "retract_speed": 35, "deretract_speed": 35,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
     "silk": {"label": "Silk PLA", "squish": 0.0, "speed_pct": 70,
             "tower": (230, 205),
@@ -108,8 +108,8 @@ MATERIAL = {
             "temperature": 215, "first_layer_temperature": 220,
             "bed_temperature": 60, "first_layer_bed_temperature": 60,
             "min_fan_speed": 100, "max_fan_speed": 100,
-            "disable_fan_first_layers": 1, "retract_length": 5,
-            "retract_speed": 40, "deretract_speed": 40,
+            "disable_fan_first_layers": 1, "retract_length": 0.8,
+            "retract_speed": 35, "deretract_speed": 35,
             "max_volumetric_speed": 8, "first_layer_speed": 20},
     "petg": {"label": "PETG", "squish": 0.05, "speed_pct": 80,
             "tower": (250, 230),
@@ -118,20 +118,20 @@ MATERIAL = {
             "temperature": 235, "first_layer_temperature": 240,
             "bed_temperature": 75, "first_layer_bed_temperature": 75,
             "min_fan_speed": 30, "max_fan_speed": 50,
-            "disable_fan_first_layers": 3, "retract_length": 4,
-            "retract_speed": 35, "deretract_speed": 30,
+            "disable_fan_first_layers": 3, "retract_length": 1,
+            "retract_speed": 30, "deretract_speed": 25,
             # PETG oozes and sticks to the nozzle: wipe as it retracts, and keep
             # travel moves inside the part so strings don't cross open gaps
             "wipe": 1, "avoid_crossing_perimeters": 1,
             "max_volumetric_speed": 8, "first_layer_speed": 20},
     "tpu": {"label": "TPU (flexible)", "squish": 0.03, "speed_pct": 40,
             "tower": (240, 215),
-            "note": "Rubbery. Prints slowly with almost no retraction (Bowden tube).",
+            "note": "Rubbery. Prints slowly with very little retraction.",
             "filament_type": "FLEX",
             "temperature": 225, "first_layer_temperature": 230,
             "bed_temperature": 50, "first_layer_bed_temperature": 50,
             "min_fan_speed": 50, "max_fan_speed": 50,
-            "disable_fan_first_layers": 1, "retract_length": 1,
+            "disable_fan_first_layers": 1, "retract_length": 0.5,
             "retract_speed": 20, "deretract_speed": 20,
             "max_volumetric_speed": 2.5, "first_layer_speed": 15},
     "abs": {"label": "ABS / ASA", "squish": 0.0, "speed_pct": 80,
@@ -141,8 +141,8 @@ MATERIAL = {
             "temperature": 240, "first_layer_temperature": 245,
             "bed_temperature": 100, "first_layer_bed_temperature": 100,
             "min_fan_speed": 0, "max_fan_speed": 15,
-            "disable_fan_first_layers": 3, "retract_length": 5,
-            "retract_speed": 40, "deretract_speed": 40,
+            "disable_fan_first_layers": 3, "retract_length": 0.8,
+            "retract_speed": 35, "deretract_speed": 35,
             "max_volumetric_speed": 10, "first_layer_speed": 20},
 }
 MATERIAL_META = ("label", "squish", "speed_pct", "note", "tower")
