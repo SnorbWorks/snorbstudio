@@ -145,6 +145,16 @@ where the hole meets both round walls; a solid cylinder with the same hole
 takes 0.26 s). The faster approximate HLR (HLRBRep_PolyAlgo) is in the
 OpenCascade build, but its shape output (PolyHLRToShape) isn't bound.
 
+### New part dialog, SVG import, line tool, sketches in 3D (shipped 7e73d97)
+
+- New / + Part: units + drawing area (`p.area` {w,d,h} mm; presets in
+  AREA_PRESETS), framed on every view, editable under Sheet.
+- File ▾ › Import SVG… (or drop on the sheet): svgdialog.ts samples paths
+  in the browser, svgimport.ts does units, nesting (holes), simplify,
+  placement. Text needs converting to paths first.
+- Line tool: Shift = level/plumb/45° (`squareTo`), ruler with length + angle.
+- Sketches (zero depth) drawn flat in the 3D preview (`sketchLoops`).
+
 ### Spheres
 Possible now with Revolve (a half circle against its centre line). Next: a
 *Sphere* shape in the shapes flyout (click the centre, drag the radius in any
