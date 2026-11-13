@@ -3,12 +3,25 @@
 A web app for a Klipper 3D printer, made by SnorbWorks. It runs on the Raspberry Pi
 next to the printer, and you use it in a browser on the same network.
 
+![SnorbCAD: a part drawn in top and front views, with the 3D part beside them](docs/snorbcad.jpg)
+
 - **SnorbCAD**: design parts by drawing in drafting views (top, front, side, ...).
   It builds the 3D part as you draw, and has gears, fillets, dimensions, patterns,
   and STL bodies from the library.
+- **SnorbCAM**: turn SVG, DXF or SnorbCAD drawings into G-code for a CNC router
+  (profiles, pockets, tabs, ramps, roughing and finishing passes; made for a ShopBot).
 - **Prepare**: arrange models on the bed and slice them with PrusaSlicer on the Pi.
 - **Print / Control / Files / Maintenance**: run the printer through Moonraker.
   Maintenance also handles updates from this repo.
+
+## What you need
+
+- A 3D printer running [Klipper](https://www.klipper3d.org/) and
+  [Moonraker](https://github.com/Arksine/moonraker) on a Raspberry Pi (built on an
+  Ender 3 with a CR Touch, a V4.2.2 board and Raspberry Pi OS).
+- [PrusaSlicer](https://github.com/prusa3d/PrusaSlicer) on the Pi for slicing, and nginx
+  (already there if you installed Mainsail).
+- Any modern browser on the same network.
 
 ## Layout
 

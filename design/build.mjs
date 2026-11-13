@@ -22,6 +22,11 @@ if (!same) copyFileSync(wasm, dst);
 mkdirSync(`${out}/fonts`, { recursive: true });
 for (const f of ['DejaVuSans.ttf', 'DejaVuSans-Bold.ttf']) copyFileSync(`node_modules/dejavu-fonts-ttf/ttf/${f}`, `${out}/fonts/${f}`);
 copyFileSync('node_modules/dejavu-fonts-ttf/LICENSE', `${out}/fonts/LICENSE`);
+// License texts for the libraries bundled into design.js / worker.js / cam.js.
+mkdirSync(`${out}/licenses`, { recursive: true });
+copyFileSync('node_modules/replicad/LICENSE', `${out}/licenses/replicad-LICENSE.txt`);
+copyFileSync('node_modules/replicad-opencascadejs/LICENSE', `${out}/licenses/opencascade-LGPL-2.1.txt`);
+copyFileSync('third_party/clipper-lib-LICENSE.txt', `${out}/licenses/clipper-lib-LICENSE.txt`);
 
 await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/sizes.ts', 'src/dxf.ts', 'src/check.ts', 'src/section.ts', 'src/footprints.ts', 'src/svgimport.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
   outdir: 'test/build', platform: 'node', outExtension: { '.js': '.mjs' }, external: ['replicad', 'replicad-opencascadejs'] });

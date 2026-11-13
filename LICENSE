@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Exception: everything in klipper_extras/ runs inside Klipper (GPL-3.0) and is
-licensed under the GNU General Public License v3.0; see klipper_extras/COPYING.
-
-Third-party code shipped in this repo keeps its own license; see
-THIRD_PARTY.md.
