@@ -1,6 +1,6 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
-import type { Dim, Feature, Vec3 } from './model.js';
+import type { Dim, Feature, MeasureGuide, Vec3 } from './model.js';
 import { presetOf } from './newpartdialog.js';
 import { AREA_PRESETS, makeLid, bodyShape, setBodyShape, BODY_NAMES, type BodyShape, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
 import { holeLabel, KIND_LABEL, SCREWS } from './holes.js';
@@ -142,10 +142,19 @@ export class Panel {
     const sel = st.one;
     const none = st.sels.length === 0;
     const dm = sel ? st.dim(sel) : undefined;
+    const mg = sel ? st.guide(sel) : undefined;
+    const rg = sel ? st.rulerGuide(sel) : undefined;
     if (st.tool === 'edge') {
       out.push(...this.edgeHelp());
     } else if (dm) {
       out.push(...this.dimension(dm));
+    } else if (mg) {
+      out.push(...this.measureGuide(mg));
+    } else if (rg) {
+      out.push(this.h('Ruler guide'));
+      out.push(this.num(`${'XYZ'[rg.axis]} at`, rg.value, (v) => st.change(() => { rg.value = v; }), { title: 'Where the guide is: shapes snap to it' }));
+      out.push(this.h('Drag it to move it; drag it back onto a ruler (or press ⌫) to remove it. Shapes snap to it.', 'ds-note'));
+      out.push(this.button('Delete guide', () => st.deleteSelected()));
     } else if (st.sides) {
       const f = st.feature(st.sides.id);
       if (f) out.push(...this.sides(f, st.sides.sides));
@@ -723,6 +732,22 @@ export class Panel {
       this.h('Edges'),
       this.h(n ? `${n} edge${n === 1 ? '' : 's'} picked. Set the size in the bar above and press Apply.` : 'Click an edge in any view to round or bevel it; Shift-click for more. Visible edges come before hidden ones behind them.', 'ds-note'),
       ...this.history(),
+    ];
+  }
+
+  private measureGuide(g: MeasureGuide): HTMLElement[] {
+    const st = this.st, p = st.p;
+    const V = VIEWS[g.view];
+    const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir);
+    const du = (g.b[0] - g.a[0]) * us, dv = (g.b[1] - g.a[1]) * vs;
+    const f = (mm: number) => `${this.toUnits(mm).toFixed(p.precision)}${p.units === 'mm' ? ' mm' : '"'}`;
+    const ang = (Math.atan2(g.b[1] - g.a[1], g.b[0] - g.a[0]) * 180) / Math.PI;
+    return [
+      this.h(`Measure guide · ${V.label.toLowerCase()} view`),
+      this.h(f(Math.hypot(du, dv)), 'ds-big'),
+      this.h(`${'XYZ'[ua]} ${f(Math.abs(du))}   ${'XYZ'[va]} ${f(Math.abs(dv))}   ${+ang.toFixed(1)}°`, 'ds-note'),
+      this.h('A measurement left on the sheet: saved with the part, never printed. Drag it onto a ruler (or press ⌫) to remove it; Views › Guides hides them all.', 'ds-note'),
+      this.button('Delete guide', () => st.deleteSelected()),
     ];
   }
 

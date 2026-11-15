@@ -72,7 +72,7 @@ const PICKERS: typeof SHAPES = [
 ];
 const MEASURES: typeof SHAPES = [
   { tool: 'dim', name: 'Dimension', key: 'D', tip: "Click a shape near the side to dimension it; double-click a dimension's number to type a new size" },
-  { tool: 'measure', name: 'Measure', key: 'M', tip: 'Drag from one point to another: snaps to corners and centres' },
+  { tool: 'measure', name: 'Measure', key: 'M', tip: 'Drag from one point to another for a quick reading; or click a point, then click another, to leave a measure guide on the sheet. Snaps to corners and centres' },
   { tool: 'section', name: 'Section', key: 'X', tip: 'Drag a cutting line across a view (level or plumb): the view it looks into shows SECTION A–A, the cut faces hatched' },
 ];
 const GROUPS: Record<string, typeof SHAPES> = { shapes: SHAPES, pick: PICKERS, measure: MEASURES };
@@ -134,6 +134,7 @@ const html = `
   </aside>
 </div>
 <div class="ds-status"><span id="ds-status"></span><span class="spacer"></span>
+  <button class="ds-zbtn ds-hidetoggle" id="ds-hidden-toggle" title="Show or hide hidden lines: edges behind the face you're looking at, dashed (⇧H)"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="ds-eye-off" d="M4 4l16 16"/></svg><span>Hidden</span></button>
   <button class="ds-zbtn" id="ds-zout" title="Zoom out (⌘−)">−</button>
   <button class="ds-zpct" id="ds-zpct" title="Actual size (⌘1)">100%</button>
   <button class="ds-zbtn" id="ds-zin" title="Zoom in (⌘+)">+</button>
@@ -198,7 +199,16 @@ export function mount(root: HTMLElement, studio: Studio) {
     kids.push(h('Drawing'));
     kids.push(check('Projection lines for the selection', st.viewOpts.projLines, (v) => st.setViewOpt('projLines', v),
       'Faint lines carrying the selected shapes’ edges across to the views in line with it'));
-    kids.push(check('Hidden lines (dashed)', st.viewOpts.hidden, (v) => st.setViewOpt('hidden', v)));
+    kids.push(check('Hidden lines (dashed)', st.viewOpts.hidden, (v) => st.setViewOpt('hidden', v), 'Edges behind the face you are looking at, dashed (⇧H, or the eye by the zoom)'));
+    kids.push(check('Rulers', st.viewOpts.rulers !== false, (v) => { st.setViewOpt('rulers', v); sheet.fit(); }, 'Rulers along the top and left, in the active view’s own measurements'));
+    kids.push(check('Guides', st.viewOpts.guides !== false, (v) => st.setViewOpt('guides', v), 'Guides dragged out of the rulers, and measurements left with the measure tool (click, then click)'));
+    if ((st.p.rulerGuides?.length || 0) + (st.p.measures?.length || 0)) {
+      const clr = document.createElement('button');
+      clr.className = 'btn sm ghost'; clr.textContent = 'Clear guides';
+      clr.title = 'Remove every ruler guide and measure guide from this part (Undo brings them back)';
+      clr.onclick = () => { st.change((p) => { delete p.rulerGuides; delete p.measures; }); renderViews(); };
+      kids.push(clr);
+    }
     kids.push(h('Views'));
     kids.push(h('Third-angle: top above the front, right to its right. Hidden views show as small + boxes on the sheet.', 'ds-note'));
     for (const v of ['top', 'front', 'right', 'left', 'back', 'bottom'] as const) {
@@ -318,8 +328,13 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   // one build in flight; edits made meanwhile are built straight after
   let inFlight = false, pending = false;
+  // guides don't change the solid: moving one shouldn't rebuild the part
+  let builtGeo = '';
+  const geoSig = () => JSON.stringify({ ...st.p, measures: undefined, rulerGuides: undefined, name: undefined }) + `|${st.tool === 'edge'}|${st.repick}`;
   const requestBuild = async () => {
     if (inFlight) { pending = true; return; }
+    const geo = geoSig();
+    if (st.built && geo === builtGeo) return;
     inFlight = true;
     $('#ds-busy').classList.remove('hidden');
     const project: Project = JSON.parse(JSON.stringify(st.p));
@@ -330,6 +345,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       if (r) {
         st.built = r;
         st.buildError = '';
+        builtGeo = geo;
         followFillets(r);
         if (r.baseBox && st.p.base) {
           const [a, b] = r.baseBox as [number[], number[]];
@@ -400,7 +416,18 @@ export function mount(root: HTMLElement, studio: Studio) {
     sheet.render();
     syncToolbar();
     renderTabs();
+    syncHiddenToggle();
   });
+  // the eye by the zoom: hidden lines on or off
+  const hiddenBtn = $('#ds-hidden-toggle');
+  function syncHiddenToggle() { hiddenBtn.classList.toggle('active', st.viewOpts.hidden); }
+  const toggleHidden = () => {
+    st.setViewOpt('hidden', !st.viewOpts.hidden);
+    if (!$('#ds-views').classList.contains('hidden')) renderViews();
+    flash(st.viewOpts.hidden ? 'Hidden lines shown: edges behind the face you are looking at are dashed.' : 'Hidden lines off: only the edges you can see.');
+  };
+  hiddenBtn.onclick = toggleHidden;
+  syncHiddenToggle();
 
   // ---------------------------------------------------------- toolbar
   root.querySelectorAll<HTMLButtonElement>('#ds-tool > button[data-tool]').forEach((b) => { b.onclick = () => st.setTool(b.dataset.tool as Tool); });
@@ -1251,6 +1278,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const keys: Record<string, Tool> = { v: 'select', m: 'measure', x: 'section', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);
+    else if (k === 'h' && e.shiftKey) toggleHidden();
     else if (k === 'h') toggleFar();
     else if (k === 'f') sheet.fit();
     else if (k === 'delete' || k === 'backspace') { e.preventDefault(); st.deleteSelected(); }
