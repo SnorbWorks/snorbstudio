@@ -24,14 +24,11 @@
 <body>
 <header class="topbar">
   <div class="brand"><img class="logo" src="img/snorb.png" alt="">SnorbStudio</div>
+  <!-- the apps; each can have its own row of pages under the bar (SnorbPrint does) -->
   <nav class="tabs" id="tabs">
-    <button data-page="design">SnorbCAD</button>
-    <button data-page="cam">SnorbCAM</button>
-    <button data-page="prepare" class="active">Prepare</button>
-    <button data-page="print">Print</button>
-    <button data-page="control">Control</button>
-    <button data-page="files">Files</button>
-    <button data-page="maint">Maintenance</button>
+    <button data-app="design" title="Design parts: drafting views that build a solid">SnorbCAD</button>
+    <button data-app="cam" title="Lay parts on a sheet and make G-code for the ShopBot">SnorbCAM</button>
+    <button data-app="print" class="active" title="The 3D printer: prepare, print, control, files, maintenance">SnorbPrint</button>
   </nav>
   <div class="status-strip">
     <span class="pill" id="state-pill">Connecting…</span>
@@ -40,6 +37,14 @@
     <button class="estop" id="estop" title="Emergency stop: cuts all motors and heaters instantly">STOP</button>
   </div>
 </header>
+
+<nav class="subtabs" id="subtabs-print" data-app="print">
+  <button data-page="prepare" class="active">Prepare</button>
+  <button data-page="print">Print</button>
+  <button data-page="control">Control</button>
+  <button data-page="files">Files</button>
+  <button data-page="maint">Maintenance</button>
+</nav>
 
 <div class="banner hidden" id="klippy-banner">
   <div><b id="kb-title">Printer not ready</b><span id="kb-msg"></span></div>

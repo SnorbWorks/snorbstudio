@@ -10,12 +10,19 @@ import { initFiles } from './files.js';
 import { initMaint, restartFirmware, restartService } from './maint.js';
 
 const pageListeners = [];
+// Which app each page belongs to (the tabs in the bar); an app's own pages sit in a row under it.
+const APP_OF = { design: 'design', cam: 'cam', prepare: 'print', print: 'print', control: 'print', files: 'print', maint: 'print' };
+const lastPageOf = (a) => { try { const p = localStorage.getItem(`studio.page.${a}`); if (APP_OF[p] === a) return p; } catch (e) { /* ignore */ } return a === 'print' ? 'prepare' : a; };
 const app = {
   page: 'prepare',
   onPage(fn) { pageListeners.push(fn); },
   show(page) {
     app.page = page;
-    $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    const a = APP_OF[page] || 'print';
+    $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.app === a));
+    $$('.subtabs').forEach((n) => n.classList.toggle('hidden', n.dataset.app !== a));
+    $$('.subtabs button').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    try { localStorage.setItem(`studio.page.${a}`, page); } catch (e) { /* ignore */ }
     $$('.page').forEach((p) => p.classList.toggle('active', p.id === `page-${page}`));
     try { localStorage.setItem('studio.page', page); } catch (e) { /* ignore */ }
     if (location.hash.slice(1) !== page) history.replaceState(null, '', `#${page}`);
@@ -69,8 +76,10 @@ function updateHeader() {
   $('#hdr-noz').textContent = t(p.extruder);
   $('#hdr-bed').textContent = t(p.heater_bed);
   const busy = mr.busy;
-  const printTab = $('#tabs [data-page="print"]');
+  const printTab = $('#subtabs-print [data-page="print"]');
   printTab.innerHTML = busy ? 'Print <span class="badge">●</span>' : 'Print';
+  // a print running shows from every app
+  $('#tabs [data-app="print"]').innerHTML = busy ? 'SnorbPrint <span class="badge">●</span>' : 'SnorbPrint';
   document.title = busy ? `${text} · SnorbStudio` : 'SnorbStudio';
 }
 
@@ -106,7 +115,9 @@ export function friendlyKlippy() {
 // --------------------------------------------------------------- start
 
 function init() {
-  $$('#tabs button').forEach((b) => b.onclick = () => app.show(b.dataset.page));
+  // an app tab opens the page last used in it
+  $$('#tabs button').forEach((b) => b.onclick = () => app.show(lastPageOf(b.dataset.app)));
+  $$('.subtabs button').forEach((b) => b.onclick = () => app.show(b.dataset.page));
   $('#estop').onclick = () => {
     mr.call('printer.emergency_stop').catch(() => {});
     toast('EMERGENCY STOP sent – motors and heaters are off. Restart the printer board to continue.', 'err', 12000);

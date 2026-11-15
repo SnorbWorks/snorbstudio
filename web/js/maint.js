@@ -313,6 +313,7 @@ function renderUpdate() {
   checkPageVersion(u);
   const tab = document.querySelector('[data-page="maint"]');
   tab?.classList.toggle('has-update', !!(u && u.behind && !u.installing));
+  document.querySelector('#tabs [data-app="print"]')?.classList.toggle('has-update', !!(u && u.behind && !u.installing));
   const box = $('#upd-body');
   if (!box || !u) return;
   if (!u.git) {
