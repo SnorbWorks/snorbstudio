@@ -95,6 +95,8 @@ export interface Feature {
   rot?: number;       // polygon / gear / text / slot: turned this many degrees
   pts?: P2[];         // poly: corners relative to (cu, cv)
   bulges?: number[];  // poly: side k (corner k to k+1) bowed into an arc; how far its middle sits right of the straight side, going corner k to k+1 (mm)
+  curves?: (Ctrl | null)[];   // poly: side k a Bézier curve: its two handles (relative to cu, cv), going corner k to k+1 (the pen tool)
+  smooth?: boolean[];         // poly: corner k is a smooth point (its two handles move as one)
   gear?: GearSpec;
   hole?: HoleSpec;    // hole: its screw, kind and sizes (r is the bore radius)
   fit?: boolean;      // grow by the part's printer fit (default: on for holes and cut slots)
@@ -298,17 +300,36 @@ export function verts(f: Feature): P2[] | null {
  * (side k runs from corner k to k+1; + bows it out to the right of travel,
  * which is outward for an anticlockwise outline).
  */
-export function polyPath(f: Feature): { pts: P2[]; bulge: number[] } {
+export function polyPath(f: Feature): { pts: P2[]; bulge: number[]; curve: (Ctrl | null)[] } {
   const pts = (f.pts || []).map(([u, v]) => [f.cu + u, f.cv + v] as P2);
   const n = pts.length;
   const b = Array.from({ length: n }, (_, k) => f.bulges?.[k] || 0);
-  if (signedArea(pts) >= 0) return { pts, bulge: b };
+  const c = Array.from({ length: n }, (_, k) => {
+    const q = f.curves?.[k];
+    return q ? [[f.cu + q[0][0], f.cv + q[0][1]], [f.cu + q[1][0], f.cv + q[1][1]]] as Ctrl : null;
+  });
+  if (signedArea(pts) >= 0) return { pts, bulge: b, curve: c };
   // reversed: new side k joins old corners n-1-k and n-2-k, i.e. old side n-2-k run backwards
-  return { pts: pts.reverse(), bulge: Array.from({ length: n }, (_, k) => -b[((n - 2 - k) % n + n) % n]) };
+  const old = (k: number) => ((n - 2 - k) % n + n) % n;
+  return {
+    pts: pts.reverse(),
+    bulge: Array.from({ length: n }, (_, k) => -b[old(k)]),
+    curve: Array.from({ length: n }, (_, k) => { const q = c[old(k)]; return q ? [q[1], q[0]] as Ctrl : null; }),
+  };
 }
 
-/** Does an outline have any bowed sides? */
-export const hasArcs = (f: Feature) => f.type === 'poly' && !!f.bulges?.some((x) => Math.abs(x) > 1e-9);
+/** A Bézier side's two handles (going corner k to k+1). */
+export type Ctrl = [P2, P2];
+
+/** Does an outline have any bowed or curved sides? */
+export const hasArcs = (f: Feature) => f.type === 'poly' && (!!f.bulges?.some((x) => Math.abs(x) > 1e-9) || !!f.curves?.some((c) => !!c));
+
+/** A point on a cubic Bézier, t from 0 to 1. */
+export function bezierAt(a: P2, c1: P2, c2: P2, b: P2, t: number): P2 {
+  const s = 1 - t;
+  return [s * s * s * a[0] + 3 * s * s * t * c1[0] + 3 * s * t * t * c2[0] + t * t * t * b[0],
+    s * s * s * a[1] + 3 * s * s * t * c1[1] + 3 * s * t * t * c2[1] + t * t * t * b[1]];
+}
 
 /** The middle of a bowed side: the chord's middle moved off it by the bulge (+ to the right of travel: outward on an anticlockwise outline). */
 export function bulgeMid(a: P2, b: P2, s: number): P2 {
@@ -337,9 +358,10 @@ export function cornerRadii(f: Feature): number[] {
   const v = verts(f);
   if (!v) return [];
   const n = v.length;
-  const arcs = f.type === 'poly' ? polyPath(f).bulge : null;
+  const pp = f.type === 'poly' ? polyPath(f) : null;
+  const bent = (k: number) => !!pp && (Math.abs(pp.bulge[k]) > 1e-9 || !!pp.curve[k]);
   const want = Array.from({ length: n }, (_, i) => {
-    if (arcs && (Math.abs(arcs[i]) > 1e-9 || Math.abs(arcs[(i + n - 1) % n]) > 1e-9)) return 0;   // a corner next to an arc stays sharp
+    if (bent(i) || bent((i + n - 1) % n)) return 0;   // a corner next to an arc or curve stays sharp
     return Math.max(0, (f.corners && f.corners[i] !== undefined ? f.corners[i] : f.corner) || 0);
   });
   return want.map((r, i) => {
@@ -470,10 +492,11 @@ export function profile(f: Feature, segs = 48): P2[] {
     return [...arcPoints(s.b, s.m1, s.c, 12), ...arcPoints(s.d, s.m2, s.a, 12)];
   }
   if (hasArcs(f)) {
-    const { pts, bulge } = polyPath(f), n = pts.length, out: P2[] = [];
+    const { pts, bulge, curve } = polyPath(f), n = pts.length, out: P2[] = [];
     pts.forEach((P, k) => {
-      const Q = pts[(k + 1) % n];
-      if (Math.abs(bulge[k]) > 1e-9) out.push(...arcPoints(P, bulgeMid(P, Q, bulge[k]), Q, 16).slice(0, -1));
+      const Q = pts[(k + 1) % n], c = curve[k];
+      if (c) for (let i = 0; i < 16; i++) out.push(bezierAt(P, c[0], c[1], Q, i / 16));
+      else if (Math.abs(bulge[k]) > 1e-9) out.push(...arcPoints(P, bulgeMid(P, Q, bulge[k]), Q, 16).slice(0, -1));
       else out.push(P);
     });
     return out;
@@ -741,6 +764,7 @@ export function rotateFeature(f: Feature, pivot: Vec3, axis: Vec3, deg: number):
     }
   } else if (f.type === 'poly' && f.pts) {
     f.pts = rotatePts(f.pts, 0, 0, a).map(([u, v]) => [+u.toFixed(9), +v.toFixed(9)] as P2);
+    if (f.curves) f.curves = f.curves.map((c) => c && rotatePts(c, 0, 0, a).map(([u, v]) => [+u.toFixed(9), +v.toFixed(9)] as P2) as Ctrl);
   } else if (f.type === 'polygon' || f.type === 'gear' || f.type === 'text' || f.type === 'slot') {
     f.rot = norm((f.rot || 0) + a);
   } else if (f.type === 'hole' && f.hole) {

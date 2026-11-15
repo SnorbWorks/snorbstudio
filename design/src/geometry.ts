@@ -72,11 +72,12 @@ function smooth(path: Path) {
 
 /** An outline with some sides bowed into arcs. */
 function arcOutline(f: Feature) {
-  const { pts, bulge } = polyPath(f), n = pts.length;
+  const { pts, bulge, curve } = polyPath(f), n = pts.length;
   let pen = draw(pts[0]);
   for (let k = 0; k < n; k++) {
-    const P = pts[k], Q = pts[(k + 1) % n];
-    if (Math.abs(bulge[k]) > 1e-9) pen = pen.threePointsArcTo(Q, bulgeMid(P, Q, bulge[k]));
+    const P = pts[k], Q = pts[(k + 1) % n], c = curve[k];
+    if (c) pen = pen.cubicBezierCurveTo(Q, c[0], c[1]);
+    else if (Math.abs(bulge[k]) > 1e-9) pen = pen.threePointsArcTo(Q, bulgeMid(P, Q, bulge[k]));
     else if (k < n - 1) pen = pen.lineTo(Q);
   }
   return pen.close();

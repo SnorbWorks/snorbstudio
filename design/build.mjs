@@ -28,6 +28,6 @@ copyFileSync('node_modules/replicad/LICENSE', `${out}/licenses/replicad-LICENSE.
 copyFileSync('node_modules/replicad-opencascadejs/LICENSE', `${out}/licenses/opencascade-LGPL-2.1.txt`);
 copyFileSync('third_party/clipper-lib-LICENSE.txt', `${out}/licenses/clipper-lib-LICENSE.txt`);
 
-await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/sizes.ts', 'src/dxf.ts', 'src/check.ts', 'src/section.ts', 'src/footprints.ts', 'src/components.ts', 'src/svgimport.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
+await esbuild.build({ ...common, minify: false, entryPoints: ['src/geometry.ts', 'src/model.ts', 'src/views.ts', 'src/gears.ts', 'src/holes.ts', 'src/sizes.ts', 'src/dxf.ts', 'src/check.ts', 'src/section.ts', 'src/footprints.ts', 'src/components.ts', 'src/pathedit.ts', 'src/svgimport.ts', 'src/cam/job.ts', 'src/cam/toolpath.ts', 'src/cam/importers.ts'],
   outdir: 'test/build', platform: 'node', outExtension: { '.js': '.mjs' }, external: ['replicad', 'replicad-opencascadejs'] });
 console.log('built', out);

@@ -4,7 +4,8 @@
 // picks (Option-click), handles, dimensions, T-square guides and pan/zoom.
 
 import type { Dim, Feature, ViewName, Vec3, P2 } from './model.js';
-import { squareTo, newId, profile, bodyOutline, areaBox, boxCorners, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature } from './model.js';
+import { squareTo, newId, profile, bodyOutline, areaBox, boxCorners, sharedCorner, sideSegs as modelSideSegs, verts, instances, applyOps, featureCorners, isShape, bulgeMid, slotPath, rotateFeature, bezierAt, type Ctrl } from './model.js';
+import { anchors, canOutline, deletePoint, movePoint, moveHandle, recentre, sideAt, splitSide, toggleSmooth, toOutline } from './pathedit.js';
 import { SCREWS, SCREW_ORDER, holeFromTable } from './holes.js';
 import { defaultGear, outerRadius } from './gears.js';
 import { VIEWS, VIEW_ORDER, NEIGHBOURS, axisOf, parallel, layout, type Box2 } from './views.js';
@@ -29,6 +30,7 @@ type Drag =
   | { kind: 'zoom'; x0: number; y0: number; x1: number; y1: number; out: boolean; started: boolean; sx: number; sy: number }
   | { kind: 'rotate'; ids: string[]; view: ViewName; pu: number; pv: number; a0: number; deg: number; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'measure'; view: ViewName; u0: number; v0: number; u1: number; v1: number; sx: number; sy: number }
+  | { kind: 'path'; id: string; view: ViewName; i: number; which: 'in' | 'out' | null; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'rguide'; id: string | null; view: ViewName; axis: number; vertical: boolean; value: number; started: boolean; sx: number; sy: number; overRuler: boolean }
   | { kind: 'mguide'; id: string; dx: number; dy: number; x0: number; y0: number; started: boolean; sx: number; sy: number; overRuler: boolean }
   | { kind: 'section'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
@@ -52,7 +54,9 @@ const CURSORS: Record<string, string> = {
   hole: cursorSvg("<circle cx='21' cy='21' r='5.5'/><circle cx='21' cy='21' r='2.5'/>"),
   circle: cursorSvg("<circle cx='21' cy='21' r='5.5'/>"),
   polygon: cursorSvg("<path d='M18 16h6l3 5-3 5h-6l-3-5z'/>"),
-  line: cursorSvg("<path d='M14 26l4-9 5 5 4-8'/>"),
+  line: cursorSvg("<path d='M16 27l3-9 5-3 3 3-3 5-9 3z'/><path d='M16 27l5-5'/>"),
+  // the direct selection tool: a white arrow (hotspot at its tip)
+  direct: `url("data:image/svg+xml,${encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22'><path d='M3 2l13 9-6 1-3 6z' fill='white' stroke='black' stroke-width='1.3' stroke-linejoin='round'/></svg>")}") 3 2, default`,
   gear: cursorSvg("<circle cx='21' cy='21' r='3.5'/><path d='M21 14v2.5M21 25.5V28M14 21h2.5M25.5 21H28M16 16l1.8 1.8M24.2 24.2L26 26M26 16l-1.8 1.8M17.8 24.2L16 26'/>"),
   text: cursorSvg("<path d='M15 15h10M20 15v12'/>"),
   edge: cursorSvg("<path d='M15 27v-5a6 6 0 0 1 6-6h6'/>"),
@@ -91,7 +95,10 @@ export class Sheet {
   onHole: (id: string) => void = () => {};       // a hole was just placed: open its box
   onText: (id: string) => void = () => {};       // a text was just placed: type it
   onEdges: () => void = () => {};                // the edge tool's picks changed
-  private line: { view: ViewName; pts: P2[] } | null = null;   // the line tool, in progress
+  private line: { view: ViewName; pts: P2[]; outs: (P2 | null)[] } | null = null;   // the pen (line) tool, in progress; outs: a smooth point's out handle
+  private penDrag: { i: number; sx: number; sy: number; on: boolean } | null = null;   // pulling a handle out of the point just placed
+  private pathPick: { id: string; i: number } | null = null;   // the direct selection tool's picked point
+  onNote: (text: string) => void = () => {};
   private hoverEdge: number | null = null;       // the edge tool: built edge under the pointer
   private dimHits: { id: string; view: ViewName; x: number; y: number; w: number; h: number }[] = [];
   private dimInput: HTMLInputElement | null = null;
@@ -614,6 +621,7 @@ export class Sheet {
       return;
     }
     if (view && tool === 'line') { this.lineClick(view, x, y, e); return; }
+    if (tool === 'direct') { if (view) this.directDown(view, x, y, e); else { this.pathPick = null; this.st.select([]); } return; }
     if (tool === 'measure' && this.trail) {
       // the second click: drop the trailing measurement as a guide
       const t = this.trail;
@@ -758,6 +766,14 @@ export class Sheet {
     { const r = this.svg.getBoundingClientRect(); this.ptr = [e.clientX - r.left, e.clientY - r.top]; }
     if (this.rulersOn()) this.drawRulers();
     if (!d) {
+      if (this.penDrag && this.line && (e.buttons & 1)) {
+        const pd = this.penDrag;
+        if (!pd.on && Math.hypot(e.clientX - pd.sx, e.clientY - pd.sy) < 3) return;
+        pd.on = true;
+        const [u, v] = this.fromSheet(this.line.view, x, y);
+        this.line.outs[pd.i] = [u, v];
+        this.render(); this.status(); return;
+      }
       if (this.line) { this.render(); this.status(); return; }
       if (this.trail) {
         const t = this.trail;
@@ -868,6 +884,17 @@ export class Sheet {
       this.st.snapshot();
     }
     if (d.kind === 'bulge') { this.dragBulge(d, u, v, free); this.st.changed(); this.status(); return; }
+    if (d.kind === 'path') {
+      const f = this.st.feature(d.id);
+      if (!f) return;
+      if (f.type !== 'poly') this.convert(f);
+      if (d.which) moveHandle(f, d.i, d.which, this.viewToFeat(f, d.view, u, v), e.altKey);
+      else {
+        const [su, sv] = this.snapView(d.view, u, v, this.snapTargets(new Set([d.id])), free);
+        movePoint(f, d.i, this.viewToFeat(f, d.view, su, sv));
+      }
+      this.st.changed(); this.status(); return;
+    }
     // start each step from the state at drag start, so snapping never drifts
     const orig = JSON.parse(d.orig);
     const ids = d.kind === 'move' ? d.ids : [d.id];
@@ -910,6 +937,7 @@ export class Sheet {
   }
 
   private up(e: PointerEvent) {
+    if (this.penDrag) { this.penDrag = null; this.render(); }
     const d = this.drag;
     this.drag = null;
     this.guides = [];
@@ -957,6 +985,7 @@ export class Sheet {
       this.status();
     }
     else if (d.kind === 'rotate') { if (d.started) { this.relayout(); this.st.changed(); } }
+    else if (d.kind === 'path') { if (d.started) { const f = this.st.feature(d.id); if (f) recentre(f); this.relayout(); this.st.changed(); } this.showNote(); }
     else if (d.kind === 'box') { this.finishBox(d); if (this.st.tool === 'rotate' && this.st.sels.some((id) => id !== 'stock')) this.onRotate(); }
     else if (d.kind === 'zoom') {
       const r = this.svg.getBoundingClientRect();
@@ -1074,13 +1103,15 @@ export class Sheet {
   private bulgeHandles(view: ViewName): { id: string; k: number; u: number; v: number; a: P2; b: P2 }[] {
     const one = this.st.one;
     const f = one ? this.st.feature(one) : undefined;
-    if (!f || f.type !== 'poly' || !f.pts || this.st.sides || !parallel(f.view, view)) return [];
+    if (!f || f.type !== 'poly' || !f.pts || this.st.sides || this.st.tool === 'direct' || !parallel(f.view, view)) return [];
     const pts = f.pts.map(([u, v]) => [f.cu + u, f.cv + v] as P2), n = pts.length;
-    return pts.map((P, k) => {
+    // (a curved side has its own handles: the Direct Selection tool)
+    return pts.flatMap((P, k) => {
+      if (f.curves?.[k]) return [];
       const Q = pts[(k + 1) % n];
       const m = bulgeMid(P, Q, f.bulges?.[k] || 0);
       const [u, v] = this.featToView(f, view, m[0], m[1]);
-      return { id: f.id, k, u, v, a: P, b: Q };
+      return [{ id: f.id, k, u, v, a: P, b: Q }];
     });
   }
 
@@ -1122,6 +1153,97 @@ export class Sheet {
     this.onText(f.id);
   }
 
+  // ------------------------------------------------------------ the direct selection tool (A): points, handles, sides
+
+  /** The one selected shape whose points can be edited, and its outline (a converted copy until it's changed). */
+  private directTarget(): { f: Feature; o: Feature } | null {
+    const id = this.st.one;
+    const f = id ? this.st.feature(id) : undefined;
+    if (!f || !canOutline(f)) return null;
+    if (f.type === 'poly') return f.pts && f.pts.length >= 3 ? { f, o: f } : null;
+    const o: Feature = JSON.parse(JSON.stringify(f));
+    return toOutline(o) ? { f, o } : null;
+  }
+
+  /** A point in a view, in a shape's own (u, v). */
+  private viewToFeat(f: Feature, view: ViewName, u: number, v: number): P2 {
+    const q = VIEWS[f.view].toView(VIEWS[view].toWorld(u, v, 0));
+    return [q[0], q[1]];
+  }
+
+  /** A rectangle, circle, slot or polygon becomes an outline the first time its points change. */
+  private convert(f: Feature) {
+    if (f.type === 'poly') return;
+    const was = f.type;
+    if (toOutline(f)) this.pendingNote = (`The ${was === 'rect' ? 'rectangle' : was} is an outline now, so its points can move (its size boxes are gone; Undo brings them back).`);
+    if (!this.drag) this.showNote();
+  }
+  private pendingNote = '';
+  private showNote() { if (this.pendingNote) { const t = this.pendingNote; this.pendingNote = ''; setTimeout(() => this.onNote(t), 0); } }
+
+  private directHit(view: ViewName, u: number, v: number): { kind: 'point'; i: number } | { kind: 'handle'; i: number; which: 'in' | 'out' } | { kind: 'side'; k: number; t: number } | null {
+    const t = this.directTarget();
+    if (!t || !parallel(t.f.view, view)) return null;
+    const tol = (HANDLE_PX + 3) / this.zoom;
+    const near = (q: P2) => { const [a, b] = this.featToView(t.f, view, q[0], q[1]); return Math.hypot(a - u, b - v) <= tol; };
+    const an = anchors(t.o);
+    for (let i = 0; i < an.length; i++) if (near(an[i].p)) return { kind: 'point', i };
+    for (let i = 0; i < an.length; i++) {
+      if (an[i].outH && near(an[i].outH!)) return { kind: 'handle', i, which: 'out' };
+      if (an[i].inH && near(an[i].inH!)) return { kind: 'handle', i, which: 'in' };
+    }
+    const s = sideAt(t.o, this.viewToFeat(t.f, view, u, v), PICK_PX / this.zoom);
+    return s ? { kind: 'side', ...s } : null;
+  }
+
+  private directDown(view: ViewName, x: number, y: number, e: PointerEvent) {
+    const [u, v] = this.fromSheet(view, x, y);
+    const h = this.directHit(view, u, v);
+    const f = this.st.one ? this.st.feature(this.st.one) : undefined;
+    if (h && f) {
+      if (h.kind === 'point' && e.altKey) {
+        // Option-click: smooth ↔ corner
+        this.st.change(() => { this.convert(f); toggleSmooth(f, h.i); });
+        this.pathPick = { id: f.id, i: h.i };
+        this.render();
+        return;
+      }
+      if (h.kind === 'side') {
+        let i = 0;
+        this.st.change(() => { this.convert(f); i = splitSide(f, h.k, h.t); });
+        this.pathPick = { id: f.id, i };
+        this.render();
+        return;
+      }
+      if (h.kind === 'point') this.pathPick = { id: f.id, i: h.i };
+      this.drag = { kind: 'path', id: f.id, view, i: h.i, which: h.kind === 'handle' ? h.which : null, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
+      this.render();
+      return;
+    }
+    // a shape to edit (just it, even in a group)
+    const hit = this.pick(view, u, v);
+    this.pathPick = null;
+    if (hit && hit !== 'stock') {
+      this.st.select([hit], null, true);
+      const g = this.st.feature(hit);
+      if (g && !canOutline(g)) this.onNote('Gears, text and holes keep their own settings: their points can’t be moved. Use the Select tool (V).');
+    } else this.st.select([]);
+    this.render();
+  }
+
+  /** ⌫ with the direct selection tool: take out the picked point. True when it was handled. */
+  deletePathPoint(): boolean {
+    const pk = this.pathPick;
+    const f = pk ? this.st.feature(pk.id) : undefined;
+    if (!pk || !f || this.st.tool !== 'direct' || this.st.one !== f.id) return false;
+    const n = f.type === 'poly' ? f.pts?.length || 0 : (this.directTarget()?.o.pts?.length || 0);
+    if (n <= 3) { this.onNote('An outline needs at least 3 points: delete the shape with the Select tool instead.'); return true; }
+    this.st.change(() => { this.convert(f); deletePoint(f, pk.i); recentre(f); });
+    this.pathPick = null;
+    this.relayout();
+    return true;
+  }
+
   // ------------------------------------------------------------ the line tool: click corners, close on the first
 
   private lineClick(view: ViewName, x: number, y: number, e: PointerEvent) {
@@ -1134,9 +1256,11 @@ export class Sheet {
     }
     [u, v] = this.linePoint(view, u, v, e.shiftKey, e.altKey);
     this.guides = [];
-    if (!this.line) this.line = { view, pts: [] };
+    if (!this.line) this.line = { view, pts: [], outs: [] };
     const last = this.line.pts[this.line.pts.length - 1];
-    if (!last || Math.hypot(last[0] - u, last[1] - v) > 1e-6) this.line.pts.push([u, v]);
+    if (!last || Math.hypot(last[0] - u, last[1] - v) > 1e-6) { this.line.pts.push([u, v]); this.line.outs.push(null); }
+    // drag before letting go: pull out handles, the point becomes smooth (a curve through it)
+    this.penDrag = { i: this.line.pts.length - 1, sx: e.clientX, sy: e.clientY, on: false };
     this.render();
   }
 
@@ -1154,9 +1278,17 @@ export class Sheet {
     if (!l || l.pts.length < 3) { this.render(); return; }
     const us = l.pts.map((p) => p[0]), vs = l.pts.map((p) => p[1]);
     const cu = (Math.min(...us) + Math.max(...us)) / 2, cv = (Math.min(...vs) + Math.max(...vs)) / 2;
+    const rel = (p: P2): P2 => [round4(p[0] - cu), round4(p[1] - cv)];
+    const n = l.pts.length, outs = l.outs;
+    const inOf = (i: number): P2 | null => outs[i] ? [2 * l.pts[i][0] - outs[i]![0], 2 * l.pts[i][1] - outs[i]![1]] : null;
+    const curves = l.pts.map((P, k) => {
+      const Q = l.pts[(k + 1) % n], c1 = outs[k], c2 = inOf((k + 1) % n);
+      return c1 || c2 ? [rel(c1 ?? P), rel(c2 ?? Q)] as Ctrl : null;
+    });
     const f: Feature = {
       id: newId(), type: 'poly', view: l.view, cu, cv, w: 0, h: 0, r: 0, corner: 0,
-      pts: l.pts.map(([u, v]) => [round4(u - cu), round4(v - cv)] as P2), d0: 0, d1: 0, op: 'add', through: false,
+      pts: l.pts.map(rel), d0: 0, d1: 0, op: 'add', through: false,
+      ...(curves.some(Boolean) ? { curves, smooth: outs.map((o) => !!o) } : {}),
     };
     this.newShape(f, l.view);
   }
@@ -1438,6 +1570,8 @@ export class Sheet {
     const m = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.trail || this.measure;
     if (this.trail && this.st.tool === 'measure') t += `     ${this.measureText(this.trail)}   (click to drop it as a guide, Esc to cancel)`;
     else if (m && this.st.tool === 'measure') t += `     ${this.measureText(m)}`;
+    else if (this.st.tool === 'direct') t += this.st.one ? '     drag a point or handle · click a side to add a point · Option-click a point: smooth or corner · ⌫ deletes the picked point' : '     click a shape to see its points';
+    else if (this.st.tool === 'line' && !this.line) t += '     click for a corner, click and drag for a curve';
     else if (this.st.tool === 'measure') t += '     drag to measure; or click a point, then click another to leave a measure guide (Shift: level or plumb, Option: no snapping)';
     else if (this.st.tool === 'section') t += '     drag a cutting line across a view: level or plumb, it snaps to corners and centres (the view it looks into shows the section)';
     if (this.st.tool === 'edge' && !this.st.built?.edges.length) t += '     Nothing to round yet: make a body first';
@@ -1663,7 +1797,7 @@ export class Sheet {
         if (!polys.length) continue;
         parts.push(`<path class="ds-feat ${sideSel ? 'ds-selected-soft' : 'ds-selected'}" d="${path(view, polys[0], true)}"/>`);
         if (polys.length > 1) parts.push(`<path class="ds-feat ds-selected-soft" d="${polys.slice(1).map((q) => path(view, q, true)).join('')}"/>`);
-        if (st.one && !sideSel) {
+        if (st.one && !sideSel && st.tool !== 'direct') {
           for (const h of this.handles(view, id)) {
             const [x, y] = this.toSheet(view, h.u, h.v);
             const s = px(HANDLE_PX);
@@ -1695,6 +1829,30 @@ export class Sheet {
       }
     }
 
+    // the direct selection tool: the outline's points (squares) and handles (dots on lines)
+    if (st.tool === 'direct') {
+      const t = this.directTarget();
+      if (t) {
+        for (const view of p.views) {
+          if (!parallel(t.f.view, view)) continue;
+          const at = (q: P2) => this.toSheet(view, ...this.featToView(t.f, view, q[0], q[1]));
+          const an = anchors(t.o);
+          let g = '';
+          an.forEach((a, i) => {
+            const [mx, my] = at(a.p);
+            for (const h of [a.inH, a.outH]) {
+              if (!h || Math.hypot(h[0] - a.p[0], h[1] - a.p[1]) < 1e-6) continue;
+              const [hx, hy] = at(h);
+              g += `<line x1="${mx}" y1="${my}" x2="${hx}" y2="${hy}"/><circle cx="${hx}" cy="${hy}" r="${px(3.2)}"/>`;
+            }
+            const on = this.pathPick?.id === t.f.id && this.pathPick.i === i, s = px(3.8);
+            g += `<rect class="${on ? 'ds-pt-on' : ''}" x="${mx - s}" y="${my - s}" width="${2 * s}" height="${2 * s}"${a.smooth ? ` rx="${s}"` : ''}/>`;
+          });
+          parts.push(`<g class="ds-path-handles">${g}</g>`);
+        }
+      }
+    }
+
     // the shape being drawn, the selection box
     const d = this.drag;
     if (d && d.kind === 'draw') {
@@ -1714,11 +1872,25 @@ export class Sheet {
       parts.push(`<path class="ds-feat ds-drawing" d="${path(d.view, poly, true)}"/>`);
     }
     if (this.line) {
-      const pts = [...this.line.pts];
+      const L = this.line;
       const c = this.cursor;
-      const next = c && c.view === this.line.view ? this.linePoint(this.line.view, c.u, c.v, this.shiftDown, this.altDown) : null;
-      if (next) pts.push(next);
-      parts.push(`<path class="ds-feat ds-drawing" d="${path(this.line.view, pts)}"/>`);
+      const next = c && c.view === L.view && !this.penDrag?.on ? this.linePoint(L.view, c.u, c.v, this.shiftDown, this.altDown) : null;
+      // the path so far, curves and all, and the side on to the pointer
+      const inOf = (i: number): P2 | null => L.outs[i] ? [2 * L.pts[i][0] - L.outs[i]![0], 2 * L.pts[i][1] - L.outs[i]![1]] : null;
+      const pts: P2[] = [L.pts[0]];
+      const side = (P: P2, c1: P2 | null, c2: P2 | null, Q: P2) => {
+        if (!c1 && !c2) { pts.push(Q); return; }
+        for (let i = 1; i <= 16; i++) pts.push(bezierAt(P, c1 ?? P, c2 ?? Q, Q, i / 16));
+      };
+      for (let k = 1; k < L.pts.length; k++) side(L.pts[k - 1], L.outs[k - 1], inOf(k), L.pts[k]);
+      if (next) side(L.pts[L.pts.length - 1], L.outs[L.pts.length - 1], null, next);
+      parts.push(`<path class="ds-feat ds-drawing" d="${path(L.view, pts)}"/>`);
+      // the handles of the point just placed
+      const li = L.pts.length - 1, o = L.outs[li], ih = inOf(li);
+      if (o && ih) {
+        const [ax, ay] = this.toSheet(L.view, ...ih), [bx, by] = this.toSheet(L.view, ...o), [mx, my] = this.toSheet(L.view, ...L.pts[li]);
+        parts.push(`<g class="ds-path-handles"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/><circle cx="${ax}" cy="${ay}" r="${px(3)}"/><circle cx="${bx}" cy="${by}" r="${px(3)}"/><rect x="${mx - px(3.5)}" y="${my - px(3.5)}" width="${px(7)}" height="${px(7)}"/></g>`);
+      }
       // the ruler: a dimension alongside the side being drawn, its length (and angle) by the cursor
       const last = this.line.pts[this.line.pts.length - 1];
       if (next && Math.hypot(next[0] - last[0], next[1] - last[1]) > 1e-6) {

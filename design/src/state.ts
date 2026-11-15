@@ -6,7 +6,7 @@ import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'rotate' | 'measure' | 'section' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
+export type Tool = 'select' | 'direct' | 'rotate' | 'measure' | 'section' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
@@ -401,7 +401,9 @@ export function featureItem(f: Feature, p: Project): Item {
         } else if (f.type === 'poly' && f.pts) {
           // stretch along this axis, the opposite side staying put
           const c0 = a === 0 ? f.cu : f.cv;
-          f.pts = f.pts.map((pt) => { const q = [...pt] as P2; q[a] = lo + (c0 + pt[a] - lo0) * k - c0; return q; });
+          const sc = (pt: P2): P2 => { const q = [...pt] as P2; q[a] = lo + (c0 + pt[a] - lo0) * k - c0; return q; };
+          f.pts = f.pts.map(sc);
+          if (f.curves) f.curves = f.curves.map((cc) => cc && [sc(cc[0]), sc(cc[1])]);
         } else if (f.type === 'polygon' || f.type === 'text') {
           // grow evenly, the opposite side staying put
           const c = a === 0 ? f.cu : f.cv;

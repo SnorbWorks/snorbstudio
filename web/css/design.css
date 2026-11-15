@@ -375,3 +375,7 @@
 .ds-big { font-size: 20px; font-weight: 700; color: var(--text); margin: 2px 0 4px; }
 .ds-comp-changed { color: var(--accent); }
 .ds-viewbox.ds-active { stroke: #b04aa5; stroke-opacity: .55; stroke-width: 1.5px; vector-effect: non-scaling-stroke; fill: rgba(176,74,165,.045); }
+.ds-path-handles line { stroke: #b04aa5; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.ds-path-handles circle { fill: #fff; stroke: #b04aa5; stroke-width: 1.2px; vector-effect: non-scaling-stroke; }
+.ds-path-handles rect { fill: #fff; stroke: #b04aa5; stroke-width: 1.4px; vector-effect: non-scaling-stroke; }
+.ds-path-handles rect.ds-pt-on { fill: #b04aa5; }

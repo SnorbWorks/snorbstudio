@@ -35,6 +35,7 @@ interface Studio {
 const ico = (body: string) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">${body}</svg>`;
 const ICONS = {
   select: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="currentColor" stroke-width="1.2"/>'),
+  direct: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="none" stroke-width="1.4"/>'),
   rotate: ico('<path d="M5 13a7 7 0 1 0 2.6-5.5"/><path d="M7.5 3.5v4.2h4.2"/><rect x="9.5" y="10.5" width="5" height="5" transform="rotate(20 12 13)"/>'),
   measure: ico('<path d="M3.5 16.5l13-13 4 4-13 13z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
   rect: ico('<rect x="4" y="6" width="16" height="12" rx="0.5"/>'),
@@ -70,6 +71,7 @@ const SHAPES: { tool: Tool; name: string; key: string; tip: string }[] = [
 ];
 const PICKERS: typeof SHAPES = [
   { tool: 'select', name: 'Select', key: 'V', tip: 'Click or drag a box to select; Shift-click for more; drag just outside a corner to turn' },
+  { tool: 'direct', name: 'Direct Selection', key: 'A', tip: "Click a shape to see its points: drag a point or a curve handle, click a side to add a point, Option-click a point for smooth/corner, ⌫ deletes the picked point" },
   { tool: 'rotate', name: 'Rotate', key: '⇧R', tip: 'Click the shapes to turn, then set the angle and the point to turn about' },
 ];
 const MEASURES: typeof SHAPES = [
@@ -114,7 +116,7 @@ const html = `
   <nav class="ds-toolbox" id="ds-tool">
     ${toolGroup('pick', PICKERS)}
     ${toolGroup('shapes', SHAPES)}
-    <button data-tool="line" title="Line (L): click each corner of an outline,&#10;click the first one (or press Return) to close it.&#10;Shift keeps a side level or plumb.&#10;Then drag the ◆ in the middle of a side to bow it into an arc.">${ICONS.line}</button>
+    <button data-tool="line" title="Pen (L): click for a corner, click and drag for a smooth curve point;&#10;click the first point (or press Return) to close the outline.&#10;Shift keeps a side level, plumb or 45°.&#10;Change it after with the Direct Selection tool (A), or drag a side's ◆ into an arc.">${ICONS.line}</button>
     <span class="ds-tool-sep"></span>
     <button data-tool="hole" title="Hole (O): click where a screw goes (or drag out roughly its size),&#10;then pick the screw and the kind of hole in the box that opens.">${ICONS.hole}</button>
     <button data-tool="gear" title="Gear (G): drag out roughly how big,&#10;then set it up in the box that opens.">${ICONS.gear}</button>
@@ -1498,6 +1500,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     });
   }
   sheet.onRotate = editRotate;
+  sheet.onNote = (t) => flash(t);
 
   // ---------------------------------------------------------- keys
   window.addEventListener('keydown', (e) => {
@@ -1525,13 +1528,13 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }
     if (k === 'r' && e.shiftKey) { e.preventDefault(); st.setTool('rotate'); return; }
-    const keys: Record<string, Tool> = { v: 'select', m: 'measure', x: 'section', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
+    const keys: Record<string, Tool> = { a: 'direct', v: 'select', m: 'measure', x: 'section', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);
     else if (k === 'h' && e.shiftKey) toggleHidden();
     else if (k === 'h') toggleFar();
     else if (k === 'f') sheet.fit();
-    else if (k === 'delete' || k === 'backspace') { e.preventDefault(); st.deleteSelected(); }
+    else if (k === 'delete' || k === 'backspace') { e.preventDefault(); if (!sheet.deletePathPoint()) st.deleteSelected(); }
   });
 
   studio.onPage((p) => { preview.active = p === 'design'; if (p === 'design') { preview.resize(); sheet.render(); } });

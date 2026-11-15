@@ -39,6 +39,7 @@ export function featureName(f: Feature): string {
   if (f.type === 'gear' && f.gear) return `${f.gear.teeth}T ${({ spur: 'spur gear', helical: 'helical gear', ring: 'ring gear', rack: 'rack' })[f.gear.kind]}`;
   if (f.type === 'text' && f.text) return `Text “${f.text.s}”`;
   if (f.type === 'hole' && f.hole) return `${holeLabel(f.hole)} hole`;
+  if (f.type === 'poly' && f.curves?.some(Boolean)) return 'Outline with curves';
   if (f.type === 'poly' && hasArcs(f)) return 'Outline with arcs';
   if (f.type === 'fillet' && f.fillet) return `${f.fillet.mode === 'fillet' ? 'Fillet' : 'Chamfer'} ${f.fillet.size} mm × ${f.fillet.edges.length} edge${f.fillet.edges.length === 1 ? '' : 's'}`;
   return NAMES[f.type] || f.type;
@@ -507,7 +508,9 @@ export class Panel {
           const old = k === 0 ? u1 - u0 : v1 - v0;
           if (old < 1e-9 || !f.pts) return;
           const lo = k === 0 ? u0 : v0, c = k === 0 ? f.cu : f.cv;
-          f.pts = f.pts.map((p) => { const q = [...p] as [number, number]; q[k] = lo + (c + p[k] - lo) * (size / old) - c; return q; });
+          const sc = (p: [number, number]): [number, number] => { const q = [...p] as [number, number]; q[k] = lo + (c + p[k] - lo) * (size / old) - c; return q; };
+          f.pts = f.pts.map(sc);
+          if (f.curves) f.curves = f.curves.map((cc) => cc && [sc(cc[0]), sc(cc[1])]);
         };
         out.push(this.num(`Width (${AX[ua]})`, u1 - u0, (v) => scale(0, v), { min: 0.01 }));
         out.push(this.num(`Height (${AX[va]})`, v1 - v0, (v) => scale(1, v), { min: 0.01 }));
