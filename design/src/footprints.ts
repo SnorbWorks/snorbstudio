@@ -2,16 +2,57 @@
 // standoffs) for parts that go in printed things: boards, servos, bearings,
 // LEDs. Dropped on a part, they become normal features you can move, change
 // or delete. Sizes are the common published ones; check against your part.
-import type { Feature, Project } from './model.js';
-import { newId, nearDepth, shellCavity } from './model.js';
+import type { Feature, Project, ViewName, P2 } from './model.js';
+import { newId, nearDepth, shellCavity, isShape, profile } from './model.js';
+import { VIEWS } from './views.js';
 import { holeFromTable, type HoleKind } from './holes.js';
 
 export interface Footprint {
   id: string;
   name: string;
   note: string;
-  /** The shapes, centred on (0, 0) in the top view, top face at depth 0 (cuts go down, standoffs up). */
+  /** The face they go on (the top unless saved from another view). */
+  view?: ViewName;
+  /** One the owner saved (Save › Footprints), not a ready-made one. */
+  mine?: boolean;
+  /** The shapes, centred on (0, 0) in their view, its near face at depth 0 (cuts go down, standoffs up). */
   make(): Feature[];
+}
+
+/** A footprint as saved on the printer (/studio-api/footprints/<name>.json). */
+export interface SavedFootprint { name: string; note: string; view: ViewName; features: Feature[] }
+
+/**
+ * Shapes from a part as a footprint: the ones on the same view as the first,
+ * centred on (0, 0), depths measured from that view's near face. Shapes on
+ * other views are left out (the count comes back as `skipped`).
+ */
+export function footprintFrom(feats: Feature[], p: Project, name: string): { fp: SavedFootprint; skipped: number } {
+  const shapes = feats.filter((f) => isShape(f));
+  const view = shapes[0]?.view ?? 'top';
+  const same = shapes.filter((f) => f.view === view);
+  const pts: P2[] = same.flatMap((f) => profile(f, 24));
+  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+  const cx = pts.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
+  const cy = pts.length ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
+  const top = nearDepth(view, p);
+  const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
+  const features = same.map((f) => {
+    const c = JSON.parse(JSON.stringify(f)) as Feature;
+    delete (c as any).refs;
+    return { ...c, cu: r4(c.cu - cx), cv: r4(c.cv - cy), d0: r4(c.d0 - top), d1: r4(c.d1 - top) };
+  });
+  const w = pts.length ? Math.max(...xs) - Math.min(...xs) : 0, h = pts.length ? Math.max(...ys) - Math.min(...ys) : 0;
+  const note = `${same.length} shape${same.length === 1 ? '' : 's'}, ${+w.toFixed(1)} × ${+h.toFixed(1)} mm, from “${p.name || 'part'}”`;
+  return { fp: { name, note, view, features }, skipped: shapes.length - same.length };
+}
+
+/** A saved footprint ready for the Library shelf. */
+export function savedFootprint(s: SavedFootprint): Footprint {
+  return {
+    id: `mine:${s.name}`, name: s.name, note: s.note || '', view: s.view || 'top', mine: true,
+    make: () => (s.features || []).map((f) => ({ ...JSON.parse(JSON.stringify(f)), id: newId() })),
+  };
 }
 
 const base = (o: Partial<Feature>): Feature => ({
@@ -84,10 +125,13 @@ export const FOOTPRINTS: Footprint[] = [
  * on the floor of a hollow body open at the top.
  */
 export function placeFootprint(fp: Footprint, p: Project): Feature[] {
+  const view = fp.view || 'top';
   const cav = shellCavity(p);
   const open = p.shell?.open;
   const s = p.stock;
-  const cx = s.off ? 0 : (s.min[0] + s.max[0]) / 2, cy = s.off ? 0 : (s.min[1] + s.max[1]) / 2;
-  const top = cav && open === 'top' ? cav[0][2] : nearDepth('top', p);
-  return fp.make().map((f) => ({ ...f, cu: f.cu + cx, cv: f.cv + cy, d0: f.d0 + top, d1: f.d1 + top }));
+  const mid = s.off ? [0, 0, 0] as const : [0, 1, 2].map((i) => (s.min[i] + s.max[i]) / 2);
+  const [cx, cy] = VIEWS[view].toView([mid[0], mid[1], mid[2]]);
+  // a hollow box open on this face: on the floor inside it
+  const top = cav && open === view ? VIEWS[view].toView(VIEWS[view].eye[0] + VIEWS[view].eye[1] + VIEWS[view].eye[2] > 0 ? cav[0] : cav[1])[2] : nearDepth(view, p);
+  return fp.make().map((f) => ({ ...f, view, cu: f.cu + cx, cv: f.cv + cy, d0: f.d0 + top, d1: f.d1 + top }));
 }

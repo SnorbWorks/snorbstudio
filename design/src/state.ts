@@ -1,7 +1,7 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, DEFAULT_FIT, type P2 } from './model.js';
+import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, withGroups, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
@@ -121,8 +121,9 @@ export class State {
   /** The one selected thing, or null when none or several are selected. */
   get one(): string | null { return this.sels.length === 1 ? this.sels[0] : null; }
 
-  select(ids: string[], sides: State['sides'] = null) {
-    this.sels = [...new Set(ids)];
+  /** Select these; grouped shapes bring their whole group unless `exact` (double-click into a group). */
+  select(ids: string[], sides: State['sides'] = null, exact = false) {
+    this.sels = [...new Set(exact ? ids : withGroups(this.p.features, ids))];
     this.sides = sides;
     this.emit('select');
   }
@@ -192,9 +193,12 @@ export class State {
     const off: Vec3 = same ? V.toWorld(step * clip.n, -step * clip.n, 0) : [0, 0, 0];
     const map = new Map<string, string>();
     for (const f of clip.features) map.set(f.id, newId());
+    const groups = new Map<string, string>();      // a pasted group is a new group of its own
+    for (const f of clip.features) if (f.group && !groups.has(f.group)) groups.set(f.group, newId());
     const added: Feature[] = clip.features.map((f) => {
       const g: Feature = JSON.parse(JSON.stringify(f));
       g.id = map.get(f.id)!;
+      if (g.group) g.group = groups.get(g.group);
       if (g.fillet?.refs) {
         g.fillet.refs = g.fillet.refs.map((r) => (r ? { ...r, owner: map.get(r.owner) ?? r.owner } : r));
         g.fillet.edges = g.fillet.edges.map((e) => [e[0] + off[0], e[1] + off[1], e[2] + off[2]] as Vec3);
@@ -219,6 +223,32 @@ export class State {
     const n = this.copy() ? this.paste(view, step) : 0;
     try { if (keep) localStorage.setItem(CLIP_KEY, keep); else localStorage.removeItem(CLIP_KEY); } catch { /* fine */ }
     return n;
+  }
+
+  /** The selected shapes as one group (⌘G). Groups inside it merge into it. Returns how many. */
+  group(): number {
+    const ids = new Set(this.sels.filter((id) => { const f = this.feature(id); return !!f && isShape(f); }));
+    if (ids.size < 2) return 0;
+    const g = newId();
+    this.change((p) => { for (const f of p.features) if (ids.has(f.id)) f.group = g; });
+    this.emit('select');
+    return ids.size;
+  }
+
+  /** Break the selected groups up into loose shapes (⇧⌘G). Returns how many groups. */
+  ungroup(): number {
+    const gs = new Set(this.sels.map((id) => this.feature(id)?.group).filter(Boolean));
+    if (!gs.size) return 0;
+    this.change((p) => { for (const f of p.features) if (f.group && gs.has(f.group)) delete f.group; });
+    this.emit('select');
+    return gs.size;
+  }
+
+  /** The selection is exactly one whole group. */
+  get oneGroup(): string | null {
+    const g = this.feature(this.sels[0] ?? null)?.group;
+    if (!g || this.sels.some((id) => this.feature(id)?.group !== g)) return null;
+    return this.p.features.filter((f) => f.group === g).length === this.sels.length ? g : null;
   }
 
   rememberHole(h: HoleSpec) { this.lastHole = { ...h }; try { localStorage.setItem(HOLE_KEY, JSON.stringify(h)); } catch { /* private mode */ } }

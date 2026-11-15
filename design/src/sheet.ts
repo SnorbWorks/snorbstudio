@@ -514,6 +514,20 @@ export class Sheet {
       if (this.st.tool === 'line' && this.line) { this.finishLine(); return; }
       const dh = this.dimAt(x, y);
       if (dh) { e.preventDefault(); this.editDim(dh.id); return; }
+      // double-click a grouped shape: just that one, to change it on its own
+      const gv = this.viewAt(x, y);
+      if (gv && (this.st.tool === 'select')) {
+        const [gu, gw] = this.fromSheet(gv, x, y);
+        const gh = this.pick(gv, gu, gw);
+        const gf = gh && gh !== 'stock' ? this.st.feature(gh) : undefined;
+        if (gf?.group) {
+          e.preventDefault();
+          this.st.select([gf.id], null, true);
+          this.drag = { kind: 'move', ids: [gf.id], view: gv, u0: gu, v0: gw, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
+          this.render();
+          return;
+        }
+      }
     }
     if (this.st.tool === 'zoom') {
       this.drag = { kind: 'zoom', x0: x, y0: y, x1: x, y1: y, out: e.altKey, started: false, sx: e.clientX, sy: e.clientY };
@@ -653,12 +667,14 @@ export class Sheet {
     let sels = [...this.st.sels];
     if (e.shiftKey) {
       // shift-click toggles a shape in or out of the selection
-      sels = sels.includes(hit) ? sels.filter((id) => id !== hit) : [...sels, hit];
-      this.st.select(sels);
+      const g = this.st.feature(hit)?.group;
+      const mates = g ? this.st.p.features.filter((f) => f.group === g).map((f) => f.id) : [hit];
+      sels = sels.includes(hit) ? sels.filter((id) => !mates.includes(id)) : [...sels, ...mates];
+      this.st.select(sels, null, true);
       if (!sels.includes(hit)) { this.render(); return; }
     } else if (!sels.includes(hit) || this.st.sides) {
-      sels = [hit];
-      this.st.select(sels);
+      this.st.select([hit]);
+      sels = [...this.st.sels];          // with the rest of its group
     }
     this.drag = { kind: 'move', ids: sels.filter((id) => id !== 'stock'), view, u0: u, v0: v, orig: JSON.stringify(this.st.p), started: false, sx: e.clientX, sy: e.clientY };
     this.render();
@@ -832,7 +848,8 @@ export class Sheet {
       const [x, y] = this.screenToSheet(e);
       const [u, v] = this.fromSheet(d.view, x, y);
       const hit = this.pick(d.view, u, v);
-      if (hit && hit !== 'stock') this.st.select([hit]);
+      // (a click on a group that's all that's selected keeps the group)
+      if (hit && hit !== 'stock' && !this.st.oneGroup) this.st.select([hit]);
     } else if (d.kind !== 'pan' && 'started' in d && d.started) { this.relayout(); this.st.changed(); }
     this.setCursor();
     this.render();

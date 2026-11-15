@@ -110,6 +110,14 @@ export interface Feature {
   exprs?: Record<string, string>;   // boxes typed as a formula of named sizes (see sizes.ts BINDS)
   teardrop?: boolean; // circle / hole drawn sideways to the bed: a 45° point on top so it prints without support
   revolve?: Revolve;  // spun round a centre line in its view instead of pushed straight in
+  group?: string;     // grouped (⌘G): clicking one picks the whole group; double-click picks just this one
+}
+
+/** Shapes grouped with any of these (the ids plus every other member of their groups). */
+export function withGroups(features: Feature[], ids: string[]): string[] {
+  const groups = new Set(ids.map((id) => features.find((f) => f.id === id)?.group).filter(Boolean));
+  if (!groups.size) return ids;
+  return [...new Set([...ids, ...features.filter((f) => f.group && groups.has(f.group)).map((f) => f.id)])];
 }
 
 /**

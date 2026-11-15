@@ -414,7 +414,11 @@ export class Panel {
   private many(): HTMLElement[] {
     const st = this.st;
     const feats = st.sels.map((id) => st.feature(id)).filter((f): f is Feature => !!f && isShape(f));
-    const out: HTMLElement[] = [this.h(`${st.sels.length} things selected`)];
+    const grp = st.oneGroup;
+    const out: HTMLElement[] = [this.h(grp ? `A group of ${st.sels.length} shapes` : `${st.sels.length} things selected`)];
+    if (grp) out.push(this.button('Ungroup (⇧⌘G)', () => st.ungroup(), 'btn ghost sm'));
+    else if (feats.length > 1) out.push(this.button('Group (⌘G)', () => st.group(), 'btn ghost sm'));
+    if (grp) out.push(this.h('Click picks the whole group; double-click one shape to pick just it.', 'ds-note'));
     const ops = new Set(feats.map((f) => f.op));
     if (feats.length) {
       out.push(this.labelled('Operation', this.seg([['add', 'Add ▲'], ['cut', 'Cut ▼']], ops.size === 1 ? [...ops][0] : '', (v) => st.change(() => {

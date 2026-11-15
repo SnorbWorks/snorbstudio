@@ -238,10 +238,12 @@
 .ds-measure text { fill: #fff; text-anchor: middle; font-family: -apple-system, sans-serif; font-weight: 600; }
 .ds-pivot circle { fill: #fff; stroke: #b04aa5; stroke-width: 1.5; }
 .ds-pivot path { stroke: #b04aa5; stroke-width: 1.2; }
-.ds-doctabs { position: absolute; left: 8px; top: 6px; z-index: 2; display: flex; gap: 4px; }
+.ds-doctabs { position: absolute; left: 26px; top: 24px; right: 70px; z-index: 2; display: flex; gap: 4px; flex-wrap: wrap; pointer-events: none; }
+.ds-doctabs > * { pointer-events: auto; }
+.ds-doctab { min-width: 0; }
 .ds-doctab { display: flex; align-items: center; background: #eef0f3; border: 1px solid #d6d9de; border-radius: 7px; overflow: hidden; }
 .ds-doctab.active { background: #fff; border-color: #b04aa5; box-shadow: 0 1px 4px rgba(176,74,165,.25); }
-.ds-doctab button { background: none; border: 0; color: #333; font-size: 12px; padding: 3px 8px; cursor: pointer; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-doctab button { background: none; border: 0; color: #333; font-size: 12px; padding: 3px 8px; cursor: pointer; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-doctab.active button { color: #6b2a63; font-weight: 600; }
 .ds-doctab .ds-doctab-x { padding: 3px 6px 3px 2px; color: #999; }
 .ds-doctab .ds-doctab-x:hover { color: #d33; }
@@ -334,3 +336,19 @@
 .ds-svg-pic { display: block; width: 100%; height: 140px; background: #fff; border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; }
 .ds-svg-pic path { fill: rgba(176, 74, 165, 0.25); stroke: #b04aa5; stroke-width: 1.2; }
 .ds-note.ds-warn { color: #f0b35a; }
+
+/* Save: where it goes */
+.ds-save-name { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+.ds-save-name input { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; color: var(--text); font-size: 14px; }
+.ds-save-where { display: flex; flex-direction: column; gap: 6px; }
+.ds-save-opt { display: flex; align-items: center; gap: 12px; text-align: left; background: var(--card); border: 1.5px solid var(--line); border-radius: 9px; padding: 9px 12px; color: var(--text); cursor: pointer; }
+.ds-save-opt:hover:not(:disabled) { border-color: var(--muted); }
+.ds-save-opt.active { border-color: var(--accent); background: var(--card2); }
+.ds-save-opt:disabled { opacity: .5; cursor: default; }
+.ds-save-opt svg { width: 26px; height: 26px; flex: none; color: var(--muted); }
+.ds-save-opt.active svg { color: var(--accent); }
+.ds-save-opt span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ds-save-opt b { font-size: 13.5px; }
+.ds-save-opt i { font-style: normal; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.ds-save-note { margin: 10px 0 0; }
+.ds-dialog-foot .spacer { flex: 1; }

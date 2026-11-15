@@ -3,7 +3,8 @@
 
 import type { Feature, Project, ViewName } from './model.js';
 import { newProject, newId, isShape, findRef, profile, type P2 } from './model.js';
-import { FOOTPRINTS, placeFootprint } from './footprints.js';
+import { FOOTPRINTS, placeFootprint, footprintFrom, savedFootprint, type Footprint, type SavedFootprint } from './footprints.js';
+import { openSaveDialog, lastWhere } from './savedialog.js';
 import { State, align, distribute, rememberFit, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
@@ -100,7 +101,7 @@ const html = `
   <button class="btn sm ghost" id="ds-new" title="Start a new part">New</button>
   <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
   <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
-  <button class="btn sm ghost" id="ds-save" title="Save this part on the printer (⌘S)">Save</button>
+  <button class="btn sm ghost" id="ds-save" title="Save: in My parts on the printer, as a footprint, or as a file on this computer (⌘S saves it where it was saved)">Save…</button>
   <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Import an SVG drawing; download the STL, or a DXF drawing of a view">File ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
   <button class="btn sm ghost" id="ds-check" title="Will it print? Looks for thin walls, steep overhangs, holes on their side and bits too small (it also runs on Send to Prepare / Library)">Check</button>
   <button class="btn sm ghost" id="ds-cam" title="Cut it on the ShopBot: lay it on a sheet in SnorbCAM">Send to SnorbCAM</button>
@@ -144,8 +145,10 @@ export function mount(root: HTMLElement, studio: Studio) {
   root.innerHTML = html;
   const $ = (s: string) => root.querySelector(s) as HTMLElement;
   const st = new State();
-  // the other part tab (two parts open at once), kept here while this one is shown
-  const docs: { other: null | { p: Project; undo: string[]; redo: string[]; sels: string[]; savedAs: string | null; cleanSig: string | null; first: boolean } } = { other: null };
+  // the part tabs: every open part in order; the shown one (index cur) is null here, it lives in State
+  type TabDoc = { p: Project; undo: string[]; redo: string[]; sels: string[]; savedAs: string | null; cleanSig: string | null };
+  const MAX_TABS = 8;
+  const tabs: { list: (TabDoc | null)[]; cur: number } = { list: [null], cur: 0 };
   const sheet = new Sheet($('#ds-sheet'), st);
   new Panel($('#ds-panel'), st, {
     gear: (id) => editGear(id, false),
@@ -155,7 +158,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     repick: (id) => repick(id),
     unbase: () => st.change((p) => { delete p.base; p.stock.off = false; }),
     lid: (lid) => {
-      if (docs.other) { flash('Close the other part tab first: the lid opens there.'); return; }
+      if (tabs.list.length >= MAX_TABS) { flash(`${MAX_TABS} parts are open, the most at once: close one first, the lid opens in a new tab.`); return; }
       newTab(lid);
       flash(`“${lid.name}”: lip down, it slips into the opening. Save it, then send both to Prepare.`);
     },
@@ -167,7 +170,7 @@ export function mount(root: HTMLElement, studio: Studio) {
         flash(`Printer fit set to ${fit} mm: holes and cut slots are made that much bigger across, here and in every new part.`);
       },
       openPlate: () => {
-        if (docs.other) { flash('Close the other part tab first: the test plate opens there.'); return; }
+        if (tabs.list.length >= MAX_TABS) { flash(`${MAX_TABS} parts are open, the most at once: close one first, the test plate opens in a new tab.`); return; }
         newTab(fitPlate());
         flash('The M3 fit test plate. Send it to Prepare and print it, then Sheet › Fit test… to pick the hole that fits.');
       },
@@ -511,7 +514,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const a = await askSave();
     if (a === 'cancel') return false;
     if (a === 'discard') return true;
-    return await save();
+    return await quickSave();
   }
 
   const name = $('#ds-name') as HTMLInputElement;
@@ -524,7 +527,7 @@ export function mount(root: HTMLElement, studio: Studio) {
   name.onkeydown = (e) => {
     e.stopPropagation();
     if (e.key === 'Enter') name.blur();
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); quickSave(); }
   };
   /** A blank part set up as the New part dialog said (units, drawing area). */
   const freshPart = (np: NewPart) => {
@@ -545,18 +548,34 @@ export function mount(root: HTMLElement, studio: Studio) {
     sheet.fit();
     flash(msg);
   };
-  // ---------------------------------------------------------- two part tabs
-  const OTHER_KEY = 'studio.design.other';
+  // ---------------------------------------------------------- part tabs
+  // Up to MAX_TABS parts open at once. Only the shown one lives in State (and
+  // gets built); the others wait here as plain data, so a tab costs a few KB.
+  // Kept across reloads: the shown part in State's own store, the rest under TABS_KEY.
+  const TABS_KEY = 'studio.design.tabs';
+  const OTHER_KEY = 'studio.design.other';          // before: one "other" tab
   try {
-    const o = JSON.parse(localStorage.getItem(OTHER_KEY) || 'null');
-    if (o?.p) docs.other = { ...o, undo: [], redo: [], sels: [] };
+    const t = JSON.parse(localStorage.getItem(TABS_KEY) || 'null');
+    if (t && Array.isArray(t.docs) && t.docs.length > 1) {
+      tabs.list = t.docs.map((d: any) => d && d.p ? { p: d.p, undo: [], redo: [], sels: [], savedAs: d.savedAs ?? null, cleanSig: d.cleanSig ?? null } : null);
+      tabs.cur = Math.max(0, Math.min(tabs.list.length - 1, t.cur | 0));
+      tabs.list[tabs.cur] = null;
+      if (tabs.list.filter((d) => !d).length !== 1) { tabs.list = [null]; tabs.cur = 0; }
+    } else {
+      const o = JSON.parse(localStorage.getItem(OTHER_KEY) || 'null');
+      if (o?.p) {
+        const other = { p: o.p, undo: [], redo: [], sels: [], savedAs: o.savedAs ?? null, cleanSig: o.cleanSig ?? null };
+        tabs.list = o.first ? [other, null] : [null, other];
+        tabs.cur = o.first ? 1 : 0;
+      }
+      localStorage.removeItem(OTHER_KEY);
+    }
   } catch { /* none */ }
-  const keepOther = () => {
-    const o = docs.other;
+  const keepTabs = () => {
     try {
-      if (o) localStorage.setItem(OTHER_KEY, JSON.stringify({ p: o.p, savedAs: o.savedAs, cleanSig: o.cleanSig, first: o.first }));
-      else localStorage.removeItem(OTHER_KEY);
-    } catch { /* too big or private mode */ }
+      if (tabs.list.length < 2) { localStorage.removeItem(TABS_KEY); return; }
+      localStorage.setItem(TABS_KEY, JSON.stringify({ cur: tabs.cur, docs: tabs.list.map((d) => d && { p: d.p, savedAs: d.savedAs, cleanSig: d.cleanSig }) }));
+    } catch { flash('The browser is out of room to keep all the tabs over a reload: save some parts and close their tabs.'); }
   };
   /** This part's saved name and clean state (kept across reloads). */
   const setDocMarks = (sa: string | null, cs: string | null) => {
@@ -566,72 +585,100 @@ export function mount(root: HTMLElement, studio: Studio) {
       if (cs) localStorage.setItem(CLEAN_KEY, cs); else localStorage.removeItem(CLEAN_KEY);
     } catch { /* private mode */ }
   };
-  function switchDoc() {
-    const o = docs.other;
-    if (!o) return;
+  /** Put the shown part away in its slot and show tab i. */
+  function switchDoc(i: number) {
+    const next = tabs.list[i];
+    if (i === tabs.cur || !next) return;
     commitName();
     const mine = { savedAs, cleanSig };
-    const cur = st.swap({ p: o.p, undo: o.undo, redo: o.redo, sels: o.sels });
-    setDocMarks(o.savedAs, o.cleanSig);
-    docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: !o.first };
-    keepOther();
+    const cur = st.swap({ p: next.p, undo: next.undo, redo: next.redo, sels: next.sels });
+    tabs.list[tabs.cur] = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig };
+    tabs.list[i] = null;
+    tabs.cur = i;
+    setDocMarks(next.savedAs, next.cleanSig);
+    keepTabs();
     name.classList.remove('ds-name-taken');
     sheet.fit();
   }
+  const roomForTab = () => {
+    if (tabs.list.length < MAX_TABS) return true;
+    flash(`${MAX_TABS} parts are open, the most at once: close one first.`);
+    return false;
+  };
+  /** A new tab after the shown one: a blank part (asks units and size), or a made one (a lid, the fit plate). */
   async function newTab(start?: Project) {
-    if (docs.other) { switchDoc(); return; }
+    if (!roomForTab()) return;
     const fresh = !start;
     const p = start || await askNewPart();
     if (!p) return;
     commitName();
     const mine = { savedAs, cleanSig };
     const cur = st.swap({ p, undo: [], redo: [], sels: [] });
-    docs.other = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig, first: true };
-    keepOther();
+    tabs.list[tabs.cur] = { ...cur, savedAs: mine.savedAs, cleanSig: mine.cleanSig };
+    tabs.cur += 1;
+    tabs.list.splice(tabs.cur, 0, null);
     setSavedAs(null);
     if (!fresh) cleanSig = null;      // a made lid counts as unsaved
+    keepTabs();
     sheet.fit();
-    if (fresh) flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
+    if (fresh && tabs.list.length === 2) flash('A second part. ⌘C in one and ⌘V in the other copies shapes across; click a tab to switch.');
   }
-  async function closeTab(active: boolean) {
-    if (!active) switchDoc();
+  /** Open a part in a tab of its own (or this one, when it's blank and unsaved). */
+  async function openInTab(p: Project, as: string | null, msg: string) {
+    if (blank(st.p) && !savedAs) { st.load(p); setSavedAs(as); }
+    else {
+      const open = tabs.list.findIndex((d) => d && as && d.savedAs === as);
+      if (as && as === savedAs) { if (!await okToLeave()) return; st.load(p); setSavedAs(as); }
+      else if (open >= 0) { switchDoc(open); flash(`“${as}” was already open in a tab.`); return; }
+      else { if (!roomForTab()) return; await newTab(p); setSavedAs(as); }
+    }
+    st.select([]);
+    sheet.fit();
+    flash(msg);
+  }
+  async function closeTab(i: number) {
+    if (i !== tabs.cur) switchDoc(i);
     if (!await okToLeave()) { renderTabs(); return; }
-    const o = docs.other;
-    if (!o) { startBlank('Closed. Here is a blank part.'); return; }
-    st.swap({ p: o.p, undo: o.undo, redo: o.redo, sels: o.sels });
-    setDocMarks(o.savedAs, o.cleanSig);
-    docs.other = null;
-    keepOther();
+    if (tabs.list.length < 2) { startBlank('Closed. Here is a blank part.'); return; }
+    // show the tab to the left (or the right, closing the first)
+    const to = tabs.cur > 0 ? tabs.cur - 1 : 1;
+    const next = tabs.list[to]!;
+    st.swap({ p: next.p, undo: next.undo, redo: next.redo, sels: next.sels });
+    setDocMarks(next.savedAs, next.cleanSig);
+    tabs.list.splice(tabs.cur, 1);
+    tabs.cur = to > tabs.cur ? to - 1 : to;
+    tabs.list[tabs.cur] = null;
+    keepTabs();
     sheet.fit();
   }
   function renderTabs() {
     const bar = root.querySelector('#ds-doctabs') as HTMLElement | null;
     if (!bar) return;
-    let dirty = false;
-    try { dirty = unsaved(); } catch { /* not set up yet */ }
-    const o = docs.other;
-    const tab = (label: string, active: boolean, changed: boolean) => {
+    const tab = (i: number, label: string, active: boolean, changed: boolean) => {
       const t = document.createElement('div');
       t.className = `ds-doctab${active ? ' active' : ''}`;
       const b = document.createElement('button');
       b.textContent = `${label}${changed ? ' •' : ''}`;
-      b.title = active ? 'This part' : 'Switch to this part';
-      b.onclick = () => { if (!active) switchDoc(); };
+      b.title = active ? `${label}: this part` : `Switch to ${label}`;
+      b.onclick = () => { if (!active) switchDoc(i); };
       const x = document.createElement('button');
       x.className = 'ds-doctab-x'; x.textContent = '×'; x.title = 'Close this part (asks to save it first)';
-      x.onclick = (e) => { e.stopPropagation(); closeTab(active); };
+      x.onclick = (e) => { e.stopPropagation(); closeTab(i); };
       t.append(b, x);
       return t;
     };
     const kids: HTMLElement[] = [];
-    if (o) {
-      const otherSig = (() => { try { return o.cleanSig !== sig(o.p) && !blank(o.p); } catch { return false; } })();
-      const a = tab(st.p.name || 'part', true, dirty), b = tab(o.p.name || 'part', false, otherSig);
-      kids.push(...(o.first ? [b, a] : [a, b]));
-    } else {
+    if (tabs.list.length > 1) {
+      tabs.list.forEach((d, i) => {
+        if (!d) { let dirty = false; try { dirty = unsaved(); } catch { /* not set up yet */ } kids.push(tab(i, st.p.name || 'part', true, dirty)); return; }
+        const changed = (() => { try { return d.cleanSig !== sig(d.p) && !blank(d.p); } catch { return false; } })();
+        kids.push(tab(i, d.p.name || 'part', false, changed));
+      });
+    }
+    if (tabs.list.length < MAX_TABS) {
       const plus = document.createElement('button');
-      plus.className = 'ds-doctab-new'; plus.textContent = '+ Part';
-      plus.title = 'Open a second part beside this one, to copy and paste between them';
+      plus.className = 'ds-doctab-new'; plus.textContent = tabs.list.length > 1 ? '+' : '+ Part';
+      plus.title = `Open another part beside this one (up to ${MAX_TABS}), to copy and paste between them`;
       plus.onclick = () => newTab();
       kids.push(plus);
     }
@@ -712,21 +759,17 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   /** Open a library model: its saved design if there is one (every shape editable), else the STL as the body. */
   async function openModel(name: string) {
-    if (!await okToLeave()) return;
     const stem = name.replace(/\.(stl|3mf|obj)$/i, '');
     try {
       const r = await fetch(`${API}${encodeURIComponent(stem)}.json`);
-      if (r.ok) { st.load(await r.json()); setSavedAs(stem); st.select([]); sheet.fit(); flash(`Opened the design of “${name}”: every shape can be changed.`); return; }
+      if (r.ok) { await openInTab(await r.json(), stem, `Opened the design of “${name}”: every shape can be changed.`); return; }
     } catch { /* no saved design */ }
     const p = newProject();
     p.name = stem;
     p.base = { model: name };
     p.views = ['top', 'front', 'right'];
-    st.load(p);
-    setSavedAs(stem);          // the same part as the library STL: saving under its name is fine
-    st.select([]);
-    sheet.fit();
-    flash(`“${name}” is the body. Add or cut shapes on it, round its edges; its own walls keep their size (an STL has no shapes to change).`);
+    // the same part as the library STL: saving under its name is fine
+    await openInTab(p, stem, `“${name}” is the body. Add or cut shapes on it, round its edges; its own walls keep their size (an STL has no shapes to change).`);
   }
 
   // ---------------------------------------------------------- save / open on the printer
@@ -779,7 +822,80 @@ export function mount(root: HTMLElement, studio: Studio) {
       return true;
     } catch (e: any) { flash(`Couldn't save: ${e.message}`); if (quiet) throw e; return false; }
   };
-  $('#ds-save').onclick = () => save();
+  /** Save (the button): ask where it goes and under what name. */
+  function saveAsk(): Promise<boolean> {
+    commitName();
+    const sel = st.sels.map((id) => st.feature(id)).filter((f): f is Feature => !!f && isShape(f));
+    const shapes = sel.length ? sel : st.p.features.filter((f) => isShape(f));
+    return new Promise((res) => openSaveDialog(document.body, {
+      name: st.p.name || 'part', where: lastWhere(), shapes: shapes.length, selected: sel.length > 0,
+      picker: typeof (window as any).showSaveFilePicker === 'function',
+    }, async (r) => {
+      if (!r) return res(false);
+      if (r.where === 'footprint') return res(await saveFootprint(r.name, shapes));
+      if (r.name !== st.p.name) { name.value = r.name; commitName(); }
+      res(r.where === 'file' ? await saveFile() : await save());
+    }));
+  }
+  /** ⌘S (and Save on the way out): straight back where it was saved on the printer, else ask. */
+  const quickSave = () => (savedAs && savedAs === (st.p.name || 'part').trim() ? save() : saveAsk());
+  /** The part as a .snorbcad file (JSON) on this computer: the Save panel where the browser allows it, else a download. */
+  async function saveFile(): Promise<boolean> {
+    const nm = (st.p.name || 'part').trim();
+    const thumb = preview.snapshot();
+    const text = JSON.stringify({ snorbcad: 1, ...st.p, ...(thumb ? { thumb } : {}) });
+    const fname = `${nm}.snorbcad`;
+    const pick = (window as any).showSaveFilePicker;
+    if (typeof pick === 'function') {
+      try {
+        const h = await pick({ suggestedName: fname, startIn: 'desktop', types: [{ description: 'SnorbCAD part', accept: { 'application/json': ['.snorbcad'] } }] });
+        const out = await h.createWritable();
+        await out.write(text);
+        await out.close();
+        flash(`Saved “${h.name}” on this computer.`);
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') flash(`Couldn't save the file: ${e?.message || e}`);
+        return false;
+      }
+    } else {
+      download(text, 'application/json', fname);
+      flash(`“${fname}” saved where Chrome puts downloads. Library › Open a file… opens it again.`);
+    }
+    markClean();
+    renderTabs();
+    return true;
+  }
+  /** Shapes as a footprint on the printer (Library › Footprints). */
+  const FP_API = '/studio-api/footprints/';
+  async function saveFootprint(nm: string, shapes: Feature[]): Promise<boolean> {
+    const { fp, skipped } = footprintFrom(shapes, st.p, nm);
+    try {
+      const r = await fetch(`${FP_API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(fp), headers: { 'Content-Type': 'application/json' } });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+      flash(`“${nm}” is in Library › Footprints: ${fp.features.length} shape${fp.features.length === 1 ? '' : 's'} on the ${VIEWS[fp.view].label.toLowerCase()}`
+        + `${skipped ? `. ${skipped} on other views were left out: a footprint keeps to one face` : ''}.`);
+      return true;
+    } catch (e: any) { flash(`Couldn't save the footprint: ${e.message}`); return false; }
+  }
+  /** Open a .snorbcad file (or a part's JSON) from this computer, in a tab. */
+  async function openFile(file: File) {
+    try {
+      const p = JSON.parse(await file.text());
+      if (!p || !Array.isArray(p.features) || !p.stock) throw new Error('not a SnorbCAD part');
+      delete p.snorbcad;
+      if (!p.name) p.name = file.name.replace(/\.(snorbcad|json)$/i, '');
+      await openInTab(p, null, `Opened “${file.name}” from this computer. Save puts it on the printer or back in a file.`);
+      markClean();
+      renderTabs();
+    } catch (e: any) { flash(`Couldn't open “${file.name}”: ${e?.message || e}`); }
+  }
+  const pickFile = () => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.snorbcad,.json,application/json';
+    inp.onchange = () => { const f = inp.files?.[0]; if (f) openFile(f); };
+    inp.click();
+  };
+  $('#ds-save').onclick = () => { saveAsk(); };
   // ---------------------------------------------------------- the library
   // Three shelves: parts saved on the printer (with a picture of each),
   // models from the printer's library (STL), and footprints to drop on.
@@ -790,6 +906,12 @@ export function mount(root: HTMLElement, studio: Studio) {
     let listErr = '';
     try { list = (await (await fetch(API.slice(0, -1))).json()).designs || []; } catch (e: any) { listErr = `Couldn't reach the printer for saved parts (${e.message}).`; }
     try { lib = ((await (await fetch('/studio-api/models')).json()).models || []).filter((m: any) => /\.stl$/i.test(m.name)); } catch { /* no library */ }
+    let mine: Footprint[] = [];
+    try {
+      const names: { name: string }[] = (await (await fetch(FP_API.slice(0, -1))).json()).footprints || [];
+      const got = await Promise.all(names.map((n) => fetch(`${FP_API}${encodeURIComponent(n.name)}.json`).then((r) => r.ok ? r.json() as Promise<SavedFootprint> : null).catch(() => null)));
+      mine = got.filter((x): x is SavedFootprint => !!x && Array.isArray(x.features)).map(savedFootprint);
+    } catch { /* none saved */ }
     const designs = new Set(list.map((d) => d.name));
     const libOnly = lib.filter((m) => !designs.has(m.name.replace(/\.stl$/i, '')));
     let shelf = 'parts';
@@ -800,16 +922,17 @@ export function mount(root: HTMLElement, studio: Studio) {
     const card = document.createElement('div');
     card.className = 'ds-dialog ds-lib';
     card.innerHTML = `<h3>Library</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
-      <div class="ds-dialog-foot"><button class="btn sm ghost" id="ds-lib-cancel">Close</button></div>`;
+      <div class="ds-dialog-foot"><button class="btn sm ghost ds-lib-file" id="ds-lib-file" title="Open a .snorbcad file saved on this computer">Open a file…</button><span class="spacer"></span><button class="btn sm ghost" id="ds-lib-cancel">Close</button></div>`;
     box.appendChild(card);
     root.appendChild(box);
     const close = () => { box.remove(); window.removeEventListener('keydown', onKey, true); };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
     window.addEventListener('keydown', onKey, true);
     (card.querySelector('#ds-lib-cancel') as HTMLButtonElement).onclick = close;
+    (card.querySelector('#ds-lib-file') as HTMLButtonElement).onclick = () => { close(); pickFile(); };
     box.addEventListener('pointerdown', (e) => { if (e.target === box) close(); });
     const tabs = card.querySelector('.ds-lib-tabs') as HTMLElement, body = card.querySelector('.ds-lib-body') as HTMLElement;
-    const shelves: [string, string][] = [['parts', `My parts (${list.length})`], ['models', `Models (${libOnly.length})`], ['footprints', 'Footprints']];
+    const shelves: [string, string][] = [['parts', `My parts (${list.length})`], ['models', `Models (${libOnly.length})`], ['footprints', `Footprints (${FOOTPRINTS.length + mine.length})`]];
 
     const tile = (title: string, sub: string, pic: string, open: () => void, extra?: HTMLElement) => {
       const t = document.createElement('div');
@@ -852,13 +975,9 @@ export function mount(root: HTMLElement, studio: Studio) {
           const pic = d.thumb ? `<img src="${d.thumb}" alt="">` : '<i class="ds-tile-none">no picture yet<br>(saved before pictures)</i>';
           grid.appendChild(tile(d.name, new Date(d.modified * 1000).toLocaleDateString(), pic, async () => {
             close();
-            if (!await okToLeave()) return;
             try {
               const p = await (await fetch(`${API}${encodeURIComponent(d.name)}.json`)).json();
-              st.load(p);
-              setSavedAs(d.name);
-              sheet.fit();
-              flash(`Opened “${d.name}”.`);
+              await openInTab(p, d.name, `Opened “${d.name}”.`);
             } catch (e: any) { flash(`Couldn't open it: ${e.message}`); }
           }, del));
         }
@@ -866,17 +985,32 @@ export function mount(root: HTMLElement, studio: Studio) {
         note = libOnly.length ? 'STL models from the printer’s library: one opens as the body, to add and cut shapes on.' : 'No other models in the printer’s library.';
         for (const m of libOnly) grid.appendChild(tile(m.name, `${Math.round(m.size / 1024)} KB`, '<i class="ds-tile-none">STL</i>', () => { close(); openModel(m.name); }));
       } else {
-        note = 'Click one to drop it on the middle of this part (on the floor of a hollow box), then drag it where it goes. They are ordinary shapes: change or delete any of them. Sizes are the usual ones: check against your part.';
-        for (const fp of FOOTPRINTS) {
-          grid.appendChild(tile(fp.name, fp.note, footprintSvg(fp), () => {
+        note = 'Click one to drop it on the middle of this part (on the floor of a hollow box), then drag it where it goes. They are ordinary shapes: change or delete any of them. Sizes are the usual ones: check against your part. Save › Footprints adds your own.';
+        for (const fp of [...mine, ...FOOTPRINTS]) {
+          let del: HTMLElement | undefined;
+          if (fp.mine) {
+            const b = document.createElement('button');
+            b.className = 'ds-tile-del'; b.textContent = '×'; b.title = 'Delete this footprint from the printer';
+            let armed = false;
+            b.onclick = async () => {
+              if (!armed) { armed = true; b.textContent = 'Delete?'; b.classList.add('armed'); return; }
+              await fetch(`${FP_API}${encodeURIComponent(fp.name)}.json`, { method: 'DELETE' });
+              mine = mine.filter((x) => x !== fp);
+              show('footprints');
+            };
+            del = b;
+          }
+          grid.appendChild(tile(fp.name, fp.mine ? `Yours · ${fp.note}` : fp.note, footprintSvg(fp), () => {
             close();
             const feats = placeFootprint(fp, st.p);
+            if (feats.length > 1) { const g = newId(); for (const f of feats) f.group = g; }    // it moves as one; ⇧⌘G frees the shapes
             st.change((p) => { p.features.push(...feats); });
             st.setTool('select');
             st.select(feats.map((f) => f.id));
-            st.activeView = 'top';
+            st.activeView = fp.view || 'top';
+            if (!st.p.views.includes(st.activeView)) st.change((p) => { p.views = [...p.views, st.activeView]; });
             flash(`${fp.name}: drag it into place (the group moves together).`);
-          }));
+          }, del));
         }
       }
       const n = document.createElement('p'); n.className = 'ds-note'; n.textContent = note;
@@ -935,6 +1069,8 @@ export function mount(root: HTMLElement, studio: Studio) {
   const dropTarget = $('#ds-sheet') as HTMLElement;
   dropTarget.addEventListener('dragover', (e) => { if ([...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file')) e.preventDefault(); });
   dropTarget.addEventListener('drop', (e) => {
+    const part = [...(e.dataTransfer?.files || [])].find((x) => /\.snorbcad$/i.test(x.name));
+    if (part) { e.preventDefault(); e.stopPropagation(); openFile(part); return; }
     const f = [...(e.dataTransfer?.files || [])].find((x) => /\.svg$/i.test(x.name) || x.type === 'image/svg+xml');
     if (!f) return;
     e.preventDefault();
@@ -1239,11 +1375,17 @@ export function mount(root: HTMLElement, studio: Studio) {
     if ((e.metaKey || e.ctrlKey) && k === '0') { e.preventDefault(); sheet.fit(); return; }
     if ((e.metaKey || e.ctrlKey) && k === '1') { e.preventDefault(); sheet.zoomBy(100 / sheet.zoomPct); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'a') { e.preventDefault(); st.select(st.p.features.filter(isShape).map((f) => f.id)); return; }
-    if ((e.metaKey || e.ctrlKey) && k === 's') { e.preventDefault(); save(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === 's') { e.preventDefault(); quickSave(); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'c') { if (st.copy()) { e.preventDefault(); flash('Copied: ⌘V pastes here or in the other part tab'); } return; }
     if ((e.metaKey || e.ctrlKey) && k === 'x') { if (st.copy()) { e.preventDefault(); st.deleteSelected(); } return; }
     if ((e.metaKey || e.ctrlKey) && k === 'v') { e.preventDefault(); if (st.paste(st.activeView)) sheet.relayout(); return; }
     if ((e.metaKey || e.ctrlKey) && k === 'd') { e.preventDefault(); if (st.duplicate(st.activeView)) sheet.relayout(); return; }
+    if ((e.metaKey || e.ctrlKey) && k === 'g') {
+      e.preventDefault();
+      if (e.shiftKey) { const n = st.ungroup(); flash(n ? `Ungrouped${n > 1 ? ` ${n} groups` : ''}: the shapes are loose again.` : 'Nothing grouped is selected.'); }
+      else { const n = st.group(); flash(n ? `Grouped ${n} shapes: a click picks them all, double-click picks one. ⇧⌘G ungroups.` : 'Select two or more shapes to group them.'); }
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }

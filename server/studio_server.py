@@ -26,6 +26,7 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
                                            is already used, unless ?replace=1
   DELETE /studio-api/designs/<name>.json
   GET/PUT/DELETE /studio-api/cam[/<name>.json]   SnorbCAM jobs, the same way
+  GET/PUT/DELETE /studio-api/footprints[/<name>.json]   SnorbCAD footprints (Save › Footprints)
 """
 import base64
 import json
@@ -52,8 +53,9 @@ SLICER = shutil.which("prusa-slicer") or "/usr/bin/prusa-slicer"
 MODEL_EXT = (".stl", ".3mf", ".obj")
 DESIGNS = os.path.join(HOME, "printer_data", "design")
 CAMJOBS = os.path.join(HOME, "printer_data", "cam")
-# JSON stores: SnorbCAD parts and SnorbCAM jobs
-STORES = {"designs": DESIGNS, "cam": CAMJOBS}
+FOOTPRINTS = os.path.join(HOME, "printer_data", "design-footprints")
+# JSON stores: SnorbCAD parts, SnorbCAD footprints the owner saved, SnorbCAM jobs
+STORES = {"designs": DESIGNS, "footprints": FOOTPRINTS, "cam": CAMJOBS}
 
 # What the UI offers.  Values are PrusaSlicer config keys.
 QUALITY = {
