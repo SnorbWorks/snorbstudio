@@ -55,3 +55,18 @@ test('reset puts one copy back; detach unlinks it', () => {
   assert.equal(copiesOf(p, 'pair').length, 1);
   assert.equal(p.features.length, 4);
 });
+
+test('a copy on another face stays a copy (not "changed") and updates there', async () => {
+  const { insertCopy: ins } = await import('./build/components.mjs');
+  const { p, def, first } = setup();
+  const side = ins(p, def, 'front');
+  p.features.push(...side);
+  const inst = side[0].comp.inst;
+  assert.equal(side[0].view, 'front');
+  assert.equal(side[0].d0, nearDepth('front', p));
+  assert.equal(differs(p, inst), false);
+  members(p, first)[0].r = 3;
+  updateCopies(p, defFromCopy(p, first));
+  assert.equal(members(p, inst)[0].r, 3);
+  assert.equal(members(p, inst)[0].view, 'front');
+});

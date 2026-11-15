@@ -1555,7 +1555,8 @@ export class Sheet {
     const selected = new Set(st.sels);
     for (const view of p.views) {
       const b = this.placed[view].box;
-      parts.push(`<rect class="ds-viewbox" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}"/>`);
+      // the active view (the last one clicked): paste and Insert… land on it
+      parts.push(`<rect class="ds-viewbox${view === st.activeView && p.views.length > 1 ? ' ds-active' : ''}" x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="${px(6)}"/>`);
       // the drawing area, faint, behind everything
       const ab = areaBox(p);
       if (ab) {

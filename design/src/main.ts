@@ -1013,6 +1013,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       const got = await Promise.all(names.map((n) => fetch(`${FP_API}${encodeURIComponent(n.name)}.json`).then((r) => r.ok ? r.json() as Promise<SavedFootprint> : null).catch(() => null)));
       mine = got.filter((x): x is SavedFootprint => !!x && Array.isArray(x.features)).map(savedFootprint);
     } catch { /* none saved */ }
+    // what goes in lands on the view last clicked
+    const onto = st.p.views.includes(st.activeView) ? st.activeView : st.p.views[0];
     let comps: CompDef[] = [];
     if (mode === 'insert') comps = await listComponents();
     const designs = new Set(list.map((d) => d.name));
@@ -1024,7 +1026,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     box.className = 'ds-modal';
     const card = document.createElement('div');
     card.className = 'ds-dialog ds-lib';
-    card.innerHTML = `<h3>${mode === 'open' ? 'Library' : 'Insert into this part'}</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
+    card.innerHTML = `<h3>${mode === 'open' ? 'Library' : `Insert on the ${VIEWS[onto].label.toLowerCase()} view`}</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
       <div class="ds-dialog-foot"><button class="btn sm ghost ds-lib-file" id="ds-lib-file" title="Open a .snorbcad file saved on this computer">Open a file…</button><span class="spacer"></span><button class="btn sm ghost" id="ds-lib-cancel">Close</button></div>`;
     box.appendChild(card);
     root.appendChild(box);
@@ -1111,14 +1113,12 @@ export function mount(root: HTMLElement, studio: Studio) {
             st.change((p) => {
               // copies already here catch up first, if the printer has a newer one
               if (p.components?.[def.name] && p.components[def.name].modified < def.modified) updateCopies(p, def);
-              feats = insertCopy(p, def);
+              feats = insertCopy(p, def, onto);
               p.features.push(...feats);
-              if (!p.views.includes(def.view)) p.views = [...p.views, def.view];
             });
             st.setTool('select');
-            st.activeView = def.view;
             st.select(feats.map((f) => f.id));
-            flash(`A copy of “${def.name}”: drag it into place. Double-click one of its shapes to change it, then Update every copy.`);
+            flash(`A copy of “${def.name}” on the ${VIEWS[onto].label.toLowerCase()} view: drag it into place. Double-click one of its shapes to change it, then Update every copy.`);
           }, b));
         }
       } else {
@@ -1139,14 +1139,12 @@ export function mount(root: HTMLElement, studio: Studio) {
           }
           grid.appendChild(tile(fp.name, fp.mine ? `Yours · ${fp.note}` : fp.note, footprintSvg(fp), () => {
             close();
-            const feats = placeFootprint(fp, st.p);
+            const feats = placeFootprint(fp, st.p, onto);
             if (feats.length > 1) { const g = newId(); for (const f of feats) f.group = g; }    // it moves as one; ⇧⌘G frees the shapes
             st.change((p) => { p.features.push(...feats); });
             st.setTool('select');
             st.select(feats.map((f) => f.id));
-            st.activeView = fp.view || 'top';
-            if (!st.p.views.includes(st.activeView)) st.change((p) => { p.views = [...p.views, st.activeView]; });
-            flash(`${fp.name}: drag it into place (the group moves together).`);
+            flash(`${fp.name} on the ${VIEWS[onto].label.toLowerCase()} view: drag it into place (the group moves together).`);
           }, del));
         }
       }

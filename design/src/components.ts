@@ -43,7 +43,7 @@ const round = (n: number) => Math.round(n * 1e4) / 1e4;
 /** A shape as the definition holds it: relative to the copy's origin, no ids or links. */
 function plain(f: Feature, o: [number, number, number]): string {
   const c: any = JSON.parse(JSON.stringify(f));
-  delete c.id; delete c.comp; delete c.group; delete c.refs;
+  delete c.id; delete c.comp; delete c.group; delete c.refs; delete c.view;
   c.cu = round(c.cu - o[0]); c.cv = round(c.cv - o[1]); c.d0 = round(c.d0 - o[2]); c.d1 = round(c.d1 - o[2]);
   return JSON.stringify(c, Object.keys(c).sort());
 }
@@ -64,7 +64,7 @@ export function defFromCopy(p: Project, inst: string): CompDef | null {
   const old = ms[0] && p.components?.[ms[0].comp!.name];
   const o = origin(p, inst);
   if (!old || !o) return null;
-  const features = ms.map((m) => JSON.parse(plain(m, o)) as Feature);
+  const features = ms.map((m) => ({ ...JSON.parse(plain(m, o)), view: old.view }) as Feature);
   return { ...old, features, modified: Date.now() };
 }
 
@@ -89,9 +89,9 @@ export function linkCopy(p: Project, shapes: Feature[], def: CompDef) {
 }
 
 /** A new copy dropped on the part (the middle of the face, like a footprint). */
-export function insertCopy(p: Project, def: CompDef): Feature[] {
+export function insertCopy(p: Project, def: CompDef, onto?: ViewName): Feature[] {
   const inst = newId();
-  const fs = placeFootprint(compFootprint(def), p).map((f, k) => ({ ...f, comp: { name: def.name, inst, k }, group: inst }));
+  const fs = placeFootprint(compFootprint(def), p, onto).map((f, k) => ({ ...f, comp: { name: def.name, inst, k }, group: inst }));
   p.components = { ...(p.components || {}), [def.name]: def };
   return fs;
 }
@@ -107,7 +107,7 @@ export function updateCopies(p: Project, def: CompDef, only?: string): number {
     const fresh = def.features.map((d, k) => {
       const keep = ms.find((m) => m.comp!.k === k);
       const f: Feature = JSON.parse(JSON.stringify(d));
-      return { ...f, id: keep?.id ?? newId(), cu: d.cu + o[0], cv: d.cv + o[1], d0: d.d0 + o[2], d1: d.d1 + o[2], comp: { name: def.name, inst, k }, group: inst };
+      return { ...f, view: ms[0]?.view ?? def.view, id: keep?.id ?? newId(), cu: d.cu + o[0], cv: d.cv + o[1], d0: d.d0 + o[2], d1: d.d1 + o[2], comp: { name: def.name, inst, k }, group: inst };
     });
     p.features = p.features.filter((f) => f.comp?.inst !== inst);
     p.features.splice(Math.max(0, Math.min(at, p.features.length)), 0, ...fresh);

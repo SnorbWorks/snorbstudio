@@ -1,7 +1,7 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, withGroups, DEFAULT_FIT, type P2 } from './model.js';
+import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, withGroups, profile, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
@@ -174,7 +174,10 @@ export class State {
     const feats = this.p.features.filter((f) => ids.has(f.id) || (f.type === 'fillet' && f.fillet?.refs?.length && f.fillet.refs.every((r) => r && ids.has(r.owner))));
     const dims = (this.p.dims || []).filter((d) => ids.has(d.target));
     const comps = Object.fromEntries([...new Set(feats.map((f) => f.comp?.name).filter(Boolean))].map((n) => [n, this.p.components?.[n!]]).filter(([, d]) => d));
-    try { localStorage.setItem(CLIP_KEY, JSON.stringify({ features: feats, dims, comps, n: 0 })); } catch { return 0; }
+    // the face the shapes were drawn on, so a paste can put them on another view's face at the same depths
+    const views = [...new Set(feats.filter(isShape).map((f) => f.view))];
+    const from = views.length === 1 ? { view: views[0], near: nearDepth(views[0], this.p) } : null;
+    try { localStorage.setItem(CLIP_KEY, JSON.stringify({ features: feats, dims, comps, from, n: 0 })); } catch { return 0; }
     return ids.size;
   }
 
@@ -186,14 +189,21 @@ export class State {
    * original; into another part, in the same place.
    */
   paste(view: ViewName, step = 5): number {
-    let clip: { features: Feature[]; dims: any[]; comps?: Record<string, any>; n: number } | null = null;
+    let clip: { features: Feature[]; dims: any[]; comps?: Record<string, any>; from?: { view: ViewName; near: number } | null; n: number } | null = null;
     try { clip = JSON.parse(localStorage.getItem(CLIP_KEY) || 'null'); } catch { /* none */ }
     if (!clip || !clip.features.length) return 0;
     const same = clip.features.some((f) => this.feature(f.id));
     clip.n = same ? (clip.n || 0) + 1 : 0;
     try { localStorage.setItem(CLIP_KEY, JSON.stringify(clip)); } catch { /* fine */ }
     const V = VIEWS[view];
-    const off: Vec3 = same ? V.toWorld(step * clip.n, -step * clip.n, 0) : [0, 0, 0];
+    const turned = !!clip.from && clip.from.view !== view;     // onto another face: in its middle, no step
+    const off: Vec3 = same && !turned ? V.toWorld(step * clip.n, -step * clip.n, 0) : [0, 0, 0];
+    // shapes all from one face go onto the active view's face, the same depths in from it
+    // (roundings stay behind: their edges belong to where the shapes were)
+    const from = clip.from;
+    const moveFace = !!from && (from.view !== view || !same);
+    const dNear = from ? nearDepth(view, this.p) - from.near : 0;
+    if (moveFace && from!.view !== view) clip.features = clip.features.filter((f) => f.type !== 'fillet');
     const map = new Map<string, string>();
     for (const f of clip.features) map.set(f.id, newId());
     const groups = new Map<string, string>();      // a pasted group is a new group of its own
@@ -201,6 +211,7 @@ export class State {
     const added: Feature[] = clip.features.map((f) => {
       const g: Feature = JSON.parse(JSON.stringify(f));
       g.id = map.get(f.id)!;
+      if (moveFace && isShape(g)) { g.view = view; g.d0 += dNear; g.d1 += dNear; }
       if (g.group) g.group = groups.get(g.group);
       // a pasted copy of a component is another copy of it (the component comes along into another part)
       if (g.comp) {
@@ -217,7 +228,18 @@ export class State {
       if (g.mirror) g.mirror = { ...g.mirror, at: g.mirror.at + off[g.mirror.axis] };
       return g;
     });
-    const dims = clip.dims.map((d) => ({ ...d, id: newId(), target: map.get(d.target) ?? d.target }));
+    if (turned) {
+      // centre the shapes on the middle of this view's face
+      const pts = added.filter(isShape).flatMap((f) => profile(f, 16));
+      if (pts.length) {
+        const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+        const s0 = this.p.stock, mid: Vec3 = s0.off ? [0, 0, 0] : [0, 1, 2].map((i) => (s0.min[i] + s0.max[i]) / 2) as Vec3;
+        const [mu, mv] = VIEWS[view].toView(mid);
+        const du = mu - (Math.min(...xs) + Math.max(...xs)) / 2, dv = mv - (Math.min(...ys) + Math.max(...ys)) / 2;
+        for (const g of added) if (isShape(g)) { g.cu += du; g.cv += dv; }
+      }
+    }
+    const dims = clip.dims.map((d) => ({ ...d, id: newId(), target: map.get(d.target) ?? d.target, ...(moveFace && d.view === from!.view ? { view } : {}) }));
     this.change((p) => {
       p.features.push(...added);
       p.dims = [...(p.dims || []), ...dims];

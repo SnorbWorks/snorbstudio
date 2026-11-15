@@ -124,8 +124,8 @@ export const FOOTPRINTS: Footprint[] = [
  * A footprint's shapes placed on a part: centred on the body's top face, or
  * on the floor of a hollow body open at the top.
  */
-export function placeFootprint(fp: Footprint, p: Project): Feature[] {
-  const view = fp.view || 'top';
+export function placeFootprint(fp: Footprint, p: Project, onto?: ViewName): Feature[] {
+  const view = onto || fp.view || 'top';
   const cav = shellCavity(p);
   const open = p.shell?.open;
   const s = p.stock;

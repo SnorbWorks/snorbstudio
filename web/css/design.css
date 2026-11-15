@@ -374,3 +374,4 @@
 .ds-hidetoggle.active .ds-eye-off { display: none; }
 .ds-big { font-size: 20px; font-weight: 700; color: var(--text); margin: 2px 0 4px; }
 .ds-comp-changed { color: var(--accent); }
+.ds-viewbox.ds-active { stroke: #b04aa5; stroke-opacity: .55; stroke-width: 1.5px; vector-effect: non-scaling-stroke; fill: rgba(176,74,165,.045); }
