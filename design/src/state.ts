@@ -26,7 +26,7 @@ export function defaultFit(): number {
 export function rememberFit(v: number) { try { localStorage.setItem(FIT_KEY, String(v)); } catch { /* private mode */ } }
 
 /** How the sheet is drawn (the Views tab): the owner's, not saved with the part. */
-export interface ViewOpts { projLines: boolean; hidden: boolean }
+export interface ViewOpts { projLines: boolean; hidden: boolean; rulers: boolean; guides: boolean }
 
 export class State {
   p: Project = newProject();
@@ -39,7 +39,7 @@ export class State {
   polygonSides = 6;                   // the polygon tool's last choice
   lastHole: HoleSpec = defaultHole();  // the hole tool starts from the last hole made
   repick: string | null = null;       // the edge tool is re-picking this fillet's edges
-  viewOpts: ViewOpts = { projLines: true, hidden: true };
+  viewOpts: ViewOpts = { projLines: true, hidden: true, rulers: true, guides: true };
   built: BuildResult | null = null;
   buildError = '';
   private undoStack: string[] = [];
@@ -137,6 +137,8 @@ export class State {
       p.features = p.features.filter((f) => !del.has(f.id));
       // dimensions go with what they measure
       p.dims = (p.dims || []).filter((d) => !del.has(d.id) && !del.has(d.target));
+      if (p.measures) p.measures = p.measures.filter((m) => !del.has(m.id));
+      if (p.rulerGuides) p.rulerGuides = p.rulerGuides.filter((g) => !del.has(g.id));
     });
     this.select([]);
   }
@@ -256,6 +258,8 @@ export class State {
 
   feature(id: string | null): Feature | undefined { return this.p.features.find((f) => f.id === id); }
   dim(id: string | null) { return (this.p.dims || []).find((d) => d.id === id); }
+  guide(id: string | null) { return (this.p.measures || []).find((m) => m.id === id); }
+  rulerGuide(id: string | null) { return (this.p.rulerGuides || []).find((g) => g.id === id); }
 }
 
 // ------------------------------------------------------------ items

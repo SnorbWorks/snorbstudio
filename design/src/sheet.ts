@@ -28,7 +28,9 @@ type Drag =
   | { kind: 'move'; ids: string[]; view: ViewName; u0: number; v0: number; orig: string; started: boolean; sx: number; sy: number }
   | { kind: 'zoom'; x0: number; y0: number; x1: number; y1: number; out: boolean; started: boolean; sx: number; sy: number }
   | { kind: 'rotate'; ids: string[]; view: ViewName; pu: number; pv: number; a0: number; deg: number; orig: string; started: boolean; sx: number; sy: number }
-  | { kind: 'measure'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
+  | { kind: 'measure'; view: ViewName; u0: number; v0: number; u1: number; v1: number; sx: number; sy: number }
+  | { kind: 'rguide'; id: string | null; view: ViewName; axis: number; vertical: boolean; value: number; started: boolean; sx: number; sy: number; overRuler: boolean }
+  | { kind: 'mguide'; id: string; dx: number; dy: number; x0: number; y0: number; started: boolean; sx: number; sy: number; overRuler: boolean }
   | { kind: 'section'; view: ViewName; u0: number; v0: number; u1: number; v1: number }
   | { kind: 'box'; x0: number; y0: number; x1: number; y1: number; add: boolean; onStock: boolean; view: ViewName | null; started: boolean; sx: number; sy: number };
 
@@ -64,6 +66,9 @@ const CURSORS: Record<string, string> = {
     + `<g stroke='black' stroke-width='1.6'><path d='M5 15a8 8 0 0 1 10-10'/><path d='M3 11l2 4 4-2M12 3l3 2-2 4'/></g></g></svg>`)}") 9 9, alias`,
 };
 
+/** How thick the rulers are (screen px); the part tabs sit just inside them. */
+export const RULER_PX = 18;
+
 export class Sheet {
   svg: SVGSVGElement;
   zoom = 6;                 // px per mm
@@ -93,11 +98,20 @@ export class Sheet {
   private lastClick: { t: number; x: number; y: number } | null = null;
   onRotate: () => void = () => {};               // the rotate tool picked shapes: open its box
   measure: { view: ViewName; a: P2; b: P2 } | null = null;   // the measure tool's last reading
+  private trail: { view: ViewName; a: P2; b: P2 } | null = null;   // the measure tool, clicked once: follows the pointer until the next click drops a guide
+  private trailDropped = 0;                                        // when a guide was dropped (the second click of a double-click is not a new start)
+  private guideHits: { id: string; x: number; y: number; w: number; h: number; a: [number, number]; b: [number, number] }[] = [];
+  private rguideHits: { id: string; view: ViewName; vertical: boolean; at: number }[] = [];   // ruler guides as drawn: a sheet x (vertical) or y
+  private rulers: HTMLCanvasElement;
+  private ptr: [number, number] | null = null;      // the pointer, in px from the sheet's corner (the rulers mark it)
 
   constructor(private host: HTMLElement, private st: State) {
     this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     this.svg.classList.add('ds-sheet');
     host.appendChild(this.svg);
+    this.rulers = document.createElement('canvas');
+    this.rulers.className = 'ds-rulers';
+    host.appendChild(this.rulers);
     this.relayout();
     this.svg.addEventListener('pointerdown', (e) => this.down(e));
     this.svg.addEventListener('pointermove', (e) => this.moveEvt(e));
@@ -106,11 +120,12 @@ export class Sheet {
     this.svg.addEventListener('wheel', (e) => this.wheel(e), { passive: false });
     this.svg.addEventListener('contextmenu', (e) => e.preventDefault());
 
-    this.svg.addEventListener('pointerleave', () => { this.cursor = null; this.status(); });
+    this.svg.addEventListener('pointerleave', () => { this.cursor = null; this.ptr = null; this.status(); this.drawRulers(); });
     window.addEventListener('keydown', (e) => {
       if (e.code === 'Space' && !isTyping() && !this.spaceDown) { this.spaceDown = true; this.setCursor(); }
       if (e.key === 'Alt') { this.altDown = true; this.setCursor(); }
       if (e.key === 'Shift' && !this.shiftDown) { this.shiftDown = true; if (this.line) this.render(); }
+      if (this.trail && e.key === 'Escape' && !isTyping()) { e.preventDefault(); e.stopImmediatePropagation(); this.trail = null; this.render(); this.status(); }
       if (this.line && !isTyping()) {
         if (e.key === 'Enter') { e.preventDefault(); this.finishLine(); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); this.line = null; this.render(); }
@@ -203,10 +218,13 @@ export class Sheet {
         x0 = Math.min(x0, x - 4); x1 = Math.max(x1, x + 4); y0 = Math.min(y0, y - 3); y1 = Math.max(y1, y + 3);
       }
     }
+    // the rulers take a strip off the top and left
+    const R = this.rulersOn() ? RULER_PX : 0;
+    w -= R; h -= R;
     const z = Math.min((w - 40) / (x1 - x0), (h - 46) / (y1 - y0), 60);
     this.zoom = z;
-    this.panX = (w - (x1 - x0) * z) / 2 - x0 * z;
-    this.panY = (h - 10 - (y1 - y0) * z) / 2 - y0 * z;
+    this.panX = R + (w - (x1 - x0) * z) / 2 - x0 * z;
+    this.panY = R + (h - 10 - (y1 - y0) * z) / 2 - y0 * z;
   }
 
   /** Re-fit after the model changes, unless the owner has zoomed or panned. */
@@ -417,6 +435,9 @@ export class Sheet {
     const add = (axis: number, v: number) => out[axis].add(Math.round(v * 1e4) / 1e4);
     const s = this.st.p.stock;
     for (let i = 0; i < 3; i++) { add(i, s.min[i]); add(i, s.max[i]); add(i, (s.min[i] + s.max[i]) / 2); }
+    // ruler guides (not the one being dragged)
+    const dr = this.drag;
+    for (const g of this.st.p.rulerGuides || []) if (!(dr && dr.kind === 'rguide' && dr.id === g.id) && !exclude.has(g.id)) add(g.axis, g.value);
     for (const f of this.st.p.features) {
       if (exclude.has(f.id)) continue;
       const it = itemFor(this.st, f.id);
@@ -506,6 +527,37 @@ export class Sheet {
       return;
     }
     const [x, y] = this.screenToSheet(e);
+    // a ruler: drag a guide out of it (top ruler: a level guide, left ruler: a plumb one)
+    if (this.rulersOn() && this.st.tool !== 'zoom') {
+      const r = this.svg.getBoundingClientRect(), qx = e.clientX - r.left, qy = e.clientY - r.top;
+      const top = qy < RULER_PX && qx >= RULER_PX, left = qx < RULER_PX && qy >= RULER_PX;
+      if (top || left) {
+        const view = this.st.p.views.includes(this.st.activeView) ? this.st.activeView : this.st.p.views[0];
+        const V = VIEWS[view];
+        const [axis] = axisOf(left ? V.uDir : V.vDir);
+        this.trail = null;
+        this.drag = { kind: 'rguide', id: null, view, axis, vertical: left, value: NaN, started: false, sx: e.clientX, sy: e.clientY, overRuler: true };
+        this.render();
+        return;
+      }
+      if (qx < RULER_PX && qy < RULER_PX) return;
+    }
+    // guides: a measure guide (its tag or line) or a ruler guide's line; drag one onto a ruler to delete it
+    if (!this.trail && (this.st.tool === 'select' || this.st.tool === 'measure')) {
+      const gh = this.guideAt(x, y);
+      if (gh) {
+        this.st.select([gh.id]);
+        this.drag = { kind: 'mguide', id: gh.id, dx: 0, dy: 0, x0: x, y0: y, started: false, sx: e.clientX, sy: e.clientY, overRuler: false };
+        this.render();
+        return;
+      }
+      const rh = this.st.tool === 'select' ? this.rguideAt(x, y) : null;
+      const rg = rh && this.st.rulerGuide(rh.id);
+      if (rh && rg) {
+        this.drag = { kind: 'rguide', id: rh.id, view: rh.view, axis: rg.axis, vertical: rh.vertical, value: rg.value, started: false, sx: e.clientX, sy: e.clientY, overRuler: false };
+        return;
+      }
+    }
     // double-click, by hand: the sheet is redrawn between clicks, so the browser's dblclick never comes
     const now = performance.now(), lc = this.lastClick;
     this.lastClick = { t: now, x: e.clientX, y: e.clientY };
@@ -562,11 +614,28 @@ export class Sheet {
       return;
     }
     if (view && tool === 'line') { this.lineClick(view, x, y, e); return; }
+    if (tool === 'measure' && this.trail) {
+      // the second click: drop the trailing measurement as a guide
+      const t = this.trail;
+      const [u, v] = this.fromSheet(t.view, x, y);
+      const b = this.measurePoint(t.view, u, v, e.altKey, t.a, e.shiftKey);
+      this.trail = null;
+      this.trailDropped = performance.now();
+      if (Math.hypot(b[0] - t.a[0], b[1] - t.a[1]) > 1e-9) {
+        const g = { id: newId(), view: t.view, a: [t.a[0], t.a[1]] as P2, b };
+        this.st.change((p) => { p.measures = [...(p.measures || []), g]; });
+        this.st.select([g.id]);
+      }
+      this.render();
+      this.status();
+      return;
+    }
+    if (tool === 'measure' && performance.now() - this.trailDropped < 450) return;   // the double-click that dropped it
     if (view && tool === 'measure') {
       const [u, v] = this.fromSheet(view, x, y);
       const [su, sv] = this.measurePoint(view, u, v, e.altKey);
       this.measure = null;
-      this.drag = { kind: 'measure', view, u0: su, v0: sv, u1: su, v1: sv };
+      this.drag = { kind: 'measure', view, u0: su, v0: sv, u1: su, v1: sv, sx: e.clientX, sy: e.clientY };
       this.render();
       return;
     }
@@ -686,8 +755,18 @@ export class Sheet {
     this.shiftDown = e.shiftKey; this.altDown = e.altKey;
     const cv = d && 'view' in d && d.view ? d.view : this.viewAt(x, y);
     if (cv && d?.kind !== 'box') { const [u, v] = this.fromSheet(cv, x, y); this.cursor = { view: cv, u, v }; } else this.cursor = null;
+    { const r = this.svg.getBoundingClientRect(); this.ptr = [e.clientX - r.left, e.clientY - r.top]; }
+    if (this.rulersOn()) this.drawRulers();
     if (!d) {
       if (this.line) { this.render(); this.status(); return; }
+      if (this.trail) {
+        const t = this.trail;
+        const [u, v] = this.fromSheet(t.view, x, y);
+        t.b = this.measurePoint(t.view, u, v, e.altKey, t.a, e.shiftKey);
+        this.render();
+        this.status();
+        return;
+      }
       if (this.st.tool === 'edge') {
         const k = cv ? this.edgeAt(cv, x, y) : null;
         if (k !== this.hoverEdge) { this.hoverEdge = k; this.render(); }
@@ -700,6 +779,22 @@ export class Sheet {
       this.panX = d.px + e.clientX - d.x0;
       this.panY = d.py + e.clientY - d.y0;
       this.render();
+      return;
+    }
+    if (d.kind === 'rguide' || d.kind === 'mguide') {
+      if (!d.started) { if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return; d.started = true; }
+      const r = this.svg.getBoundingClientRect(), qx = e.clientX - r.left, qy = e.clientY - r.top;
+      d.overRuler = this.rulersOn() && (qx < RULER_PX || qy < RULER_PX);
+      if (d.kind === 'mguide') { d.dx = x - d.x0; d.dy = y - d.y0; }
+      else {
+        const V = VIEWS[d.view];
+        const [u, v] = this.fromSheet(d.view, x, y);
+        const [, s] = axisOf(d.vertical ? V.uDir : V.vDir);
+        const raw = s * (d.vertical ? u : v);
+        d.value = this.snap(d.axis, raw, this.snapTargets(new Set()), e.altKey).value;
+      }
+      this.render();
+      this.status();
       return;
     }
     if (d.kind === 'box' || d.kind === 'zoom') {
@@ -819,6 +914,26 @@ export class Sheet {
     this.drag = null;
     this.guides = [];
     if (!d) return;
+    if (d.kind === 'rguide') {
+      if (!d.started) {
+        if (d.id) this.st.select([d.id]);          // a click on a ruler guide: select it (⌫ deletes it)
+      } else if (d.overRuler || !Number.isFinite(d.value)) {
+        // dropped back on a ruler: gone
+        if (d.id) { const id = d.id; this.st.change((p) => { p.rulerGuides = (p.rulerGuides || []).filter((g) => g.id !== id); }); }
+      } else {
+        const g = { id: d.id || newId(), axis: d.axis, value: Math.round(d.value * 1e4) / 1e4 };
+        this.st.change((p) => { p.rulerGuides = [...(p.rulerGuides || []).filter((q) => q.id !== g.id), g]; });
+      }
+      this.render();
+      this.status();
+      return;
+    }
+    if (d.kind === 'mguide') {
+      if (d.started && d.overRuler) { const id = d.id; this.st.change((p) => { p.measures = (p.measures || []).filter((m) => m.id !== id); }); this.st.select([]); }
+      this.render();
+      this.status();
+      return;
+    }
     if (d.kind === 'draw') this.finishDraw(d);
     else if (d.kind === 'section') {
       // level unless dragged more up than across; one section per view (a new one takes its place)
@@ -833,7 +948,12 @@ export class Sheet {
       this.relayout();
     }
     else if (d.kind === 'measure') {
-      if (Math.hypot(d.u1 - d.u0, d.v1 - d.v0) > 1e-9) this.measure = { view: d.view, a: [d.u0, d.v0], b: [d.u1, d.v1] };
+      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) {
+        // a click, not a drag: the measurement follows the pointer until the next click drops it as a guide
+        this.trail = { view: d.view, a: [d.u0, d.v0], b: [d.u0, d.v0] };
+        this.measure = null;
+        this.render();
+      } else if (Math.hypot(d.u1 - d.u0, d.v1 - d.v0) > 1e-9) this.measure = { view: d.view, a: [d.u0, d.v0], b: [d.u1, d.v1] };
       this.status();
     }
     else if (d.kind === 'rotate') { if (d.started) { this.relayout(); this.st.changed(); } }
@@ -1312,10 +1432,13 @@ export class Sheet {
       const s = f?.bulges?.[d.k] || 0;
       t += s ? `     arc: bowed ${fmt(Math.abs(s))}   (Option: no snapping; drag back to the side to straighten it)` : '     straight side';
     }
+    if (d && d.kind === 'rguide' && d.started) t += d.overRuler ? '     let go on the ruler to remove the guide' : `     guide at ${'XYZ'[d.axis]} ${fmt(d.value)}   (drag it back onto a ruler to remove it; Option: no snapping)`;
+    if (d && d.kind === 'mguide' && d.started) t += d.overRuler ? '     let go on the ruler to remove the measure guide' : '     drag it onto a ruler to remove it';
     if (d && d.kind === 'rotate' && d.started) t += `     turned ${+d.deg.toFixed(1)}°   (Shift: 15° steps, Option: free)`;
-    const m = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.measure;
-    if (m && this.st.tool === 'measure') t += `     ${this.measureText(m)}`;
-    else if (this.st.tool === 'measure') t += '     drag from one point to another (Shift: level or plumb, Option: no snapping)';
+    const m = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.trail || this.measure;
+    if (this.trail && this.st.tool === 'measure') t += `     ${this.measureText(this.trail)}   (click to drop it as a guide, Esc to cancel)`;
+    else if (m && this.st.tool === 'measure') t += `     ${this.measureText(m)}`;
+    else if (this.st.tool === 'measure') t += '     drag to measure; or click a point, then click another to leave a measure guide (Shift: level or plumb, Option: no snapping)';
     else if (this.st.tool === 'section') t += '     drag a cutting line across a view: level or plumb, it snaps to corners and centres (the view it looks into shows the section)';
     if (this.st.tool === 'edge' && !this.st.built?.edges.length) t += '     Nothing to round yet: make a body first';
     this.onStatus(t);
@@ -1369,6 +1492,7 @@ export class Sheet {
 
   render() {
     if (!this.placed) return;
+    if (this.trail && (this.st.tool !== 'measure' || !this.st.p.views.includes(this.trail.view))) this.trail = null;
     const z = this.zoom;
     const px = (n: number) => n / z;                 // screen px -> sheet mm
     const st = this.st, p = st.p;
@@ -1405,6 +1529,27 @@ export class Sheet {
         if (ua === g.axis) { const [x] = this.toSheet(v, us * g.value, 0); parts.push(`<line class="ds-guide" x1="${x}" y1="${sy0}" x2="${x}" y2="${sy1}"/>`); }
         if (va === g.axis) { const [, y] = this.toSheet(v, 0, vs * g.value); parts.push(`<line class="ds-guide" x1="${sx0}" y1="${y}" x2="${sx1}" y2="${y}"/>`); }
       }
+    }
+
+    // ruler guides: lines dragged out of the rulers, through every view that has their axis
+    this.rguideHits = [];
+    const showGuides = st.viewOpts.guides !== false;
+    {
+      const dr = this.drag && this.drag.kind === 'rguide' ? this.drag : null;
+      const list = showGuides ? (p.rulerGuides || []).filter((g) => !(dr && dr.id === g.id)).map((g) => ({ ...g, cls: st.sels.includes(g.id) ? 'ds-rguide ds-rguide-sel' : 'ds-rguide' })) : [];
+      if (dr && dr.started && Number.isFinite(dr.value)) list.push({ id: dr.id || '-', axis: dr.axis, value: dr.value, cls: `ds-rguide ds-rguide-drag${dr.overRuler ? ' ds-rguide-del' : ''}` });
+      for (const g of list) {
+        const xs = new Set<number>(), ys = new Set<number>();
+        for (const v of p.views) {
+          const V = VIEWS[v];
+          const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir);
+          if (ua === g.axis) { const [gx] = this.toSheet(v, us * g.value, 0); xs.add(+gx.toFixed(5)); this.rguideHits.push({ id: g.id, view: v, vertical: true, at: gx }); }
+          if (va === g.axis) { const [, gy] = this.toSheet(v, 0, vs * g.value); ys.add(+gy.toFixed(5)); this.rguideHits.push({ id: g.id, view: v, vertical: false, at: gy }); }
+        }
+        for (const gx of xs) parts.push(`<line class="${g.cls}" x1="${gx}" y1="${sy0 - 1e4}" x2="${gx}" y2="${sy1 + 1e4}"/>`);
+        for (const gy of ys) parts.push(`<line class="${g.cls}" x1="${sx0 - 1e4}" y1="${gy}" x2="${sx1 + 1e4}" y2="${gy}"/>`);
+      }
+      this.rguideHits = this.rguideHits.filter((h) => h.id !== '-');
     }
 
     const selected = new Set(st.sels);
@@ -1598,18 +1743,32 @@ export class Sheet {
       parts.push(`<rect class="ds-marquee" x="${Math.min(d.x0, d.x1)}" y="${Math.min(d.y0, d.y1)}" width="${Math.abs(d.x1 - d.x0)}" height="${Math.abs(d.y1 - d.y0)}"/>`);
     }
 
-    // the measure tool's reading
-    const mm = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.st.tool === 'measure' ? this.measure : null;
-    if (mm && p.views.includes(mm.view)) {
-      const [ax, ay] = this.toSheet(mm.view, ...mm.a), [bx, by] = this.toSheet(mm.view, ...mm.b);
-      const lab = this.measureText(mm, true), fs = px(11);
+    // a measurement drawn on the sheet: a line, a dot at each end, the distance in a tag
+    const reading = (m: { view: ViewName; a: P2; b: P2 }, cls: string, id?: string) => {
+      const [ax, ay] = this.toSheet(m.view, ...m.a), [bx, by] = this.toSheet(m.view, ...m.b);
+      const lab = this.measureText(m, true), fs = px(11);
       const tw = lab.length * fs * 0.6 + px(8), th = fs * 1.5;
       const tx = (ax + bx) / 2, ty = (ay + by) / 2 - px(14);
-      parts.push(`<g class="ds-measure"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>`
+      if (id) this.guideHits.push({ id, x: tx - tw / 2, y: ty - th / 2, w: tw, h: th, a: [ax, ay], b: [bx, by] });
+      parts.push(`<g class="${cls}"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/>`
         + `<circle cx="${ax}" cy="${ay}" r="${px(3)}"/><circle cx="${bx}" cy="${by}" r="${px(3)}"/>`
         + `<rect x="${tx - tw / 2}" y="${ty - th / 2}" width="${tw}" height="${th}" rx="${px(3)}"/>`
-        + `<text x="${tx}" y="${ty + fs * 0.36}" font-size="${fs}">${lab}</text></g>`);
+        + `<text x="${tx}" y="${ty + fs * 0.36}" font-size="${fs}">${id ? '<title>A measure guide: click to select it, ⌫ deletes it</title>' : ''}${lab}</text></g>`);
+    };
+    // measure guides: measurements left on the sheet (saved with the part, never printed)
+    this.guideHits = [];
+    if (showGuides) {
+      const md = d && d.kind === 'mguide' && d.started ? d : null;
+      for (const g of p.measures || []) {
+        if (!p.views.includes(g.view)) continue;
+        // being dragged (onto a ruler to delete it): it follows the pointer
+        const m = md && md.id === g.id ? { view: g.view, a: [g.a[0] + md.dx, g.a[1] - md.dy] as P2, b: [g.b[0] + md.dx, g.b[1] - md.dy] as P2 } : g;
+        reading(m, `ds-mguide${selected.has(g.id) ? ' ds-mguide-sel' : ''}${md && md.id === g.id && md.overRuler ? ' ds-mguide-del' : ''}`, g.id);
+      }
     }
+    // the measure tool's reading, or the one following the pointer after a click
+    const mm = d && d.kind === 'measure' ? { view: d.view, a: [d.u0, d.v0] as P2, b: [d.u1, d.v1] as P2 } : this.st.tool === 'measure' ? this.trail || this.measure : null;
+    if (mm && p.views.includes(mm.view)) reading(mm, this.trail && mm === this.trail ? 'ds-measure ds-measure-trail' : 'ds-measure');
     if (d && d.kind === 'rotate' && d.started) {
       const [cx, cy] = this.toSheet(d.view, d.pu, d.pv);
       parts.push(`<g class="ds-pivot"><circle cx="${cx}" cy="${cy}" r="${px(4)}"/><path d="M${cx - px(8)} ${cy}h${px(16)}M${cx} ${cy - px(8)}v${px(16)}"/></g>`);
@@ -1645,6 +1804,105 @@ export class Sheet {
     const defs = `<defs><pattern id="ds-hatch" patternUnits="userSpaceOnUse" width="${hs}" height="${hs}" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="${hs}" class="ds-hatch-line" stroke-width="${px(1)}"/></pattern></defs>`;
     this.svg.innerHTML = `${defs}<g transform="matrix(${z} 0 0 ${z} ${this.panX} ${this.panY})">${parts.join('')}</g>`;
     this.setCursor();
+    this.drawRulers();
+  }
+
+  /** A measure guide under a sheet point: its tag, or within a few px of its line. */
+  private guideAt(x: number, y: number) {
+    const tol = 4 / this.zoom;
+    return this.guideHits.find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h)
+      || this.guideHits.find((h) => polyDist([h.a, h.b], x, y, false) <= tol) || null;
+  }
+
+  /** A ruler guide's line within a few px of a sheet point. */
+  private rguideAt(x: number, y: number) {
+    const tol = 4 / this.zoom;
+    let best: (typeof this.rguideHits)[number] | null = null, bd = tol;
+    for (const h of this.rguideHits) { const dd = Math.abs((h.vertical ? x : y) - h.at); if (dd <= bd) { bd = dd; best = h; } }
+    return best;
+  }
+
+  // ------------------------------------------------------------ rulers
+
+  private rulersOn() { return this.st.viewOpts.rulers !== false; }
+
+  /**
+   * Rulers along the top and left edges, like a drawing program's: in the
+   * active view's own coordinates (its 0, 0 is the origin), ticks spaced so
+   * the numbers stay readable at any zoom, a mark where the pointer is.
+   */
+  drawRulers() {
+    const cv = this.rulers;
+    const on = this.rulersOn() && !!this.placed;
+    cv.style.display = on ? '' : 'none';
+    if (!on) return;
+    const W = this.host.clientWidth, H = this.host.clientHeight, R = RULER_PX;
+    const dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      cv.style.width = `${W}px`; cv.style.height = `${H}px`;
+    }
+    const g = cv.getContext('2d');
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const p = this.st.p;
+    const view = p.views.includes(this.st.activeView) ? this.st.activeView : p.views[0];
+    const pl = this.placed[view];
+    if (!pl) return;
+    const inch = p.units === 'in';
+    const unit = inch ? 25.4 : 1;                       // mm per ruler unit
+    const z = this.zoom * unit;                         // px per ruler unit
+    // the smallest 1/2/5 × 10^n step whose numbers are at least ~60 px apart
+    let step = 1;
+    { const want = 60 / z, e = Math.pow(10, Math.floor(Math.log10(want))); step = [1, 2, 5, 10].map((k) => k * e).find((s) => s >= want) || 10 * e; }
+    const minor = step / (String(step / Math.pow(10, Math.floor(Math.log10(step)))).startsWith('2') ? 4 : 5);
+    // screen px of view coordinate 0 on each axis
+    const x0 = this.panX + pl.ou * this.zoom, y0 = this.panY + pl.ov * this.zoom;
+    const css = getComputedStyle(this.host);
+    const bg = css.getPropertyValue('--ds-ruler-bg').trim() || '#f3eef4';
+    const ink = css.getPropertyValue('--ds-ruler-ink').trim() || '#6b5a70';
+    const mark = '#b04aa5';
+    const dr = this.drag;
+    g.fillStyle = dr && (dr.kind === 'rguide' || dr.kind === 'mguide') && dr.started && dr.overRuler ? '#f6d3da' : bg;
+    g.fillRect(0, 0, W, R);
+    g.fillRect(0, 0, R, H);
+    g.strokeStyle = ink; g.fillStyle = ink; g.lineWidth = 1;
+    g.font = '10px ui-monospace, Menlo, monospace';
+    const label = (n: number) => { const r = +n.toFixed(6); return String(Math.abs(r) < 1e-9 ? 0 : r); };
+    g.beginPath();
+    // top: u to the right
+    const u0 = (R - x0) / z, u1 = (W - x0) / z;
+    for (let k = Math.floor(u0 / minor); k * minor <= u1; k++) {
+      const t = k * minor, x = Math.round(x0 + t * z) + 0.5;
+      if (x < R + 1) continue;
+      const big = Math.abs(t / step - Math.round(t / step)) < 1e-6;
+      g.moveTo(x, R); g.lineTo(x, big ? 3 : R - 5);
+      if (big) { g.textBaseline = 'top'; g.textAlign = 'left'; g.fillText(label(t), x + 2, 2); }
+    }
+    // left: v upward (screen y down), numbers turned to read along the ruler
+    const v0 = (y0 - H) / z, v1 = (y0 - R) / z;
+    for (let k = Math.floor(v0 / minor); k * minor <= v1; k++) {
+      const t = k * minor, y = Math.round(y0 - t * z) + 0.5;
+      if (y < R + 1) continue;
+      const big = Math.abs(t / step - Math.round(t / step)) < 1e-6;
+      g.moveTo(R, y); g.lineTo(big ? 3 : R - 5, y);
+      if (big) { g.save(); g.translate(2, y - 2); g.rotate(-Math.PI / 2); g.textBaseline = 'top'; g.textAlign = 'left'; g.fillText(label(t), 0, 0); g.restore(); }
+    }
+    g.stroke();
+    // edges, and the corner square (shows the unit)
+    g.beginPath(); g.moveTo(R - 0.5, R); g.lineTo(R - 0.5, H); g.moveTo(R, R - 0.5); g.lineTo(W, R - 0.5); g.stroke();
+    g.fillStyle = bg; g.fillRect(0, 0, R, R);
+    g.fillStyle = ink; g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = '9px ui-monospace, Menlo, monospace';
+    g.fillText(inch ? 'in' : 'mm', R / 2, R / 2);
+    // where the pointer is
+    if (this.ptr) {
+      const [px, py] = this.ptr;
+      g.strokeStyle = mark; g.lineWidth = 1.5; g.beginPath();
+      if (px >= R) { g.moveTo(px, 0); g.lineTo(px, R); }
+      if (py >= R) { g.moveTo(0, py); g.lineTo(R, py); }
+      g.stroke();
+    }
   }
 }
 

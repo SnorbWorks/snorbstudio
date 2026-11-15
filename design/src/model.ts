@@ -139,6 +139,21 @@ export interface Dim {
   off: number;        // how far from the shape the dimension line sits (mm, outward)
 }
 
+/** A measure guide: a measurement dropped on the sheet (the measure tool, click then click). Not part of the solid. */
+export interface MeasureGuide {
+  id: string;
+  view: ViewName;
+  a: [number, number];
+  b: [number, number];
+}
+
+/** A ruler guide: a line dragged out of a ruler, at one value along a world axis (0 X, 1 Y, 2 Z); shown in every view that has that axis. */
+export interface RulerGuide {
+  id: string;
+  axis: number;
+  value: number;      // mm
+}
+
 export interface Project {
   version: 1;
   base?: { model: string };   // the body is a model from the library (an STL) instead of a block
@@ -156,6 +171,8 @@ export interface Project {
   exprs?: Record<string, string>;      // the body's boxes typed as formulas
   sections?: Section[];                // section views (SECTION A–A): see section.ts
   area?: Area;                         // the drawing area (printer bed, sheet of stock): framed on every view
+  measures?: MeasureGuide[];           // measure guides dropped on the sheet
+  rulerGuides?: RulerGuide[];          // guides dragged out of the rulers (shapes snap to them)
 }
 
 /** The drawing area: width (X) × depth (Y) × height (Z) in mm, centred on X/Y, standing on Z = 0. */
