@@ -27,6 +27,7 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   DELETE /studio-api/designs/<name>.json
   GET/PUT/DELETE /studio-api/cam[/<name>.json]   SnorbCAM jobs, the same way
   GET/PUT/DELETE /studio-api/footprints[/<name>.json]   SnorbCAD footprints (Save › Footprints)
+  GET/PUT/DELETE /studio-api/components[/<name>.json]   SnorbCAD components (Save › Components)
 """
 import base64
 import json
@@ -54,8 +55,9 @@ MODEL_EXT = (".stl", ".3mf", ".obj")
 DESIGNS = os.path.join(HOME, "printer_data", "design")
 CAMJOBS = os.path.join(HOME, "printer_data", "cam")
 FOOTPRINTS = os.path.join(HOME, "printer_data", "design-footprints")
+COMPONENTS = os.path.join(HOME, "printer_data", "design-components")
 # JSON stores: SnorbCAD parts, SnorbCAD footprints the owner saved, SnorbCAM jobs
-STORES = {"designs": DESIGNS, "footprints": FOOTPRINTS, "cam": CAMJOBS}
+STORES = {"designs": DESIGNS, "footprints": FOOTPRINTS, "components": COMPONENTS, "cam": CAMJOBS}
 
 # What the UI offers.  Values are PrusaSlicer config keys.
 QUALITY = {

@@ -111,6 +111,7 @@ export interface Feature {
   teardrop?: boolean; // circle / hole drawn sideways to the bed: a 45° point on top so it prints without support
   revolve?: Revolve;  // spun round a centre line in its view instead of pushed straight in
   group?: string;     // grouped (⌘G): clicking one picks the whole group; double-click picks just this one
+  comp?: { name: string; inst: string; k: number };   // part of a copy of a component (components.ts): which, which copy, which of its shapes
 }
 
 /** Shapes grouped with any of these (the ids plus every other member of their groups). */
@@ -173,6 +174,7 @@ export interface Project {
   area?: Area;                         // the drawing area (printer bed, sheet of stock): framed on every view
   measures?: MeasureGuide[];           // measure guides dropped on the sheet
   rulerGuides?: RulerGuide[];          // guides dragged out of the rulers (shapes snap to them)
+  components?: Record<string, import('./components.js').CompDef>;   // the components this part has copies of, as last seen
 }
 
 /** The drawing area: width (X) × depth (Y) × height (Z) in mm, centred on X/Y, standing on Z = 0. */

@@ -173,7 +173,8 @@ export class State {
     if (!ids.size) return 0;
     const feats = this.p.features.filter((f) => ids.has(f.id) || (f.type === 'fillet' && f.fillet?.refs?.length && f.fillet.refs.every((r) => r && ids.has(r.owner))));
     const dims = (this.p.dims || []).filter((d) => ids.has(d.target));
-    try { localStorage.setItem(CLIP_KEY, JSON.stringify({ features: feats, dims, n: 0 })); } catch { return 0; }
+    const comps = Object.fromEntries([...new Set(feats.map((f) => f.comp?.name).filter(Boolean))].map((n) => [n, this.p.components?.[n!]]).filter(([, d]) => d));
+    try { localStorage.setItem(CLIP_KEY, JSON.stringify({ features: feats, dims, comps, n: 0 })); } catch { return 0; }
     return ids.size;
   }
 
@@ -185,7 +186,7 @@ export class State {
    * original; into another part, in the same place.
    */
   paste(view: ViewName, step = 5): number {
-    let clip: { features: Feature[]; dims: any[]; n: number } | null = null;
+    let clip: { features: Feature[]; dims: any[]; comps?: Record<string, any>; n: number } | null = null;
     try { clip = JSON.parse(localStorage.getItem(CLIP_KEY) || 'null'); } catch { /* none */ }
     if (!clip || !clip.features.length) return 0;
     const same = clip.features.some((f) => this.feature(f.id));
@@ -201,6 +202,11 @@ export class State {
       const g: Feature = JSON.parse(JSON.stringify(f));
       g.id = map.get(f.id)!;
       if (g.group) g.group = groups.get(g.group);
+      // a pasted copy of a component is another copy of it (the component comes along into another part)
+      if (g.comp) {
+        if (!this.p.components?.[g.comp.name] && !clip!.comps?.[g.comp.name]) delete g.comp;
+        else g.comp = { ...g.comp, inst: g.group ?? newId() };
+      }
       if (g.fillet?.refs) {
         g.fillet.refs = g.fillet.refs.map((r) => (r ? { ...r, owner: map.get(r.owner) ?? r.owner } : r));
         g.fillet.edges = g.fillet.edges.map((e) => [e[0] + off[0], e[1] + off[1], e[2] + off[2]] as Vec3);
@@ -212,7 +218,11 @@ export class State {
       return g;
     });
     const dims = clip.dims.map((d) => ({ ...d, id: newId(), target: map.get(d.target) ?? d.target }));
-    this.change((p) => { p.features.push(...added); p.dims = [...(p.dims || []), ...dims]; });
+    this.change((p) => {
+      p.features.push(...added);
+      p.dims = [...(p.dims || []), ...dims];
+      for (const [n, d] of Object.entries(clip!.comps || {})) if (!p.components?.[n]) p.components = { ...(p.components || {}), [n]: d };
+    });
     this.select(added.filter(isShape).map((f) => f.id));
     return added.filter(isShape).length;
   }

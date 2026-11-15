@@ -1,5 +1,6 @@
 // The properties panel: whatever is selected (or the project when nothing is).
 
+import { copiesOf, differs, members } from './components.js';
 import type { Dim, Feature, MeasureGuide, Vec3 } from './model.js';
 import { presetOf } from './newpartdialog.js';
 import { AREA_PRESETS, makeLid, bodyShape, setBodyShape, BODY_NAMES, type BodyShape, cornerRadii, depthRange, sharedCorner, verts, into, isShape, bounds2d, dot, boxCorners, takesFit, hasArcs, canTeardrop, canRevolve, revolveAxis, type RevolveSide } from './model.js';
@@ -23,6 +24,9 @@ export interface PanelHooks {
   unbase(): void;                               // the body back to a plain block
   lid(lid: Project): void;                      // open the matching lid as the other part tab
   fitTest(): void;                              // the fit test plate: find the printer fit
+  compUpdate(inst: string): void;               // a component copy: the component takes its shapes, every copy follows
+  compReset(inst: string): void;                // back to the component
+  compDetach(inst: string): void;               // unlink it (shapes stay)
 }
 
 const NAMES: Record<string, string> = {
@@ -424,10 +428,12 @@ export class Panel {
     const st = this.st;
     const feats = st.sels.map((id) => st.feature(id)).filter((f): f is Feature => !!f && isShape(f));
     const grp = st.oneGroup;
-    const out: HTMLElement[] = [this.h(grp ? `A group of ${st.sels.length} shapes` : `${st.sels.length} things selected`)];
-    if (grp) out.push(this.button('Ungroup (⇧⌘G)', () => st.ungroup(), 'btn ghost sm'));
+    const comp = grp ? st.feature(st.sels[0])?.comp : undefined;
+    const out: HTMLElement[] = [this.h(comp ? `A copy of “${comp.name}”` : grp ? `A group of ${st.sels.length} shapes` : `${st.sels.length} things selected`)];
+    if (comp) out.push(...this.compBox(comp.inst));
+    else if (grp) out.push(this.button('Ungroup (⇧⌘G)', () => st.ungroup(), 'btn ghost sm'));
     else if (feats.length > 1) out.push(this.button('Group (⌘G)', () => st.group(), 'btn ghost sm'));
-    if (grp) out.push(this.h('Click picks the whole group; double-click one shape to pick just it.', 'ds-note'));
+    if (grp && !comp) out.push(this.h('Click picks the whole group; double-click one shape to pick just it.', 'ds-note'));
     const ops = new Set(feats.map((f) => f.op));
     if (feats.length) {
       out.push(this.labelled('Operation', this.seg([['add', 'Add ▲'], ['cut', 'Cut ▼']], ops.size === 1 ? [...ops][0] : '', (v) => st.change(() => {
@@ -439,6 +445,23 @@ export class Panel {
     return out;
   }
 
+  /** A component copy: changed or not, and what to do about it. */
+  private compBox(inst: string): HTMLElement[] {
+    const st = this.st;
+    const name = members(st.p, inst)[0]?.comp?.name || '';
+    const n = copiesOf(st.p, name).length;
+    const out: HTMLElement[] = [];
+    if (differs(st.p, inst)) {
+      out.push(this.h(`This copy has changes. Update every copy makes “${name}” match it (${n > 1 ? `${n} copies here, ` : ''}and copies in other parts when they open).`, 'ds-note ds-comp-changed'));
+      out.push(this.button('Update every copy', () => this.hooks.compUpdate(inst), 'btn primary sm'));
+      out.push(this.button('Reset this copy', () => this.hooks.compReset(inst), 'btn ghost sm'));
+    } else {
+      out.push(this.h(`Linked to the component “${name}”${n > 1 ? `, ${n} copies in this part` : ''}. Double-click a shape to change it; the panel then offers Update every copy.`, 'ds-note'));
+    }
+    out.push(this.button('Detach from component', () => this.hooks.compDetach(inst), 'btn ghost sm', 'Keep the shapes as a plain group, no longer linked'));
+    return out;
+  }
+
   private feature(f: Feature): HTMLElement[] {
     const st = this.st;
     const V = VIEWS[f.view];
@@ -446,6 +469,7 @@ export class Panel {
     const out: HTMLElement[] = [];
     const sketch = Math.abs(f.d0 - f.d1) < 1e-9 && !(f.op === 'cut' && f.through) && !f.revolve;
     out.push(this.h(`${featureName(f)} · drawn on ${V.label.toLowerCase()}${f.far ? ' (far face)' : ''}`));
+    if (f.comp) out.push(this.h(`Part of a copy of “${f.comp.name}”.`, 'ds-note'), ...this.compBox(f.comp.inst));
     const err = st.built?.errors[f.id];
     if (err) out.push(this.h(`Couldn't build this shape: ${err}`, 'ds-note ds-err'));
     else if (sketch) out.push(this.h('A sketch with no depth yet: give it a depth below, or drag its line in a side view.', 'ds-note ds-sk'));

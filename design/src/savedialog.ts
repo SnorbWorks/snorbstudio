@@ -2,7 +2,7 @@
 // footprint (the selected shapes, to drop on other parts), or a file on this
 // computer (anywhere: the Desktop, a backup drive, an email).
 
-export type SaveWhere = 'parts' | 'footprint' | 'file';
+export type SaveWhere = 'parts' | 'footprint' | 'component' | 'file';
 
 export interface SaveAsk {
   name: string;
@@ -41,14 +41,17 @@ export function openSaveDialog(host: HTMLElement, ask: SaveAsk, done: (r: { name
   const list = card.querySelector('.ds-save-where') as HTMLElement;
   const note = card.querySelector('.ds-save-note') as HTMLElement;
   const ok = card.querySelector('[data-k="ok"]') as HTMLButtonElement;
-  let where: SaveWhere = ask.where === 'footprint' && !ask.shapes ? 'parts' : ask.where;
+  let where: SaveWhere = (ask.where === 'footprint' || ask.where === 'component') && !ask.shapes ? 'parts' : ask.where;
 
   const what = ask.selected ? `the ${ask.shapes} selected shape${ask.shapes === 1 ? '' : 's'}` : `all ${ask.shapes} shape${ask.shapes === 1 ? '' : 's'}`;
   const options: { k: SaveWhere; icon: string; title: string; sub: string; off?: string }[] = [
     { k: 'parts', icon: '<path d="M4 7l8-4 8 4-8 4z"/><path d="M4 7v10l8 4 8-4V7"/><path d="M12 11v10"/>', title: 'My parts', sub: 'On the printer, in the Library. Send to Prepare and SnorbCAM find it there.' },
     { k: 'footprint', icon: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2"/><circle cx="8.5" cy="8.5" r="1.6"/><circle cx="15.5" cy="8.5" r="1.6"/><circle cx="8.5" cy="15.5" r="1.6"/><circle cx="15.5" cy="15.5" r="1.6"/>',
-      title: 'Footprints', sub: `Just ${what}, to drop on other parts from Library › Footprints.`,
+      title: 'Footprints', sub: `Just ${what}, to drop on other parts from Insert… › Footprints.`,
       off: ask.shapes ? undefined : 'Draw some holes or shapes first: a footprint is a group of them.' },
+    { k: 'component', icon: '<rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M11 7h3a3 3 0 0 1 3 3v3" stroke-dasharray="2 2"/>',
+      title: 'Components', sub: `${what[0].toUpperCase()}${what.slice(1)} as linked copies: change one, update them all. Insert… › Components puts more in any part.`,
+      off: ask.shapes ? undefined : 'Draw some shapes first: a component is a group of them.' },
     { k: 'file', icon: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M12 11v6M9 14l3 3 3-3"/>', title: 'A file on this computer',
       sub: ask.picker ? 'Pick any folder: the Desktop, a backup drive… Open it again with Library › Open a file…' : 'A .snorbcad file, saved where your browser saves downloads. Open it again with Library › Open a file…' },
   ];
@@ -66,7 +69,8 @@ export function openSaveDialog(host: HTMLElement, ask: SaveAsk, done: (r: { name
     }));
     note.textContent = where === 'file' && !ask.picker
       ? 'Tip: to choose the folder every time (the Desktop, say), turn on Chrome › Settings › Downloads › “Ask where to save each file before downloading”.'
-      : where === 'footprint' ? 'Footprints keep their sizes and depths, measured from the face they were drawn on.' : '';
+      : where === 'footprint' ? 'A footprint is a stamp: each one you drop is yours to change on its own.'
+      : where === 'component' ? 'These shapes stay here as the first copy, still linked.' : '';
     note.hidden = !note.textContent;
     ok.textContent = where === 'file' ? (ask.picker ? 'Save…' : 'Download') : 'Save';
   };
@@ -89,7 +93,7 @@ export function openSaveDialog(host: HTMLElement, ask: SaveAsk, done: (r: { name
     if (go && !name) { input.focus(); return; }
     box.remove();
     window.removeEventListener('keydown', onKey, true);
-    if (go && where !== 'footprint') { try { localStorage.setItem(WHERE_KEY, where); } catch { /* fine */ } }
+    if (go && (where === 'parts' || where === 'file')) { try { localStorage.setItem(WHERE_KEY, where); } catch { /* fine */ } }
     done(go ? { name, where } : null);
   }
 }

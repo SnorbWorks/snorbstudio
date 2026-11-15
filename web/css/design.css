@@ -373,3 +373,4 @@
 .ds-hidetoggle.active { color: var(--accent); }
 .ds-hidetoggle.active .ds-eye-off { display: none; }
 .ds-big { font-size: 20px; font-weight: 700; color: var(--text); margin: 2px 0 4px; }
+.ds-comp-changed { color: var(--accent); }

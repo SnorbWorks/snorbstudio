@@ -39,7 +39,7 @@ export function footprintFrom(feats: Feature[], p: Project, name: string): { fp:
   const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
   const features = same.map((f) => {
     const c = JSON.parse(JSON.stringify(f)) as Feature;
-    delete (c as any).refs;
+    delete (c as any).refs; delete c.group; delete c.comp;
     return { ...c, cu: r4(c.cu - cx), cv: r4(c.cv - cy), d0: r4(c.d0 - top), d1: r4(c.d1 - top) };
   });
   const w = pts.length ? Math.max(...xs) - Math.min(...xs) : 0, h = pts.length ? Math.max(...ys) - Math.min(...ys) : 0;

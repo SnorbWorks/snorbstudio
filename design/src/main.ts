@@ -5,6 +5,7 @@ import type { Feature, Project, ViewName } from './model.js';
 import { newProject, newId, isShape, findRef, profile, type P2 } from './model.js';
 import { FOOTPRINTS, placeFootprint, footprintFrom, savedFootprint, type Footprint, type SavedFootprint } from './footprints.js';
 import { openSaveDialog, lastWhere } from './savedialog.js';
+import { compFootprint, copiesOf, defFromCopy, detach, differs, insertCopy, linkCopy, makeComponent, members, updateCopies, type CompDef } from './components.js';
 import { State, align, distribute, rememberFit, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
@@ -100,7 +101,8 @@ const html = `
   <input class="ds-name" id="ds-name" title="Part name" spellcheck="false">
   <button class="btn sm ghost" id="ds-new" title="Start a new part">New</button>
   <button class="btn sm ghost" id="ds-close" title="Close this part (asks to save it first) and start a blank one">Close</button>
-  <button class="btn sm ghost" id="ds-open" title="Your saved parts (with pictures), the printer's models, and footprints to drop on: Pi, servo, bearing, LED…">Library…</button>
+  <button class="btn sm ghost" id="ds-open" title="Open a part: your saved parts (with pictures) and the printer's models, or a file">Library…</button>
+  <button class="btn sm ghost" id="ds-insert" title="Put a footprint (Pi, servo, bearing, LED, yours…) or a component (linked copies) into this part">Insert…</button>
   <button class="btn sm ghost" id="ds-save" title="Save: in My parts on the printer, as a footprint, or as a file on this computer (⌘S saves it where it was saved)">Save…</button>
   <span class="ds-export"><button class="btn sm ghost" id="ds-stl" title="Import an SVG drawing; download the STL, or a DXF drawing of a view">File ▾</button><div class="ds-menu hidden" id="ds-export-menu"></div></span>
   <button class="btn sm ghost" id="ds-check" title="Will it print? Looks for thin walls, steep overhangs, holes on their side and bits too small (it also runs on Send to Prepare / Library)">Check</button>
@@ -153,6 +155,9 @@ export function mount(root: HTMLElement, studio: Studio) {
   const sheet = new Sheet($('#ds-sheet'), st);
   new Panel($('#ds-panel'), st, {
     gear: (id) => editGear(id, false),
+    compUpdate: (inst) => compUpdate(inst),
+    compReset: (inst) => compReset(inst),
+    compDetach: (inst) => compDetach(inst),
     hole: (id) => editHole(id, false),
     dimValue: (dm) => sheet.dimGeom(dm)?.value ?? null,
     dimSize: (dm, size) => sheet.resizeTo(dm, size),
@@ -626,6 +631,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     keepTabs();
     name.classList.remove('ds-name-taken');
     sheet.fit();
+    syncComponents();
   }
   const roomForTab = () => {
     if (tabs.list.length < MAX_TABS) return true;
@@ -662,6 +668,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     st.select([]);
     sheet.fit();
     flash(msg);
+    syncComponents();
   }
   async function closeTab(i: number) {
     if (i !== tabs.cur) switchDoc(i);
@@ -712,6 +719,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     bar.replaceChildren(...kids);
   }
   renderTabs();
+  setTimeout(() => { syncComponents(); }, 0);    // after mount: copies catch up with components changed elsewhere
   $('#ds-new').onclick = () => startBlank('A new part.', true);
   $('#ds-close').onclick = () => startBlank('Closed. Here is a blank part.');
   // ---------------------------------------------------------- library
@@ -860,6 +868,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     }, async (r) => {
       if (!r) return res(false);
       if (r.where === 'footprint') return res(await saveFootprint(r.name, shapes));
+      if (r.where === 'component') return res(await saveComponent(r.name, shapes));
       if (r.name !== st.p.name) { name.value = r.name; commitName(); }
       res(r.where === 'file' ? await saveFile() : await save());
     }));
@@ -899,10 +908,73 @@ export function mount(root: HTMLElement, studio: Studio) {
     try {
       const r = await fetch(`${FP_API}${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(fp), headers: { 'Content-Type': 'application/json' } });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-      flash(`“${nm}” is in Library › Footprints: ${fp.features.length} shape${fp.features.length === 1 ? '' : 's'} on the ${VIEWS[fp.view].label.toLowerCase()}`
+      flash(`“${nm}” is in Insert… › Footprints: ${fp.features.length} shape${fp.features.length === 1 ? '' : 's'} on the ${VIEWS[fp.view].label.toLowerCase()}`
         + `${skipped ? `. ${skipped} on other views were left out: a footprint keeps to one face` : ''}.`);
       return true;
     } catch (e: any) { flash(`Couldn't save the footprint: ${e.message}`); return false; }
+  }
+  // ---------------------------------------------------------- components (linked copies)
+  const COMP_API = '/studio-api/components/';
+  async function listComponents(): Promise<CompDef[]> {
+    try {
+      const names: { name: string }[] = (await (await fetch(COMP_API.slice(0, -1))).json()).components || [];
+      const got = await Promise.all(names.map((n) => fetch(`${COMP_API}${encodeURIComponent(n.name)}.json`).then((r) => r.ok ? r.json() as Promise<CompDef> : null).catch(() => null)));
+      return got.filter((x): x is CompDef => !!x && Array.isArray(x.features));
+    } catch { return []; }
+  }
+  const putComponent = async (def: CompDef) => {
+    const r = await fetch(`${COMP_API}${encodeURIComponent(def.name)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(def), headers: { 'Content-Type': 'application/json' } });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  };
+  /** Save › Components: the shapes become a component, and stay here as its first copy. */
+  async function saveComponent(nm: string, shapes: Feature[]): Promise<boolean> {
+    const linked = shapes.find((f) => f.comp);
+    if (linked) { flash(`Those shapes are already a copy of “${linked.comp!.name}”: change the copy and use Update every copy, or Detach it first.`); return false; }
+    const { def, skipped } = makeComponent(st.p, shapes, nm);
+    try {
+      const taken = (await listComponents()).some((c) => c.name === nm);
+      await putComponent(def);
+      const ids = new Set(shapes.map((f) => f.id));
+      st.change((p) => linkCopy(p, p.features.filter((f) => ids.has(f.id)), def));
+      st.select([...ids]);
+      flash(`“${nm}” is a component${taken ? ' (it replaced the one with that name)' : ''}: these shapes are its first copy. Insert… › Components puts more copies in any part.`
+        + `${skipped ? ` ${skipped} shape${skipped === 1 ? '' : 's'} on other views stayed out: a component keeps to one face.` : ''}`);
+      return true;
+    } catch (e: any) { flash(`Couldn't save the component: ${e.message}`); return false; }
+  }
+  /** Update every copy: the component takes this copy's shapes; every copy here follows; other parts follow when opened. */
+  async function compUpdate(inst: string) {
+    const def = defFromCopy(st.p, inst);
+    if (!def) return;
+    try { await putComponent(def); } catch (e: any) { flash(`Couldn't save the component on the printer: ${e.message}`); return; }
+    let n = 0;
+    st.change((p) => { n = updateCopies(p, def); });
+    st.select(members(st.p, inst).map((f) => f.id));
+    flash(`“${def.name}” updated: ${n} cop${n === 1 ? 'y' : 'ies'} here. Other parts with copies catch up when they're opened.`);
+  }
+  function compReset(inst: string) {
+    const name = members(st.p, inst)[0]?.comp?.name;
+    const def = name && st.p.components?.[name];
+    if (!def) return;
+    st.change((p) => { updateCopies(p, def, inst); });
+    st.select(members(st.p, inst).map((f) => f.id));
+    flash(`This copy matches “${def.name}” again.`);
+  }
+  function compDetach(inst: string) {
+    const name = members(st.p, inst)[0]?.comp?.name;
+    st.change((p) => detach(p, inst));
+    flash(`Detached from “${name}”: the shapes stay, as a plain group you can change freely.`);
+  }
+  /** A part just shown: copies of components that changed on the printer since catch up. */
+  async function syncComponents() {
+    const have = st.p.components;
+    if (!have || !Object.keys(have).length) return;
+    const latest = await listComponents();
+    const newer = latest.filter((d) => have[d.name] && have[d.name].modified < d.modified && copiesOf(st.p, d.name).length);
+    if (!newer.length) return;
+    let n = 0;
+    st.change((p) => { for (const d of newer) n += updateCopies(p, d); });
+    flash(`${newer.map((d) => `“${d.name}”`).join(', ')} changed since this part was saved: ${n} cop${n === 1 ? 'y' : 'ies'} updated (Undo puts them back).`);
   }
   /** Open a .snorbcad file (or a part's JSON) from this computer, in a tab. */
   async function openFile(file: File) {
@@ -927,7 +999,9 @@ export function mount(root: HTMLElement, studio: Studio) {
   // Three shelves: parts saved on the printer (with a picture of each),
   // models from the printer's library (STL), and footprints to drop on.
   const LIB_SHELF = 'studio.design.libShelf';
-  $('#ds-open').onclick = async () => {
+  $('#ds-open').onclick = () => libraryDialog('open');
+  $('#ds-insert').onclick = () => libraryDialog('insert');
+  async function libraryDialog(mode: 'open' | 'insert') {
     let list: { name: string; modified: number; thumb?: string }[] = [];
     let lib: { name: string; size: number }[] = [];
     let listErr = '';
@@ -939,16 +1013,18 @@ export function mount(root: HTMLElement, studio: Studio) {
       const got = await Promise.all(names.map((n) => fetch(`${FP_API}${encodeURIComponent(n.name)}.json`).then((r) => r.ok ? r.json() as Promise<SavedFootprint> : null).catch(() => null)));
       mine = got.filter((x): x is SavedFootprint => !!x && Array.isArray(x.features)).map(savedFootprint);
     } catch { /* none saved */ }
+    let comps: CompDef[] = [];
+    if (mode === 'insert') comps = await listComponents();
     const designs = new Set(list.map((d) => d.name));
     const libOnly = lib.filter((m) => !designs.has(m.name.replace(/\.stl$/i, '')));
-    let shelf = 'parts';
-    try { shelf = localStorage.getItem(LIB_SHELF) || 'parts'; } catch { /* default */ }
+    let shelf = mode === 'open' ? 'parts' : 'footprints';
+    try { shelf = localStorage.getItem(`${LIB_SHELF}.${mode}`) || shelf; } catch { /* default */ }
 
     const box = document.createElement('div');
     box.className = 'ds-modal';
     const card = document.createElement('div');
     card.className = 'ds-dialog ds-lib';
-    card.innerHTML = `<h3>Library</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
+    card.innerHTML = `<h3>${mode === 'open' ? 'Library' : 'Insert into this part'}</h3><div class="ds-seg ds-lib-tabs"></div><div class="ds-lib-body"></div>
       <div class="ds-dialog-foot"><button class="btn sm ghost ds-lib-file" id="ds-lib-file" title="Open a .snorbcad file saved on this computer">Open a file…</button><span class="spacer"></span><button class="btn sm ghost" id="ds-lib-cancel">Close</button></div>`;
     box.appendChild(card);
     root.appendChild(box);
@@ -956,10 +1032,13 @@ export function mount(root: HTMLElement, studio: Studio) {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); } };
     window.addEventListener('keydown', onKey, true);
     (card.querySelector('#ds-lib-cancel') as HTMLButtonElement).onclick = close;
-    (card.querySelector('#ds-lib-file') as HTMLButtonElement).onclick = () => { close(); pickFile(); };
+    const fileBtn = card.querySelector('#ds-lib-file') as HTMLButtonElement;
+    if (mode === 'open') fileBtn.onclick = () => { close(); pickFile(); }; else fileBtn.remove();
     box.addEventListener('pointerdown', (e) => { if (e.target === box) close(); });
     const tabs = card.querySelector('.ds-lib-tabs') as HTMLElement, body = card.querySelector('.ds-lib-body') as HTMLElement;
-    const shelves: [string, string][] = [['parts', `My parts (${list.length})`], ['models', `Models (${libOnly.length})`], ['footprints', `Footprints (${FOOTPRINTS.length + mine.length})`]];
+    const shelves: [string, string][] = mode === 'open'
+      ? [['parts', `My parts (${list.length})`], ['models', `Models (${libOnly.length})`]]
+      : [['footprints', `Footprints (${FOOTPRINTS.length + mine.length})`], ['components', `Components (${comps.length})`]];
 
     const tile = (title: string, sub: string, pic: string, open: () => void, extra?: HTMLElement) => {
       const t = document.createElement('div');
@@ -976,7 +1055,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     };
     const show = (which: string) => {
       shelf = which;
-      try { localStorage.setItem(LIB_SHELF, which); } catch { /* fine */ }
+      try { localStorage.setItem(`${LIB_SHELF}.${mode}`, which); } catch { /* fine */ }
       tabs.replaceChildren(...shelves.map(([k, label]) => {
         const b = document.createElement('button');
         b.textContent = label; b.classList.toggle('active', k === which);
@@ -1011,8 +1090,39 @@ export function mount(root: HTMLElement, studio: Studio) {
       } else if (which === 'models') {
         note = libOnly.length ? 'STL models from the printer’s library: one opens as the body, to add and cut shapes on.' : 'No other models in the printer’s library.';
         for (const m of libOnly) grid.appendChild(tile(m.name, `${Math.round(m.size / 1024)} KB`, '<i class="ds-tile-none">STL</i>', () => { close(); openModel(m.name); }));
+      } else if (which === 'components') {
+        note = comps.length
+          ? 'Click one to put a copy on the middle of this part. Copies stay linked: change one, then “Update every copy” in its panel, and the rest follow (here, and in other parts when they open).'
+          : 'No components yet. Select some shapes, then Save… › Components: they become the first copy.';
+        for (const def of comps) {
+          const b = document.createElement('button');
+          b.className = 'ds-tile-del'; b.textContent = '×'; b.title = 'Delete this component from the printer (copies already in parts stay, unlinked when opened)';
+          let armed = false;
+          b.onclick = async () => {
+            if (!armed) { armed = true; b.textContent = 'Delete?'; b.classList.add('armed'); return; }
+            await fetch(`${COMP_API}${encodeURIComponent(def.name)}.json`, { method: 'DELETE' });
+            comps = comps.filter((x) => x !== def);
+            show('components');
+          };
+          const n = copiesOf(st.p, def.name).length;
+          grid.appendChild(tile(def.name, `${def.note}${n ? ` · ${n} cop${n === 1 ? 'y' : 'ies'} here` : ''}`, footprintSvg(compFootprint(def)), () => {
+            close();
+            let feats: Feature[] = [];
+            st.change((p) => {
+              // copies already here catch up first, if the printer has a newer one
+              if (p.components?.[def.name] && p.components[def.name].modified < def.modified) updateCopies(p, def);
+              feats = insertCopy(p, def);
+              p.features.push(...feats);
+              if (!p.views.includes(def.view)) p.views = [...p.views, def.view];
+            });
+            st.setTool('select');
+            st.activeView = def.view;
+            st.select(feats.map((f) => f.id));
+            flash(`A copy of “${def.name}”: drag it into place. Double-click one of its shapes to change it, then Update every copy.`);
+          }, b));
+        }
       } else {
-        note = 'Click one to drop it on the middle of this part (on the floor of a hollow box), then drag it where it goes. They are ordinary shapes: change or delete any of them. Sizes are the usual ones: check against your part. Save › Footprints adds your own.';
+        note = 'Click one to drop it on the middle of this part (on the floor of a hollow box), then drag it where it goes. They are ordinary shapes: change or delete any of them. Sizes are the usual ones: check against your part. Save… › Footprints adds your own.';
         for (const fp of [...mine, ...FOOTPRINTS]) {
           let del: HTMLElement | undefined;
           if (fp.mine) {
@@ -1043,8 +1153,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       const n = document.createElement('p'); n.className = 'ds-note'; n.textContent = note;
       body.replaceChildren(n, grid);
     };
-    show(shelves.some(([k]) => k === shelf) ? shelf : 'parts');
-  };
+    show(shelves.some(([k]) => k === shelf) ? shelf : shelves[0][0]);
+  }
 
   /** A footprint drawn small: its outlines from the top, cuts dark, standoffs light. */
   function footprintSvg(fp: (typeof FOOTPRINTS)[number]): string {
