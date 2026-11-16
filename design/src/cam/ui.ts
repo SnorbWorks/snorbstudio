@@ -1,9 +1,10 @@
 // SnorbCAM: the tab. A sheet of material with parts laid on it; click an
 // outline to say how it's cut; the bit's paths show on the sheet as you go;
 // Export writes the ShopBot G-code (one file per bit).
-import { Bit, Contour, IN, Job, Op, OpKind, P2, Part, Placed, autoTabs, bitOf, camId, fractionAt, newJob, partBox, placedBox, placer, pointAt } from './job.js';
+import { Bit, Contour, IN, Job, Op, OpKind, P2, Part, Placed, Step, StepKind, autoTabs, bitOf, camId, fractionAt, newJob, partBox, placedBox, placer, pointAt } from './job.js';
 import { Plan, byBit, gcode, movesFor, planJob, runTime } from './toolpath.js';
 import { importCad, importDxf, importSvg } from './importers.js';
+import { Entry, GROUP_NAME, STEP_NAME, describeStep, newStep, runList, sequence, toSeq } from './sequence.js';
 
 interface Studio { show?: (p: string) => void }
 
@@ -36,7 +37,13 @@ const html = `
     <svg class="ds-sheet cm-sheet" id="cm-svg"></svg>
     <div class="cm-hint" id="cm-hint"></div>
   </div>
-  <div class="ds-side"><div class="ds-panel" id="cm-panel"></div></div>
+  <div class="ds-side">
+    <div class="cm-tabs" id="cm-tabs">
+      <button data-tab="props" title="The sheet, the bits, and how the selected outline is cut">Properties</button>
+      <button data-tab="order" title="The order the cuts run in, and the steps between them">Cut Order</button>
+    </div>
+    <div class="ds-panel" id="cm-panel"></div>
+  </div>
 </div>
 <div class="ds-status" id="cm-status"></div>
 `;
@@ -53,6 +60,11 @@ export function mount(root: HTMLElement, _studio: Studio) {
   let selPlaced: string | null = null;
   let selKs = new Set<string>();
   let plan: Plan | null = null;
+  let entries: Entry[] = [];        // the cut order, worked out from the plan
+  let sideTab: 'props' | 'order' = 'props';
+  let hotKey = '';                  // the cut the pointer is over in the Cut Order list
+  let editStep = '';                // the step whose settings are open
+  let spots: string[] = [];         // saved spots in SnorbCut, for a step's "move the head to"
   let timeS = 0;
   const undo: string[] = [], redo: string[] = [];
   let dirty = false;
@@ -130,7 +142,7 @@ export function mount(root: HTMLElement, _studio: Studio) {
     if (($('#cm-paths') as HTMLInputElement).checked && plan) {
       const tp = el('g', { class: 'cm-tp' }, g);
       for (const c of plan.cuts) {
-        for (const t of c.tracks) el('path', { d: d(t.pts, t.closed), 'stroke-width': c.bit.dia, class: `cm-cut cm-${c.op.kind}` }, tp);
+        for (const t of c.tracks) el('path', { d: d(t.pts, t.closed), 'stroke-width': c.bit.dia, class: `cm-cut cm-${c.op.kind}${c.key === hotKey ? ' hot' : ''}` }, tp);
       }
     }
     for (const pl of job.placed) {
@@ -372,6 +384,8 @@ export function mount(root: HTMLElement, _studio: Studio) {
 
   function render() {
     panel.innerHTML = '';
+    root.querySelectorAll<HTMLButtonElement>('#cm-tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === sideTab));
+    if (sideTab === 'order') { orderPanel(); return; }
     const pl = job.placed.find((q) => q.id === selPlaced);
     const part = pl && partOf(pl);
     const ks = part ? part.contours.filter((c) => selKs.has(c.id)) : [];
@@ -537,6 +551,165 @@ export function mount(root: HTMLElement, _studio: Studio) {
     else note('Click an outline to say how it\'s cut. Drag parts to move them. F fits the sheet in view.');
   }
 
+  // ------------------------------------------------------------ the Cut Order tab
+
+  root.querySelectorAll<HTMLButtonElement>('#cm-tabs button').forEach((b) => {
+    b.onclick = () => { sideTab = b.dataset.tab as 'props' | 'order'; hotKey = ''; if (sideTab === 'order') loadSpots(); draw(); render(); };
+  });
+  /** The saved spots live in SnorbCut (on the ShopBot laptop); ask for their names when the tab opens. */
+  async function loadSpots() {
+    try {
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 5000);
+      const s = await (await fetch('/cut-api/status', { signal: c.signal })).json(); clearTimeout(t);
+      const names = (s.places || []).map((p: any) => String(p.name));
+      if (names.join('|') !== spots.join('|')) { spots = names; if (sideTab === 'order') render(); }
+    } catch { /* the ShopBot isn't reachable: steps keep the spot names they have */ }
+  }
+  /** Rearranging: the whole order as shown becomes the job's own. */
+  function reorder(fn: (list: Entry[]) => void) {
+    const list = [...entries];
+    fn(list);
+    change(() => { job.seq = toSeq(list); });
+  }
+  const move = (i: number, to: number) => reorder((l) => { if (to < 0 || to >= l.length) return; const [it] = l.splice(i, 1); l.splice(to, 0, it); });
+  function setStep(id: string, fn: (s: Step) => void) {
+    reorder((l) => {
+      const e = l.find((x) => x.t === 'step' && x.step.id === id);
+      if (!e || e.t !== 'step') return;
+      const s = { ...e.step }; fn(s);
+      if (s.auto) { delete s.auto; s.id = camId('s'); editStep = s.id; }   // once changed by hand it is the owner's step
+      l[l.indexOf(e)] = { t: 'step', step: s };
+    });
+  }
+
+  function orderPanel() {
+    if (!plan || !entries.length) {
+      H('Cut Order');
+      note(plan ? 'Nothing to cut yet. In Properties, click an outline and pick Inside, Outside or Pocket.' : 'Working out the toolpaths…');
+      return;
+    }
+    const run = runList(entries);
+    const stageList = run.filter((r) => r.t === 'stage');
+    const nCuts = entries.filter((e) => e.t === 'cut').length;
+    H('Cut Order');
+    note(`${nCuts} cut${nCuts === 1 ? '' : 's'} in ${stageList.length} stage${stageList.length === 1 ? '' : 's'}, top to bottom. Drag a row or use the arrows. ${job.seq ? 'This is your own order.' : 'This is the automatic order: holes, pockets and inside cuts first, cut-outs last.'}`);
+    const add = document.createElement('div'); add.className = 'cm-row';
+    for (const [kind, t] of [['pause', '+ Pause'], ['toolchange', '+ Tool change'], ['material', '+ Material change'], ['custom', '+ Other step']] as [StepKind, string][]) {
+      const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = t;
+      b.title = 'Adds the step at the end of the list; move it to where it belongs';
+      b.onclick = () => { const s = newStep(kind); editStep = s.id; reorder((l) => { l.push({ t: 'step', step: s }); }); };
+      add.appendChild(b);
+    }
+    panel.appendChild(add);
+
+    const list = document.createElement('div'); list.className = 'cm-ord';
+    let stageNo = 0, lastWasCut = false, cutNo = 0, lastBit = '';
+    entries.forEach((e, i) => {
+      if (e.t === 'cut' && (!lastWasCut || e.cut.bit.id !== lastBit)) {
+        const st = stageList[stageNo++];
+        if (st && st.t === 'stage') { const h = document.createElement('div'); h.className = 'cm-ord-stage'; h.textContent = `Stage ${st.stage.n} · ${st.stage.bit.name}`; list.appendChild(h); }
+      }
+      lastWasCut = e.t === 'cut'; if (e.t === 'cut') lastBit = e.cut.bit.id;
+      const row = document.createElement('div');
+      row.className = `cm-ord-row ${e.t === 'cut' ? `cm-ord-cut cm-g-${e.group}` : 'cm-ord-step'}`;
+      row.dataset.i = String(i);
+      const grip = document.createElement('span'); grip.className = 'cm-ord-grip'; grip.textContent = '⋮⋮'; grip.title = 'Drag to move';
+      // dragging by the grip (pointer events, so it works with a mouse, a trackpad and a finger)
+      grip.onpointerdown = (ev) => {
+        ev.preventDefault(); grip.setPointerCapture(ev.pointerId); row.classList.add('drag');
+        let to = i;
+        const clear = () => list.querySelectorAll('.over-a, .over-b').forEach((x) => x.classList.remove('over-a', 'over-b'));
+        grip.onpointermove = (mv) => {
+          clear();
+          const rows = [...list.querySelectorAll<HTMLElement>('.cm-ord-row')];
+          let best: HTMLElement | null = null, after = false;
+          for (const r of rows) { const b = r.getBoundingClientRect(); if (mv.clientY >= b.top - 6) { best = r; after = mv.clientY > b.top + b.height / 2; } }
+          if (!best) { best = rows[0]; after = false; }
+          const bi = +best.dataset.i!;
+          to = bi + (after ? 1 : 0); if (i < to) to--;
+          if (to !== i) best.classList.add(after ? 'over-b' : 'over-a');
+          // keep the list scrolling while dragging near its edges
+          const pr = panel.getBoundingClientRect();
+          if (mv.clientY < pr.top + 30) panel.scrollTop -= 12; else if (mv.clientY > pr.bottom - 30) panel.scrollTop += 12;
+        };
+        const end = (cancel: boolean) => { grip.onpointermove = grip.onpointerup = grip.onpointercancel = null; clear(); row.classList.remove('drag'); if (!cancel && to !== i) move(i, to); };
+        grip.onpointerup = () => end(false);
+        grip.onpointercancel = () => end(true);
+      };
+      const body = document.createElement('div'); body.className = 'cm-ord-body';
+      const t = document.createElement('b'), sub = document.createElement('span');
+      if (e.t === 'cut') {
+        t.textContent = `${++cutNo}. ${e.cut.label}`;
+        const deep = -e.cut.levels[e.cut.levels.length - 1];
+        sub.textContent = `${GROUP_NAME[e.group]} · ${fmt(deep)} ${units} deep${e.cut.levels.length > 1 ? ` in ${e.cut.levels.length} passes` : ''}`;
+        body.append(t, sub);
+        if (e.warn) { const w = document.createElement('span'); w.className = 'cm-ord-warn'; w.textContent = `⚠ ${e.warn}`; body.appendChild(w); }
+        row.onmouseenter = () => { hotKey = e.cut.key; draw(); };
+        row.onmouseleave = () => { if (hotKey === e.cut.key) { hotKey = ''; draw(); } };
+        body.onclick = () => {      // show it in Properties
+          const [pid, cid] = e.cut.key.split(':');
+          selPlaced = pid; selKs = new Set([cid]); hotKey = ''; sideTab = 'props'; draw(); render();
+        };
+        body.title = 'Click to open this cut in Properties';
+      } else {
+        const s = e.step;
+        t.textContent = s.name || STEP_NAME[s.kind];
+        sub.textContent = `${STEP_NAME[s.kind]}${s.auto ? ' (automatic: the bit changes here)' : ''}: ${describeStep(s)}`;
+        body.append(t, sub);
+        if (s.note) { const n = document.createElement('span'); n.className = 'cm-ord-note'; n.textContent = s.note; body.appendChild(n); }
+      }
+      const tools = document.createElement('div'); tools.className = 'cm-ord-tools';
+      const tb = (txt: string, title: string, fn: () => void, off = false) => { const b = document.createElement('button'); b.className = 'cm-ord-b'; b.textContent = txt; b.title = title; b.disabled = off; b.onclick = (ev) => { ev.stopPropagation(); fn(); }; tools.appendChild(b); };
+      tb('▲', 'Earlier', () => move(i, i - 1), i === 0);
+      tb('▼', 'Later', () => move(i, i + 1), i === entries.length - 1);
+      if (e.t === 'step') {
+        const s = e.step;
+        tb(editStep === s.id ? 'Done' : 'Edit', 'What this step does', () => { editStep = editStep === s.id ? '' : s.id; render(); });
+        tb('✕', s.auto ? 'The bit changes here, so a tool change is needed' : 'Remove this step', () => reorder((l) => { l.splice(i, 1); }), !!s.auto);
+      }
+      row.append(grip, body, tools);
+      list.appendChild(row);
+      if (e.t === 'step' && editStep === e.step.id) list.appendChild(stepEditor(e.step));
+    });
+    panel.appendChild(list);
+    const foot = document.createElement('div'); foot.className = 'cm-row';
+    const auto = document.createElement('button'); auto.className = 'btn ghost sm'; auto.textContent = 'Back to the automatic order';
+    auto.disabled = !job.seq; auto.title = 'Drops your arrangement and every step you added';
+    auto.onclick = () => { if (window.confirm('Go back to the automatic order? Your arrangement and the steps you added are removed.')) { editStep = ''; change(() => { delete job.seq; }); } };
+    foot.appendChild(auto);
+    panel.appendChild(foot);
+    note('Each stage is one G-code file. Steps happen between stages: the machine stops and waits for you at the ShopBot.');
+  }
+
+  function stepEditor(s: Step): HTMLElement {
+    const box = document.createElement('div'); box.className = 'cm-ord-edit';
+    const lab = (t: string, child: HTMLElement) => { const l = document.createElement('label'); l.className = 'cm-stack'; const sp = document.createElement('span'); sp.textContent = t; l.append(sp, child); box.appendChild(l); };
+    const name = document.createElement('input'); name.className = 'cm-text'; name.value = s.name; name.maxLength = 40;
+    name.onchange = () => setStep(s.id, (x) => { x.name = name.value.trim() || STEP_NAME[x.kind]; });
+    lab('Name', name);
+    const kind = document.createElement('select'); kind.className = 'cm-select';
+    for (const k of ['pause', 'toolchange', 'material', 'custom'] as StepKind[]) kind.appendChild(new Option(k === 'custom' ? 'Other' : STEP_NAME[k], k, false, k === s.kind));
+    kind.onchange = () => setStep(s.id, (x) => { const was = STEP_NAME[x.kind]; x.kind = kind.value as StepKind; if (x.name === was) x.name = STEP_NAME[x.kind]; });
+    lab('Kind', kind);
+    const go = document.createElement('select'); go.className = 'cm-select';
+    const places: [string, string][] = [['', 'Stay where it is'], ['machine', 'Machine Home'], ['project', 'Project Home'], ...spots.map((n) => [n, n] as [string, string])];
+    if (s.goto && !places.some((p) => p[0] === s.goto)) places.push([s.goto, `${s.goto} (not found in SnorbCut right now)`]);
+    for (const [v, t] of places) go.appendChild(new Option(t, v, false, v === s.goto));
+    go.onchange = () => setStep(s.id, (x) => { x.goto = go.value; });
+    lab('Move the head to', go);
+    if (!spots.length) { const n = document.createElement('div'); n.className = 'ds-note'; n.textContent = 'Saved spots such as Load Bit come from SnorbCut (Machine control › Saved spots). None could be read just now.'; box.appendChild(n); }
+    const zr = document.createElement('label'); zr.className = 'cm-check';
+    const zc = document.createElement('input'); zc.type = 'checkbox'; zc.checked = s.rezero;
+    zc.onchange = () => setStep(s.id, (x) => { x.rezero = zc.checked; });
+    zr.append(zc, document.createTextNode(' Ask for a new Z zero before carrying on'));
+    box.appendChild(zr);
+    const nt = document.createElement('input'); nt.className = 'cm-text'; nt.value = s.note; nt.maxLength = 120; nt.placeholder = 'For example: fit the 1/8" bit';
+    nt.onchange = () => setStep(s.id, (x) => { x.note = nt.value.trim(); });
+    lab('Note shown at the machine', nt);
+    const sum = document.createElement('div'); sum.className = 'ds-note'; sum.textContent = `At this step the machine will: stop, ${describeStep(s)}.`; box.appendChild(sum);
+    return box;
+  }
+
   let editBit = '';
   function bitEditor() {
     const b = job.bits.find((x) => x.id === (editBit || job.bit)) || job.bits[0];
@@ -576,8 +749,9 @@ export function mount(root: HTMLElement, _studio: Studio) {
     planTimer = window.setTimeout(() => {
       try {
         plan = planJob(job);
-        timeS = byBit(job, plan).reduce((t, g) => t + runTime(job, movesFor(job, g.cuts), g.bit), 0);
-      } catch (e: any) { plan = null; flash(`Toolpaths failed: ${e.message}`); }
+        entries = sequence(job, plan);
+        timeS = runList(entries).reduce((t, r) => t + (r.t === 'stage' ? runTime(job, movesFor(job, r.stage.cuts), r.stage.bit) : 0), 0);
+      } catch (e: any) { plan = null; entries = []; flash(`Toolpaths failed: ${e.message}`); }
       draw();
       render();
       status();
@@ -589,7 +763,8 @@ export function mount(root: HTMLElement, _studio: Studio) {
     if (p) s.push(`X ${fmt(p[0])}  Y ${fmt(p[1])}`);
     if (plan) {
       const bits = byBit(job, plan);
-      s.push(`${plan.cuts.length} cut${plan.cuts.length === 1 ? '' : 's'}`);
+      const nStages = runList(entries).filter((r) => r.t === 'stage').length;
+      s.push(`${plan.cuts.length} cut${plan.cuts.length === 1 ? '' : 's'}${nStages > 1 ? ` in ${nStages} stages` : ''}`);
       if (bits.length) s.push(`${bits.map((b) => b.bit.name).join(', ')}`);
       if (timeS) s.push(`about ${Math.max(1, Math.round(timeS / 60))} min`);
       if (plan.warnings.length) s.push(`⚠ ${plan.warnings[0]}${plan.warnings.length > 1 ? ` (+${plan.warnings.length - 1})` : ''}`);
@@ -728,7 +903,9 @@ export function mount(root: HTMLElement, _studio: Studio) {
     if (!p.cuts.length) { flash(p.warnings[0] || 'Nothing to cut yet: click an outline and pick Inside, Outside or Pocket.'); return; }
     const off = job.placed.filter((pl) => { const [x0, y0, x1, y1] = placedBox(partOf(pl), pl); return x0 < -1e-6 || y0 < -1e-6 || x1 > job.sheet.w + 1e-6 || y1 > job.sheet.h + 1e-6; });
     if (off.length && !window.confirm(`${off.length} part${off.length > 1 ? 's are' : ' is'} off the edge of the sheet. Export anyway?`)) return;
-    const groups = byBit(job, p);
+    const run = runList(sequence(job, p));
+    const groups = run.flatMap((r) => (r.t === 'stage' ? [r.stage] : []));
+    const steps = run.filter((r) => r.t === 'step').length;
     groups.forEach((g, i) => {
       const nc = gcode(job, movesFor(job, g.cuts), g.bit);
       const tag = groups.length > 1 ? ` - ${i + 1} ${g.bit.name.replace(/["/\\]/g, (c) => (c === '"' ? 'in' : '-'))}` : '';
@@ -738,7 +915,7 @@ export function mount(root: HTMLElement, _studio: Studio) {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     });
-    flash(groups.length > 1 ? `${groups.length} files, one per bit: run them in order, changing the bit between.` : `Exported ${job.name}.nc for the ${groups[0].bit.name}`);
+    flash(groups.length > 1 ? `${groups.length} files, one per stage: run them in order${steps ? `, doing the ${steps} step${steps > 1 ? 's' : ''} in Cut Order between them` : ''}.` : `Exported ${job.name}.nc for the ${groups[0].bit.name}`);
     if (p.warnings.length) flash(p.warnings.join(' · '));
   };
 
@@ -747,7 +924,7 @@ export function mount(root: HTMLElement, _studio: Studio) {
   new ResizeObserver(() => { if (svg.getBoundingClientRect().width) { if (!fitted) { fitted = true; fit(); } draw(); } }).observe(svg);
   let fitted = false;
   refresh();
-  (window as any).__cam = { get job() { return job; }, get plan() { return plan; } };
+  (window as any).__cam = { get job() { return job; }, get plan() { return plan; }, get entries() { return entries; } };
   return {
     /** Add a SnorbCAD project (from the Design tab's "Send to SnorbCAM"). */
     addCad(p: any, name?: string) { addCad(p, name || p.name || 'part'); },

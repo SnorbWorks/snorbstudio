@@ -49,6 +49,19 @@ export interface Bit {
   stepover: number;       // 0..1 of the diameter (pockets)
 }
 
+export type StepKind = 'pause' | 'toolchange' | 'material' | 'custom';
+/** Something that happens between cuts: the machine stops, maybe moves the head somewhere, and waits. */
+export interface Step {
+  id: string;
+  kind: StepKind;
+  name: string;
+  note: string;          // shown to whoever is at the machine
+  goto: string;          // '' = stay put, 'machine' / 'project' = that Home, anything else = a saved spot in SnorbCut
+  rezero: boolean;       // ask for a new Z zero before carrying on
+  auto?: boolean;        // put there by SnorbCAM because the bit changes; goes away if it no longer does
+}
+export type SeqItem = { cut: string } | { step: Step };
+
 export interface Job {
   version: 1;
   name: string;
@@ -62,6 +75,7 @@ export interface Job {
   bit: string;            // default bit id
   parts: Part[];
   placed: Placed[];
+  seq?: SeqItem[];        // the cut order as arranged by hand (cut = placed id : outline id); absent = automatic
 }
 
 export const IN = 25.4;

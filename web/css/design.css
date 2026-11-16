@@ -379,3 +379,38 @@
 .ds-path-handles circle { fill: #fff; stroke: #b04aa5; stroke-width: 1.2px; vector-effect: non-scaling-stroke; }
 .ds-path-handles rect { fill: #fff; stroke: #b04aa5; stroke-width: 1.4px; vector-effect: non-scaling-stroke; }
 .ds-path-handles rect.ds-pt-on { fill: #b04aa5; }
+
+/* SnorbCAM: the side panel's tabs and the Cut Order list */
+.cm-tabs { display: flex; flex: none; border-bottom: 1px solid var(--line); }
+.cm-tabs button { flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; padding: 9px 6px 7px; color: var(--muted); cursor: pointer; font-size: 13px; }
+.cm-tabs button:hover { color: var(--text); }
+.cm-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.cm-tp path.hot { opacity: .95; }
+.cm-ord { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
+.cm-ord-stage { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 8px 0 1px; }
+.cm-ord-row { display: flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 5px 6px; position: relative; }
+.cm-ord-row.drag { opacity: .4; }
+.cm-ord-row.over-a::before, .cm-ord-row.over-b::after { content: ''; position: absolute; left: -4px; right: 0; height: 3px; background: var(--accent); border-radius: 2px; }
+.cm-ord-row.over-a::before { top: -4px; }
+.cm-ord-row.over-b::after { bottom: -4px; }
+.cm-ord-cut:hover { border-color: var(--accent); }
+.cm-g-hole { border-left-color: #e0662a; }
+.cm-g-inside { border-left-color: #e0662a; }
+.cm-g-pocket { border-left-color: #8e3fae; }
+.cm-g-line { border-left-color: #2e9d57; }
+.cm-g-outside { border-left-color: #2f6fe0; }
+.cm-ord-step { background: var(--card2); border-left-color: var(--accent); border-style: dashed; border-left-style: solid; }
+.cm-ord-grip { color: var(--muted); cursor: grab; font-size: 12px; letter-spacing: -2px; padding: 0 2px; user-select: none; }
+.cm-ord-body { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12px; }
+.cm-ord-cut .cm-ord-body { cursor: pointer; }
+.cm-ord-body b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-ord-body span { color: var(--muted); }
+.cm-ord-body .cm-ord-warn { color: #f0b35a; }
+.cm-ord-body .cm-ord-note { color: var(--text); font-style: italic; }
+.cm-ord-tools { display: flex; gap: 2px; flex: none; }
+.cm-ord-b { background: none; border: 1px solid transparent; border-radius: 6px; color: var(--muted); cursor: pointer; padding: 2px 5px; font-size: 11px; }
+.cm-ord-b:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
+.cm-ord-b:disabled { opacity: .25; cursor: default; }
+.cm-ord-edit { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 2px; margin: 0 0 4px 10px; background: var(--bg2); }
+.cm-check { display: block; font-size: 13px; margin: 6px 0 8px; }
+.cm-ord-grip { touch-action: none; padding: 6px 4px; margin: -6px 0; }

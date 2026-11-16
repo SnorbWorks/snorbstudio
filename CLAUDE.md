@@ -114,6 +114,17 @@ the sheet's lower-left, Z on top of the material. Mostly 1/4" compression
 bits. Tested in `design/test/cam.test.mjs`; **not yet air-cut on the real
 machine**.
 
+**Cut Order** (`design/src/cam/sequence.ts`, the side panel's second tab):
+every cut in the order it runs, with **steps** between (pause, tool change,
+material change, other). A step can send the head to Machine Home, Project
+Home or a saved spot (names come from SnorbCut's `/cut-api/status`), ask for
+a new Z zero, and always waits for the person at the machine. The automatic
+order is holes, pockets, lines, inside cuts, then cut-outs last, with the
+fewest bit changes; arranging by hand stores `job.seq`. A run of cuts between
+steps is a **stage**: one bit, one G-code file. A tool change always sits
+where the bit changes (added automatically). Tests: `design/test/sequence.test.mjs`.
+Still to do: "Send to SnorbCut" so the bridge runs the stages and steps as one job.
+
 ## SnorbCut
 
 The ShopBot keeps its own control software (SB3, on a Windows laptop at the
