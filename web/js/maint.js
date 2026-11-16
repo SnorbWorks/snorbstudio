@@ -97,7 +97,9 @@ function update() {
 
 function renderMesh(bm) {
   const box = $('#mesh-view');
-  const pts = bm?.probed_matrix?.length ? bm.probed_matrix : bm?.profiles?.default?.points;
+  // after SAVE_CONFIG restarts Klipper nothing is loaded (probed_matrix is [[]]): show the saved map
+  const live = !!bm?.probed_matrix?.[0]?.length;
+  const pts = live ? bm.probed_matrix : bm?.profiles?.default?.points;
   if (!pts?.length || !pts[0].length) {
     box.replaceChildren(el('p', { class: 'muted small' }, 'No bed map yet.'));
     $('#mesh-range').textContent = '';
@@ -115,40 +117,48 @@ function renderMesh(bm) {
   };
   box.replaceChildren(...pts.slice().reverse().flatMap((row) => row.map((v) =>
     el('div', { style: `background:${color(v)}` }, `${v >= 0 ? '+' : ''}${v.toFixed(2)}`))));
-  renderKnobs(bm, pts);
+  renderKnobs(bm, pts, live);
 }
 
 // Ender 3 bed screw positions (bed coordinates) and thread pitch.
 const SCREWS = [['Front-left', 32, 36], ['Front-right', 202, 36], ['Back-left', 32, 206], ['Back-right', 202, 206]];
 const MM_PER_TURN = 0.7;
 
-// Fit a flat plane through the map (ignores the bed's own dome) and say how
-// far to turn each knob to remove the tilt.
-function renderKnobs(bm, pts) {
+// The bed's height under each knob, read off the map (bilinear, carried a
+// little past the map's edge where a knob sits outside it). Reading the map at
+// the knobs - not fitting a flat plane through it - is what catches a twisted
+// bed: two opposite corners low, the other two high, which a plane fit calls level.
+export function bedAt(pts, min, max, x, y) {
+  const ny = pts.length, nx = pts[0].length;
+  const gx = (x - min[0]) / (max[0] - min[0]) * (nx - 1), gy = (y - min[1]) / (max[1] - min[1]) * (ny - 1);
+  const i = Math.min(Math.max(Math.floor(gx), 0), nx - 2), j = Math.min(Math.max(Math.floor(gy), 0), ny - 2);
+  const tx = gx - i, ty = gy - j;
+  const a = pts[j][i], b = pts[j][i + 1], c = pts[j + 1][i], d = pts[j + 1][i + 1];
+  return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
+}
+
+// How far to turn each knob. The knob whose corner is nearest the average
+// stays put; the other three move to meet it.
+export function knobTurns(pts, min, max) {
+  const h = SCREWS.map(([name, x, y]) => [name, bedAt(pts, min, max, x, y)]);
+  const mean = h.reduce((s2, [, z]) => s2 + z, 0) / h.length;
+  const ref = h.reduce((best, cur) => (Math.abs(cur[1] - mean) < Math.abs(best[1] - mean) ? cur : best))[1];
+  return h.map(([name, z]) => ({ name, dz: z - ref }));
+}
+
+const LEVEL_MM = 0.05;    // every knob within this of the others: level
+
+function renderKnobs(bm, pts, live) {
   let box = $('#knob-advice');
   if (!box) {
     box = el('div', { id: 'knob-advice', class: 'knobs' });
     $('#mesh-view').after(box);
   }
-  const min = bm.mesh_min || bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.min_x, bm.profiles.default.mesh_params.min_y];
-  const max = bm.mesh_max || bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.max_x, bm.profiles.default.mesh_params.max_y];
-  if (!min || !max) { box.replaceChildren(); return; }
-  const ny = pts.length, nx = pts[0].length;
-  // Least squares z = a + b*x + c*y
-  let n = 0, sx = 0, sy = 0, sz = 0, sxx = 0, syy = 0, sxy = 0, sxz = 0, syz = 0;
-  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
-    const x = min[0] + (max[0] - min[0]) * i / (nx - 1), y = min[1] + (max[1] - min[1]) * j / (ny - 1), z = pts[j][i];
-    n++; sx += x; sy += y; sz += z; sxx += x * x; syy += y * y; sxy += x * y; sxz += x * z; syz += y * z;
-  }
-  const A = [[n, sx, sy], [sx, sxx, sxy], [sy, sxy, syy]], B = [sz, sxz, syz];
-  const det = (m) => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-  const D = det(A);
-  if (Math.abs(D) < 1e-9) return;
-  const solve = (k) => det(A.map((row, r) => row.map((v, c) => (c === k ? B[r] : v)))) / D;
-  const [a, b, c] = [solve(0), solve(1), solve(2)];
-  const h = SCREWS.map(([name, x, y]) => [name, a + b * x + c * y]);
-  const ref = h.reduce((s2, [, z]) => s2 + z, 0) / h.length;
-  const tilt = Math.max(...h.map(([, z]) => z)) - Math.min(...h.map(([, z]) => z));
+  const min = live ? bm.mesh_min : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.min_x, bm.profiles.default.mesh_params.min_y];
+  const max = live ? bm.mesh_max : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.max_x, bm.profiles.default.mesh_params.max_y];
+  if (!min || !max || pts.length < 2 || pts[0].length < 2 || max[0] <= min[0] || max[1] <= min[1]) { box.replaceChildren(); return; }
+  const turns = knobTurns(pts, min, max);
+  const off = Math.max(...turns.map((t) => Math.abs(t.dz)));
   const frac = (t) => {
     const eighths = Math.round(Math.abs(t) * 8);
     if (eighths === 0) return null;
@@ -156,28 +166,29 @@ function renderKnobs(bm, pts) {
     const names = ['', '⅛', '¼', '⅜', '½', '⅝', '¾', '⅞'];
     return `${whole ? `${whole}${rest ? ' ' : ''}` : ''}${names[rest]} turn${whole > 1 || (whole === 1 && rest) ? 's' : ''}`;
   };
-  const rows = h.map(([name, z]) => {
-    const t = frac((z - ref) / MM_PER_TURN);
-    if (!t) return el('div', {}, el('b', {}, name), el('span', { class: 'muted' }, 'leave it'));
-    const up = z < ref;
+  const rows = turns.map(({ name, dz }) => {
+    const t = Math.abs(dz) >= LEVEL_MM ? frac(dz / MM_PER_TURN) : null;
+    const mm = el('span', { class: 'muted small' }, `${dz >= 0 ? '+' : ''}${dz.toFixed(2)} mm`);
+    if (!t) return el('div', {}, el('b', {}, name), el('span', { class: 'muted' }, 'leave it'), mm);
+    const up = dz < 0;
     return el('div', {}, el('b', {}, name),
       el('span', {}, `${up ? 'raise' : 'lower'} ${t}`),
-      el('span', { class: 'muted small' }, up ? 'push the knob\'s front edge left' : 'push the knob\'s front edge right'));
+      el('span', { class: 'muted small' }, up ? 'push the knob\'s front edge left' : 'push the knob\'s front edge right'), mm);
   });
   box.replaceChildren(el('div', { class: 'panel-h' }, 'Levelling assistant',
-    el('span', { class: 'muted small' }, tilt < 0.1 ? 'the bed is level – no turning needed' : `tilt ${tilt.toFixed(2)} mm across the knobs`)),
-  ...(tilt < 0.1 ? [] : rows),
-  el('p', { class: 'muted small' }, 'Turn the knobs, then press "Measure the bed again" to check. (Assumes ~0.7 mm per turn.)'));
+    el('span', { class: 'muted small' }, off < LEVEL_MM ? 'the bed is level – no turning needed' : `corners up to ${off.toFixed(2)} mm off`)),
+  ...(off < LEVEL_MM ? [] : rows),
+  el('p', { class: 'muted small' }, 'Heights are read off the map at each knob, so a twisted bed shows up too. Turn the knobs, then press "Measure the bed again" to check. (Assumes ~0.7 mm per turn.)'));
 }
 
 async function runMesh() {
   if (busy()) return;
-  if (!await confirmBox('Measure the bed?', 'The bed heats to 60 °C, the printer homes, and the probe touches 25 points across the bed (about 4 minutes). The new map is saved and Klipper restarts. Stay near the printer.', 'Start')) return;
+  if (!await confirmBox('Measure the bed?', 'The bed heats to 60 °C, the printer homes, and the probe touches 81 points across the bed (about 10 minutes). The new map is saved and Klipper restarts. Stay near the printer.', 'Start')) return;
   toast('Measuring the bed – this takes a few minutes…', '', 8000);
   await attempt(async () => {
     await mr.gcode('M190 S60');
     await mr.gcode('G28');
-    await mr.gcode('BED_MESH_CALIBRATE');
+    await mr.gcode('BED_MESH_CALIBRATE PROBE_COUNT=9,9');
     await mr.gcode('SAVE_CONFIG');
   }, 'Bed map saved');
 }
