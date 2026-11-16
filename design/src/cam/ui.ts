@@ -17,8 +17,8 @@ const html = `
   <input class="ds-name" id="cm-name" title="Job name" spellcheck="false">
   <div class="ds-seg">
     <button id="cm-new" title="Start a new job">New</button>
-    <button id="cm-open" title="Open a saved job">Open…</button>
-    <button id="cm-save" title="Save this job on the Pi">Save</button>
+    <button id="cm-open" title="Open a job from the SnorbCut library">Open…</button>
+    <button id="cm-save" title="Save this job in the SnorbCut library (on the Pi)">Save</button>
   </div>
   <div class="ds-seg">
     <button id="cm-add-file" title="Add outlines from an SVG (Illustrator) or DXF file">Add SVG / DXF…</button>
@@ -1097,21 +1097,26 @@ export function mount(root: HTMLElement, studio: Studio) {
   $('#cm-open').onclick = () => picker('Open a job', API, 'cam', async (name) => {
     const j = await (await fetch(`${API}/${encodeURIComponent(name)}.json`)).json();
     if (dirty && job.placed.length && !confirmDiscard()) return;
+    delete j.plan;
     job = j; units = job.units || 'in';
     undo.length = 0; redo.length = 0; dirty = false; selPlaced = null; sel.clear();
     saveDraft(); fit(); refresh();
   }, true);
 
-  async function save() {
+  /** Saves the job in the SnorbCut library (on the Pi), with its plan worked out so SnorbCut can load it straight onto the ShopBot. */
+  async function save(quiet = false): Promise<boolean> {
     const nm = job.name.trim() || 'job';
     try {
-      const r = await fetch(`${API}/${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(job), headers: { 'Content-Type': 'application/json' } });
+      let planTxt = '';
+      try { const p = planJob(job); if (p.cuts.length) planTxt = planText(job, runList(sequence(job, p))); } catch { /* saved without a plan */ }
+      const r = await fetch(`${API}/${encodeURIComponent(nm)}.json?replace=1`, { method: 'PUT', body: JSON.stringify(planTxt ? { ...job, plan: planTxt } : job), headers: { 'Content-Type': 'application/json' } });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
       dirty = false;
-      flash(`Saved ${nm}`);
-    } catch (e: any) { flash(`Couldn't save: ${e.message}`); }
+      if (!quiet) flash(`Saved ${nm} in the SnorbCut library`);
+      return true;
+    } catch (e: any) { if (!quiet) flash(`Couldn't save: ${e.message}`); return false; }
   }
-  $('#cm-save').onclick = save;
+  $('#cm-save').onclick = () => save();
 
   /** A small list to pick a saved job or part from. */
   async function picker(title: string, url: string, key: string, pick: (name: string) => Promise<void>, deletable = false) {
@@ -1181,7 +1186,8 @@ export function mount(root: HTMLElement, studio: Studio) {
       const r = await fetch(`/cut-api/plan?name=${encodeURIComponent(job.name || 'job')}`, { method: 'POST', body: planText(job, run) });
       const j = await r.json().catch(() => null);
       if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || 'the ShopBot laptop did not answer');
-      flash(`Sent to SnorbCut: ${stages} stage${stages > 1 ? 's' : ''}${steps ? ` and ${steps} step${steps > 1 ? 's' : ''}` : ''}. Start it at the ShopBot laptop.`);
+      const kept = await save(true);   // what is sent is also kept in the library
+      flash(`Sent to SnorbCut${kept ? ' and saved in its library' : ''}: ${stages} stage${stages > 1 ? 's' : ''}${steps ? ` and ${steps} step${steps > 1 ? 's' : ''}` : ''}. Start it at the ShopBot laptop.`);
       (studio as any)?.show?.('cut');
     } catch (e: any) { flash(`Couldn't send it: ${e.message}. Is the ShopBot laptop on, with SnorbCut running?`); }
   };

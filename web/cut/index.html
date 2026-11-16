@@ -66,6 +66,10 @@
   .plan li { display: flex; gap: 6px; color: var(--dim); } .plan li i { font-style: normal; width: 14px; flex: none; text-align: center; }
   .plan li.done { color: var(--ok); } .plan li.now { color: var(--text); font-weight: 600; } .plan li.step { font-style: italic; }
   .plan .stepbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 8px; } .plan .stepbox b { color: var(--warn); }
+  .lib { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .lib .it { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .lib .it b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .lib .it span { font-size: 11px; color: var(--dim); }
+  .lib .it div { display: flex; gap: 4px; flex-wrap: wrap; } .lib .it button { padding: 3px 8px; font-size: 12px; width: auto; }
   .card.ok { border-color: var(--accent); } .card.ok b { color: var(--accent); }
   details { border-top: 1px solid var(--line); padding-top: 8px; }
   details > summary { cursor: pointer; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); list-style-position: inside; }
@@ -108,6 +112,14 @@
     <input type="file" id="pick" accept=".sbp,.nc,.gcode,.tap" hidden>
     <div class="row"><button class="ghost" id="send">Send a file</button><select id="jobs"><option value="">Jobs on the ShopBot PC</option></select></div>
     <button class="go" id="start" disabled>Start job</button>
+
+    <details id="libbox" hidden open>
+      <summary>Library</summary>
+      <div>
+        <div class="note">Cut jobs saved from SnorbCAM. They are kept apart from the printer's files.</div>
+        <div id="lib"></div>
+      </div>
+    </details>
 
     <details id="ctl">
       <summary>Machine control</summary>
@@ -705,12 +717,51 @@ for (const [id, k] of [['sw', 'bedW'], ['sh', 'bedH'], ['sb', 'bit'], ['sr', 'ra
 }
 $('chime').checked = S.chime; $('chime').onchange = () => { S.chime = $('chime').checked; store.set('chime', S.chime ? '1' : '0'); };
 loadJobs();
+
+// ---------- the SnorbCut library: cut jobs saved from SnorbCAM, kept on the SnorbStudio Pi ----------
+// Only inside SnorbStudio (the laptop's own page has no Pi to ask).
+const LIB = '/studio-api/cam';
+async function loadLib() {
+  if (!EMB) return;
+  $('libbox').hidden = false;
+  const host = $('lib'); let items;
+  try { items = (await (await fetch(LIB)).json()).cam || []; } catch (e) { host.textContent = 'The library could not be read from the Pi.'; return; }
+  host.innerHTML = ''; host.className = 'lib';
+  if (!items.length) { host.textContent = 'Nothing saved yet. In SnorbCAM, press Save or Send to SnorbCut.'; return; }
+  const btn = (label, cls, fn) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.onclick = fn; return b; };
+  for (const it of items) {
+    const box = document.createElement('div'); box.className = 'it';
+    const t = document.createElement('b'); t.textContent = it.name;
+    const when = document.createElement('span'); when.textContent = 'Saved ' + new Date(it.modified * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+    const row = document.createElement('div');
+    const get = async () => { try { return await (await fetch(LIB + '/' + encodeURIComponent(it.name) + '.json')).json(); } catch (e) { say('Could not read ' + it.name + ' from the Pi.'); return null; } };
+    row.appendChild(btn('Load on the ShopBot', 'go', async () => {
+      const j = await get(); if (!j) return;
+      if (!j.plan) { say(it.name + ' has no cuts worked out in it. Open it in SnorbCAM and press Save, then load it here.'); return; }
+      const r = await post(API + '/plan?name=' + encodeURIComponent(it.name), j.plan);
+      if (r && r.ok) { jobSeen = null; loadJobs(); }
+    }));
+    row.appendChild(btn('Open in SnorbCAM', 'ghost', async () => {
+      if (!await ask('Open ' + it.name + ' in SnorbCAM? It replaces what is open there now; changes there that were not saved are lost.', { ok: 'Open' })) return;
+      const j = await get(); if (!j) return;
+      delete j.plan;
+      try { localStorage.setItem('studio.cam.draft', JSON.stringify(j)); parent.location.hash = '#cam'; parent.location.reload(); } catch (e) { say('Could not open it.'); }
+    }));
+    row.appendChild(btn('Delete', 'ghost', async () => {
+      if (!await ask('Delete ' + it.name + ' from the library? This cannot be undone.', { ok: 'Delete' })) return;
+      try { await fetch(LIB + '/' + encodeURIComponent(it.name) + '.json', { method: 'DELETE' }); } catch (e) { }
+      loadLib();
+    }));
+    box.append(t, when, row); host.appendChild(box);
+  }
+}
+loadLib();
 window.addEventListener('resize', draw);
 if (navigator.wakeLock) { const lock = () => navigator.wakeLock.request('screen').catch(() => { }); lock(); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') lock(); }); }
 // Polls fast while you are looking, slowly while the tab is in the background; wakes at once when shown again.
 let loopTimer = 0, ticking = false;
 async function loop() { clearTimeout(loopTimer); if (ticking) return; ticking = true; try { await tick(); } finally { ticking = false; } loopTimer = setTimeout(loop, hiddenNow() ? 3000 : fails > 3 ? 2000 : 170); }
-window.wake = () => { draw(); loop(); };
+window.wake = () => { draw(); loop(); loadLib(); };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) window.wake(); });
 loop();
 </script>

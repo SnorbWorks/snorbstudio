@@ -147,6 +147,11 @@ the laptop's address is only in `/etc/nginx/snippets/studio-cut.conf` on the Pi)
 - `web/cut/index.html` is the **same file** the bridge serves on the laptop
   (there it talks to `/api/` directly). Keep it self-contained: plain JS, no
   imports, no build. Change it in one place and copy it to the other.
+- **SnorbCut library** (owner: cut jobs do not share space with SnorbPrint's
+  files): SnorbCAM's Save and Send to SnorbCut store the job in
+  `/studio-api/cam` with its plan text in a `plan` field (stripped on open).
+  The SnorbCut page lists them under Library (only inside SnorbStudio) with
+  Load on the ShopBot / Open in SnorbCAM / Delete. Nothing CNC goes in Files.
 - **Owner safety rule:** from anywhere: watch, Pause, Stop, send a job file.
   **Only on the laptop itself** (the bridge checks the request is local, not
   the page): Start, Resume after a pause, moves, zeroing, router on/off.
