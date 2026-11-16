@@ -16,6 +16,7 @@ export function initMaint(theApp) {
   $('#fw-restart').onclick = restartFirmware;
   $('#svc-restart').onclick = restartService;
   $('#mesh-run').onclick = runMesh;
+  $('#knob-check').onclick = runQuick;
   $('#zcal-start').onclick = zcalStart;
   $('#zcal-accept').onclick = zcalAccept;
   $('#zcal-abort').onclick = () => attempt(() => mr.gcode('ABORT'));
@@ -137,14 +138,44 @@ export function bedAt(pts, min, max, x, y) {
   return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
 }
 
-// How far to turn each knob. The knob whose corner is nearest the average
-// stays put; the other three move to meet it.
-export function knobTurns(pts, min, max) {
-  const h = SCREWS.map(([name, x, y]) => [name, bedAt(pts, min, max, x, y)]);
+// How far to turn each knob, from the bed's height at each one ({name: z}).
+// The knob nearest the average stays put; the other three move to meet it.
+// rates: each knob's mm per turn (learned; MM_PER_TURN until then).
+export function knobTurns(heights, rates = {}) {
+  const h = SCREWS.map(([name]) => [name, heights[name]]);
   const mean = h.reduce((s2, [, z]) => s2 + z, 0) / h.length;
-  const ref = h.reduce((best, cur) => (Math.abs(cur[1] - mean) < Math.abs(best[1] - mean) ? cur : best))[1];
-  return h.map(([name, z]) => ({ name, dz: z - ref }));
+  const ref = h.reduce((best, cur) => (Math.abs(cur[1] - mean) < Math.abs(best[1] - mean) ? cur : best));
+  return { ref: ref[0], knobs: h.map(([name, z]) => ({ name, dz: z - ref[1], turns: (z - ref[1]) / (rates[name] || MM_PER_TURN) })) };
 }
+
+/**
+ * Knobs don't all move the bed the same amount per turn (a squashed spring
+ * moves less). Each new measurement is compared with the last one: what a
+ * knob actually moved, over the turn it was told to make, is its real mm per
+ * turn, and the next advice uses that. Kept in this browser.
+ * Returns { rates, learned: names that have a learned rate }.
+ */
+const KNOB_KEY = 'studio.knobs';
+export function learnRates(prev, heights, sig) {
+  const rates = { ...(prev?.rates || {}) };
+  if (prev && prev.sig !== sig && prev.ref && prev.rel && prev.turns) {
+    for (const [name] of SCREWS) {
+      const told = prev.turns[name];
+      if (name === prev.ref || !told || Math.abs(told) < 1 / 8) continue;
+      const moved = prev.rel[name] - (heights[name] - heights[prev.ref]);   // + when it went down
+      const r = moved / told;
+      if (r < 0.1 || r > 1.5) continue;     // not turned (or turned the wrong way): learn nothing
+      rates[name] = rates[name] ? (rates[name] + r) / 2 : r;
+    }
+  }
+  return rates;
+}
+
+function loadKnobs() { try { return JSON.parse(localStorage.getItem(KNOB_KEY) || 'null'); } catch (e) { return null; } }
+function saveKnobs(v) { try { localStorage.setItem(KNOB_KEY, JSON.stringify(v)); } catch (e) { /* ignore */ } }
+
+// A quick knob check's result (heights beside each knob); newer than the map until the map is measured again.
+let quick = null;
 
 const LEVEL_MM = 0.05;    // every knob within this of the others: level
 
@@ -154,11 +185,28 @@ function renderKnobs(bm, pts, live) {
     box = el('div', { id: 'knob-advice', class: 'knobs' });
     $('#mesh-view').after(box);
   }
-  const min = live ? bm.mesh_min : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.min_x, bm.profiles.default.mesh_params.min_y];
-  const max = live ? bm.mesh_max : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.max_x, bm.profiles.default.mesh_params.max_y];
-  if (!min || !max || pts.length < 2 || pts[0].length < 2 || max[0] <= min[0] || max[1] <= min[1]) { box.replaceChildren(); return; }
-  const turns = knobTurns(pts, min, max);
-  const off = Math.max(...turns.map((t) => Math.abs(t.dz)));
+  let heights, sig, from;
+  if (quick) {
+    ({ heights, sig } = quick);
+    from = 'the quick knob check';
+  } else {
+    const min = live ? bm.mesh_min : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.min_x, bm.profiles.default.mesh_params.min_y];
+    const max = live ? bm.mesh_max : bm.profiles?.default?.mesh_params && [bm.profiles.default.mesh_params.max_x, bm.profiles.default.mesh_params.max_y];
+    if (!min || !max || pts.length < 2 || pts[0].length < 2 || max[0] <= min[0] || max[1] <= min[1]) { box.replaceChildren(); return; }
+    heights = Object.fromEntries(SCREWS.map(([name, x, y]) => [name, bedAt(pts, min, max, x, y)]));
+    sig = 'm' + pts.flat().map((v) => v.toFixed(3)).join(',');
+    from = 'the map';
+  }
+  // learn from the last round once per new measurement, then remember this round's advice
+  const prev = loadKnobs();
+  const rates = prev?.sig === sig ? (prev.rates || {}) : learnRates(prev, heights, sig);
+  const adv = knobTurns(heights, rates);
+  if (prev?.sig !== sig) {
+    saveKnobs({ sig, ref: adv.ref, rates,
+      rel: Object.fromEntries(adv.knobs.map((k) => [k.name, k.dz])),
+      turns: Object.fromEntries(adv.knobs.map((k) => [k.name, Math.abs(k.dz) >= LEVEL_MM ? k.turns : 0])) });
+  }
+  const off = Math.max(...adv.knobs.map((k) => Math.abs(k.dz)));
   const frac = (t) => {
     const eighths = Math.round(Math.abs(t) * 8);
     if (eighths === 0) return null;
@@ -166,25 +214,56 @@ function renderKnobs(bm, pts, live) {
     const names = ['', '⅛', '¼', '⅜', '½', '⅝', '¾', '⅞'];
     return `${whole ? `${whole}${rest ? ' ' : ''}` : ''}${names[rest]} turn${whole > 1 || (whole === 1 && rest) ? 's' : ''}`;
   };
-  const rows = turns.map(({ name, dz }) => {
-    const t = Math.abs(dz) >= LEVEL_MM ? frac(dz / MM_PER_TURN) : null;
-    const mm = el('span', { class: 'muted small' }, `${dz >= 0 ? '+' : ''}${dz.toFixed(2)} mm`);
-    if (!t) return el('div', {}, el('b', {}, name), el('span', { class: 'muted' }, 'leave it'), mm);
+  const rows = adv.knobs.map(({ name, dz, turns }) => {
+    const t = Math.abs(dz) >= LEVEL_MM ? frac(turns) : null;
+    const note = `${dz >= 0 ? '+' : ''}${dz.toFixed(2)} mm${rates[name] ? ` · this knob: ${rates[name].toFixed(2)} mm/turn` : ''}`;
+    const mm = el('span', { class: 'muted small' }, note);
+    if (!t) return el('div', {}, el('b', {}, name), el('span', { class: 'muted' }, name === adv.ref ? 'leave it (the others meet it)' : 'leave it'), mm);
     const up = dz < 0;
     return el('div', {}, el('b', {}, name),
       el('span', {}, `${up ? 'raise' : 'lower'} ${t}`),
       el('span', { class: 'muted small' }, up ? 'push the knob\'s front edge left' : 'push the knob\'s front edge right'), mm);
   });
   box.replaceChildren(el('div', { class: 'panel-h' }, 'Levelling assistant',
-    el('span', { class: 'muted small' }, off < LEVEL_MM ? 'the bed is level – no turning needed' : `corners up to ${off.toFixed(2)} mm off`)),
+    el('span', { class: 'muted small' }, off < LEVEL_MM ? `the bed is level – no turning needed (${from})` : `corners up to ${off.toFixed(2)} mm off (${from})`)),
   ...(off < LEVEL_MM ? [] : rows),
-  el('p', { class: 'muted small' }, 'Heights are read off the map at each knob, so a twisted bed shows up too. Turn the knobs, then press "Measure the bed again" to check. (Assumes ~0.7 mm per turn.)'));
+  el('p', { class: 'muted small' }, off < LEVEL_MM
+    ? (quick ? 'Now press "Measure the bed again" so the printer has a fresh map to print with.' : '')
+    : 'Make the turns, then press "Quick knob check" (about a minute) and repeat until it says level. Then "Measure the bed again" for a fresh map. Heights are read at each knob, so a twisted bed shows up too; each knob\'s real movement per turn is learned as you go.'));
+}
+
+// The four knobs' corners, from where screws_tilt_adjust probes (nozzle coordinates, so left/right and front/back are enough).
+function knobOfPoint(x, y, mid) {
+  return `${y < mid[1] ? 'Front' : 'Back'}-${x < mid[0] ? 'left' : 'right'}`;
+}
+
+async function runQuick() {
+  if (busy()) return;
+  if (!await confirmBox('Quick knob check?', 'The bed heats to 60 °C, the printer homes, and the probe touches the bed beside each of the four knobs (about a minute once it\'s hot). Nothing is saved.', 'Start')) return;
+  toast('Checking the knobs…', '', 6000);
+  await attempt(async () => {
+    await mr.gcode('M190 S60');
+    await mr.gcode('G28');
+    await mr.gcode('SCREWS_TILT_CALCULATE');
+    const q = await mr.call('printer.objects.query', { objects: { screws_tilt_adjust: null, configfile: ['settings'] } });
+    const res = q?.status?.screws_tilt_adjust?.results || {};
+    const cfg = q?.status?.configfile?.settings?.screws_tilt_adjust || {};
+    const pts = Object.keys(res).map((k) => ({ xy: cfg[k], z: res[k].z })).filter((p) => p.xy && typeof p.z === 'number');
+    if (pts.length !== 4) throw new Error('The knob check didn\'t return all four knobs');
+    const mid = [0, 1].map((i) => pts.reduce((s2, p) => s2 + p.xy[i], 0) / 4);
+    const heights = {};
+    for (const p of pts) heights[knobOfPoint(p.xy[0], p.xy[1], mid)] = p.z;
+    if (Object.keys(heights).length !== 4) throw new Error('Couldn\'t tell the four knobs apart from their positions');
+    quick = { heights, sig: `q${Date.now()}` };
+    update();
+  }, 'Knob check done');
 }
 
 async function runMesh() {
   if (busy()) return;
   if (!await confirmBox('Measure the bed?', 'The bed heats to 60 °C, the printer homes, and the probe touches 81 points across the bed (about 10 minutes). The new map is saved and Klipper restarts. Stay near the printer.', 'Start')) return;
-  toast('Measuring the bed – this takes a few minutes…', '', 8000);
+  toast('Measuring the bed – this takes about 10 minutes…', '', 8000);
+  quick = null;
   await attempt(async () => {
     await mr.gcode('M190 S60');
     await mr.gcode('G28');
