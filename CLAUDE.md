@@ -123,7 +123,12 @@ order is holes, pockets, lines, inside cuts, then cut-outs last, with the
 fewest bit changes; arranging by hand stores `job.seq`. A run of cuts between
 steps is a **stage**: one bit, one G-code file. A tool change always sits
 where the bit changes (added automatically). Tests: `design/test/sequence.test.mjs`.
-Still to do: "Send to SnorbCut" so the bridge runs the stages and steps as one job.
+**Send to SnorbCut** posts the whole job as one text to `/cut-api/plan`
+(`planText`: `SNORBPLAN 1`, then `#stage|label` + that stage's G-code and
+`#step|kind|name|goto|rezero|note` lines). The bridge (0.5+) keeps it as
+`NAME.snorb`, runs each stage in SB3, and at a step moves the head and waits
+for Continue. Sending and cancelling work from anywhere; Start and Continue
+only at the laptop. **Not yet run on the real machine.**
 
 ## SnorbCut
 

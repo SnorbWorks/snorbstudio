@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newJob, newOp, IN } from './build/cam/job.mjs';
 import { planJob, movesFor, gcode } from './build/cam/toolpath.mjs';
-import { sequence, runList, toSeq, newStep, groupOf, describeStep } from './build/cam/sequence.mjs';
+import { sequence, runList, toSeq, newStep, groupOf, describeStep, planText } from './build/cam/sequence.mjs';
 
 const square = (x, y, s) => [[x, y], [x + s, y], [x + s, y + s], [x, y + s]];
 const circle = (cx, cy, r, n = 24) => Array.from({ length: n }, (_, i) => [cx + r * Math.cos((i / n) * 2 * Math.PI), cy + r * Math.sin((i / n) * 2 * Math.PI)]);
@@ -101,4 +101,24 @@ test('every stage makes valid G-code', () => {
     assert.ok(nc.split('\n').length > 10);
     assert.ok(r.stage.label.length > 0);
   }
+});
+
+test('the plan sent to SnorbCut: every stage with its G-code, steps in between', () => {
+  const j = plate();
+  const es = sequence(j, planJob(j));
+  const tc = newStep('toolchange', 'Fit | the 1/8" bit'); tc.goto = 'Load Bit'; tc.note = 'line one\nline two';
+  const list = [...es]; list.splice(2, 0, { t: 'step', step: tc });
+  j.seq = toSeq(list);
+  const txt = planText(j, runList(sequence(j, planJob(j))));
+  const lines = txt.split('\n');
+  assert.equal(lines[0], 'SNORBPLAN 1');
+  const marks = lines.filter((l) => l.startsWith('#'));
+  assert.equal(marks.length, 3);
+  assert.match(marks[0], /^#stage\|/);
+  assert.equal(marks[1], '#step|toolchange|Fit the 1/8" bit|Load Bit|1|line one line two');
+  assert.match(marks[2], /^#stage\|/);
+  // each stage is complete G-code that ends back at X0 Y0
+  const parts = txt.split(/^#.*$/m).slice(1).map((t) => t.trim()).filter(Boolean);
+  assert.equal(parts.length, 2);
+  for (const g of parts) { assert.match(g, /^G20\nG90\n/); assert.match(g, /G0 X0\.00000 Y0\.00000\nG4 P0\.1$/); }
 });

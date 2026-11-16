@@ -3,7 +3,7 @@
 // cuts between two steps is a stage: one G-code file, one bit.
 
 import { Bit, Job, SeqItem, Step, StepKind, bbox, camId, IN } from './job.js';
-import { Cut, Plan } from './toolpath.js';
+import { Cut, Plan, gcode, movesFor } from './toolpath.js';
 
 export type Entry =
   | { t: 'cut'; cut: Cut; group: Group; warn?: string }
@@ -141,6 +141,20 @@ function plural(name: string, n: number): string {
   if (n === 1) return name;
   const many: Record<string, string> = { Hole: 'holes', Pocket: 'pockets', 'On the line': 'line cuts', 'Inside cut': 'inside cuts', 'Cut out': 'cut-outs' };
   return `${n} ${many[name] || name}`;
+}
+
+/**
+ * The whole job as one text for SnorbCut, which runs it stage by stage:
+ * "#stage|label" then that stage's G-code; "#step|kind|name|goto|rezero|note".
+ */
+export function planText(job: Job, run: RunItem[]): string {
+  const clean = (t: string) => String(t ?? '').replace(/[|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const L: string[] = ['SNORBPLAN 1', `name: ${clean(job.name)}`];
+  for (const r of run) {
+    if (r.t === 'stage') { L.push(`#stage|${clean(r.stage.label)}`); L.push(gcode(job, movesFor(job, r.stage.cuts), r.stage.bit).trimEnd()); }
+    else L.push(`#step|${r.step.kind}|${clean(r.step.name)}|${clean(r.step.goto)}|${r.step.rezero ? 1 : 0}|${clean(r.step.note)}`);
+  }
+  return L.join('\n') + '\n';
 }
 
 /** What a step does, in a few words. */

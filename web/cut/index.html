@@ -61,6 +61,11 @@
   .grp { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .grp > b { font-size: 13px; }
   .place { display: flex; gap: 6px; align-items: center; margin-top: 6px; } .place span { flex: 1; min-width: 0; font-size: 13px; } .place small { display: block; color: var(--dim); font-size: 11px; } .place button { padding: 7px 12px; }
+  .plan { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .plan > b { font-size: 13px; } .plan ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+  .plan li { display: flex; gap: 6px; color: var(--dim); } .plan li i { font-style: normal; width: 14px; flex: none; text-align: center; }
+  .plan li.done { color: var(--ok); } .plan li.now { color: var(--text); font-weight: 600; } .plan li.step { font-style: italic; }
+  .plan .stepbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 8px; } .plan .stepbox b { color: var(--warn); }
   .card.ok { border-color: var(--accent); } .card.ok b { color: var(--accent); }
   details { border-top: 1px solid var(--line); padding-top: 8px; }
   details > summary { cursor: pointer; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); list-style-position: inside; }
@@ -96,6 +101,7 @@
     <div class="msg" id="msg"></div>
     <div id="prompts"></div>
     <div id="zcards"></div>
+    <div id="plancard"></div>
 
     <h1>Job</h1>
     <div class="note" id="jobinfo">No job yet.</div>
@@ -475,7 +481,8 @@ $('start').onclick = async () => {
   if (!job || !await needPin()) return;
   const where = st && st.preview ? 'SB3 is in Preview mode, so nothing will move.' : 'SB3 is in Move/Cut mode: the machine will move and the router may start.';
   const zw = ' It will cut from ' + (st.zeroIs === 'project' ? 'Project Home' : st.zeroIs === 'machine' ? 'Machine Home' : 'wherever X and Y were last zeroed') + '.' + (st.zz === 'sensors' ? '' : ' Note: Z is ' + ZTXT[st.zz || ''] + '.');
-  if (await ask('Start ' + (st.job || 'the job') + '? ' + where + zw, { ok: 'Start' })) { finished = false; post(API + '/run', '', true); }
+  const what = st.plan ? 'the plan ' + st.plan.name + (planFrom ? ' from item ' + (planFrom + 1) : '') : (st.job || 'the job');
+  if (await ask('Start ' + what + '? ' + where + zw, { ok: 'Start' })) { finished = false; post(API + '/run?from=' + (st.plan ? planFrom : 0) + '&safe=' + encodeURIComponent(S.safe), '', true); }
 };
 async function command(c, confirmText) {
   if (!await needPin()) return;
@@ -527,6 +534,56 @@ const bedO = () => (st && st.mref && st.off) ? [-st.off[0], -st.off[1]] : [0, 0]
 $('homexy').onclick = () => command('C3', 'Home X and Y? The gantry will travel to its X and Y sensors. Check the table is clear and the bit is raised above everything on it.');
 $('platez').onclick = () => command('C2', 'Zero Z on the plate? SB3 will ask before it moves. The bit will come down until it touches the plate, so the plate must be under the bit with the clip attached.');
 // after a sensor routine ends, the person at the machine confirms the new zero (or throws it out)
+// A plan from SnorbCAM: stages of cutting with steps between. The bridge runs it; this shows where it is.
+let planFrom = 0;
+function renderPlan(s) {
+  const p = s.plan, host = $('plancard');
+  const key = JSON.stringify([p, s.local, s.zz, s.task, s.queued, planFrom]); if (renderPlan.key === key) return; renderPlan.key = key;
+  host.innerHTML = ''; $('start').textContent = p ? 'Start plan' : 'Start job';
+  if (!p) return;
+  const box = document.createElement('div'); box.className = 'plan';
+  const live = ['starting', 'cutting', 'moving', 'waiting'].includes(p.state);
+  const head = document.createElement('b'); head.textContent = 'Plan: ' + p.name + ' (' + ({ ready: 'ready to start', starting: 'running', cutting: 'cutting', moving: 'moving the head', waiting: 'waiting for you', done: 'finished', stopped: 'stopped' }[p.state] || p.state) + ')'; box.appendChild(head);
+  const ol = document.createElement('ol'); let n = 0;
+  p.items.forEach((it, i) => {
+    const li = document.createElement('li'), mark = document.createElement('i'), t = document.createElement('span');
+    const done = (live || p.state === 'done') && i < p.at || p.state === 'done', now = live && i === p.at;
+    li.className = (done ? 'done ' : now ? 'now ' : '') + (it.t === 'step' ? 'step' : '');
+    mark.textContent = done ? '\u2713' : now ? '\u25b6' : '\u00b7';
+    t.textContent = it.t === 'stage' ? 'Stage ' + (++n) + ': ' + it.label : it.name;
+    li.append(mark, t); ol.appendChild(li);
+  });
+  box.appendChild(ol);
+  if (p.msg) { const m = document.createElement('div'); m.className = 'note'; m.style.color = 'var(--warn)'; m.textContent = p.msg; box.appendChild(m); }
+  const btn = (label, cls, fn, off) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.disabled = !!off; b.onclick = fn; return b; };
+  if (p.state === 'waiting' && p.items[p.at]) {
+    const it = p.items[p.at], sb = document.createElement('div'); sb.className = 'stepbox';
+    const t = document.createElement('b'); t.textContent = it.name; sb.appendChild(t);
+    if (it.note) { const nt = document.createElement('div'); nt.textContent = it.note; sb.appendChild(nt); }
+    if (it.rezero) { const z = document.createElement('div'); z.className = 'note'; z.textContent = p.zeroed ? 'Z has been zeroed again.' : 'This step asks for a new Z zero before carrying on.'; sb.appendChild(z); }
+    if (!s.local) { const a = document.createElement('div'); a.className = 'note'; a.textContent = 'Carry on from the ShopBot laptop.'; sb.appendChild(a); }
+    const row = document.createElement('div'); row.className = 'btns'; row.style.display = 'flex'; row.style.gap = '6px'; row.style.flexWrap = 'wrap';
+    const busy = !!s.task || !!s.queued || s.running;
+    if (it.rezero) row.appendChild(btn('Zero Z on the plate', 'ghost', () => $('platez').click(), !s.local || busy));
+    row.appendChild(btn('Continue', 'go', async () => {
+      if (!await needPin()) return;
+      if (it.rezero && !p.zeroed && !await ask('Z has not been zeroed again since this step began. Carry on anyway?', { ok: 'Carry on' })) return;
+      if (!await ask('Carry on with the plan? The machine will start the next stage. Check the table is clear.', { ok: 'Continue' })) return;
+      finished = false; post(API + '/plan?do=continue', '', true);
+    }, !s.local || busy));
+    sb.appendChild(row); box.appendChild(sb);
+  }
+  if (!live && p.items.some(it => it.t === 'stage')) {
+    const lab = document.createElement('label'); lab.textContent = 'Start at';
+    const sel = document.createElement('select'); let k = 0;
+    p.items.forEach((it, i) => { if (it.t === 'stage') { k++; sel.appendChild(new Option('Stage ' + k + ': ' + it.label, i, false, i === planFrom)); } else sel.appendChild(new Option('Step: ' + it.name, i, false, i === planFrom)); });
+    sel.onchange = () => { planFrom = +sel.value; };
+    if (!p.items[planFrom]) planFrom = 0;
+    lab.appendChild(sel); box.appendChild(lab);
+  }
+  if (['starting', 'moving', 'waiting'].includes(p.state)) box.appendChild(btn('Cancel the plan', 'ghost', async () => { if (await ask('Cancel the rest of the plan? Nothing is moving right now.', { ok: 'Cancel plan' })) post(API + '/plan?do=cancel'); }));
+  host.appendChild(box);
+}
 const ZTXT = { '': 'not zeroed since SnorbCut started', check: 'waiting for you to check it', sensors: 'zeroed at the sensors', here: 'zeroed by hand' };
 const ZXY = { '': 'not homed since SnorbCut started', check: 'homed, waiting for you to check it', sensors: 'homed on the sensors', here: 'not homed since SnorbCut started' };
 function renderZero(s) {
@@ -613,20 +670,20 @@ async function tick() {
     if (!jobRun && wasActive && !s.task) { finished = job && job.segs.length && prog.i >= job.segs.length - 2; if (finished && S.chime) beep(); }
     wasRunning = s.running; wasActive = jobRun;
 
-    const state = !s.sb3 ? 'SB3 is not running' : s.paused ? (s.local ? 'Paused' : 'Paused: resume at the machine') : s.task === 'xy' ? 'Homing X and Y' : (s.queued && !s.running) ? 'Moving' : s.task === 'z' ? 'Zeroing Z on the plate' : s.running ? (s.preview ? 'Previewing' : 'Cutting') : finished ? 'Finished' : (s.preview ? 'Idle (Preview mode)' : 'Ready');
+    const state = !s.sb3 ? 'SB3 is not running' : s.paused ? (s.local ? 'Paused' : 'Paused: resume at the machine') : (s.plan && s.plan.state === 'waiting' && !s.task && !s.running) ? 'Waiting at a step' : s.task === 'xy' ? 'Homing X and Y' : (s.queued && !s.running) ? 'Moving' : s.task === 'z' ? 'Zeroing Z on the plate' : s.running ? (s.preview ? 'Previewing' : 'Cutting') : finished ? 'Finished' : (s.preview ? 'Idle (Preview mode)' : 'Ready');
     $('state').textContent = state;
     $('dot').className = 'dot' + (!s.sb3 ? ' off' : s.paused ? ' pause' : s.running ? ' run' : '');
     $('file').textContent = (active && s.file) ? s.file : (s.job || '');
     $('px').textContent = s.x.toFixed(3); $('py').textContent = s.y.toFixed(3); $('pz').textContent = s.z.toFixed(3);
     $('pause').disabled = !s.running; $('resume').disabled = !s.paused || !s.local; $('stop').disabled = !active;
-    $('start').disabled = !job || !s.sb3 || active || s.pending || !s.local;
+    $('start').disabled = !job || !s.sb3 || active || s.pending || !s.local || !!s.queued || !!s.task || (s.plan && ['starting', 'cutting', 'moving', 'waiting'].includes(s.plan.state));
     const idle = s.sb3 && !active && !s.pending;
     const idle2 = idle && !s.queued && !s.task;
     document.querySelectorAll('#ctl button').forEach(b => b.disabled = !idle2 || !s.local || (b.dataset.need === 'mref' && !s.mref));
     $('gomachine').disabled = $('saveplace').disabled = !idle2 || !s.local || !s.mref; $('goproject').disabled = !idle2 || !s.local || !(s.zeroIs === 'project' || (s.mref && s.proj));
     $('cutfrom').disabled = !idle2 || !s.local || !s.mref; $('cutfrom').options[1].disabled = !s.proj;
     $('lockstate').textContent = s.local ? 'You are at the ShopBot laptop: full control.' : 'Away from the machine: watch, Pause and Stop only. Start, Resume, moves and the router work on the ShopBot laptop.';
-    renderPrompts(s.dialogs || []); renderZero(s); renderHomes(s); renderIO(s);
+    renderPrompts(s.dialogs || []); renderZero(s); renderHomes(s); renderPlan(s); renderIO(s);
     if (job && job.total > 0 && (active || finished || prog.i > 0)) {
       const dn = finished ? job.total : doneTime(), frac = dn / job.total;
       let ratio = 1; if (knowStart && dn > 20 && activeMs > 0) ratio = Math.max(0.4, Math.min(3, (activeMs / 1000) / dn));

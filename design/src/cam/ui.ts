@@ -4,7 +4,7 @@
 import { Bit, Contour, IN, Job, Op, OpKind, P2, Part, Placed, Step, StepKind, autoTabs, bitOf, camId, fractionAt, newJob, partBox, placedBox, placer, pointAt } from './job.js';
 import { Plan, byBit, gcode, movesFor, planJob, runTime } from './toolpath.js';
 import { importCad, importDxf, importSvg } from './importers.js';
-import { Entry, GROUP_NAME, STEP_NAME, describeStep, newStep, runList, sequence, toSeq } from './sequence.js';
+import { Entry, GROUP_NAME, STEP_NAME, describeStep, newStep, planText, runList, sequence, toSeq } from './sequence.js';
 
 interface Studio { show?: (p: string) => void }
 
@@ -30,7 +30,8 @@ const html = `
     <button data-u="in">in</button><button data-u="mm">mm</button>
   </div>
   <label class="cm-show"><input type="checkbox" id="cm-paths" checked> Toolpaths</label>
-  <button class="btn primary" id="cm-export" title="Write the G-code for the ShopBot">Export G-code</button>
+  <button class="btn" id="cm-export" title="Save the G-code as files (one per stage) to run in the ShopBot software yourself">Export G-code</button>
+  <button class="btn primary" id="cm-send" title="Send the whole job, with its cut order and steps, to SnorbCut on the ShopBot laptop">Send to SnorbCut</button>
 </div>
 <div class="ds-body">
   <div class="ds-sheet-wrap cm-wrap">
@@ -48,7 +49,7 @@ const html = `
 <div class="ds-status" id="cm-status"></div>
 `;
 
-export function mount(root: HTMLElement, _studio: Studio) {
+export function mount(root: HTMLElement, studio: Studio) {
   root.innerHTML = html;
   const $ = <T extends HTMLElement = HTMLElement>(s: string) => root.querySelector(s) as T;
   const svg = $('#cm-svg') as unknown as SVGSVGElement;
@@ -917,6 +918,23 @@ export function mount(root: HTMLElement, _studio: Studio) {
     });
     flash(groups.length > 1 ? `${groups.length} files, one per stage: run them in order${steps ? `, doing the ${steps} step${steps > 1 ? 's' : ''} in Cut Order between them` : ''}.` : `Exported ${job.name}.nc for the ${groups[0].bit.name}`);
     if (p.warnings.length) flash(p.warnings.join(' · '));
+  };
+
+  /** The whole job, cut order and steps included, to SnorbCut. It is started at the ShopBot laptop. */
+  $('#cm-send').onclick = async () => {
+    const p = planJob(job);
+    if (!p.cuts.length) { flash(p.warnings[0] || 'Nothing to cut yet: click an outline and pick Inside, Outside or Pocket.'); return; }
+    const off = job.placed.filter((pl) => { const [x0, y0, x1, y1] = placedBox(partOf(pl), pl); return x0 < -1e-6 || y0 < -1e-6 || x1 > job.sheet.w + 1e-6 || y1 > job.sheet.h + 1e-6; });
+    if (off.length && !window.confirm(`${off.length} part${off.length > 1 ? 's are' : ' is'} off the edge of the sheet. Send anyway?`)) return;
+    const run = runList(sequence(job, p));
+    const stages = run.filter((r) => r.t === 'stage').length, steps = run.length - stages;
+    try {
+      const r = await fetch(`/cut-api/plan?name=${encodeURIComponent(job.name || 'job')}`, { method: 'POST', body: planText(job, run) });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j || !j.ok) throw new Error((j && j.message) || 'the ShopBot laptop did not answer');
+      flash(`Sent to SnorbCut: ${stages} stage${stages > 1 ? 's' : ''}${steps ? ` and ${steps} step${steps > 1 ? 's' : ''}` : ''}. Start it at the ShopBot laptop.`);
+      (studio as any)?.show?.('cut');
+    } catch (e: any) { flash(`Couldn't send it: ${e.message}. Is the ShopBot laptop on, with SnorbCut running?`); }
   };
 
   // ------------------------------------------------------------ start
