@@ -58,6 +58,10 @@
   .io { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
   .io i { width: 16px; height: 16px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; font-style: normal; font-size: 10px; }
   .io i.on { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+  .grp { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .grp > b { font-size: 13px; }
+  .place { display: flex; gap: 6px; align-items: center; margin-top: 6px; } .place span { flex: 1; min-width: 0; font-size: 13px; } .place small { display: block; color: var(--dim); font-size: 11px; } .place button { padding: 7px 12px; }
+  .card.ok { border-color: var(--accent); } .card.ok b { color: var(--accent); }
   details { border-top: 1px solid var(--line); padding-top: 8px; }
   details > summary { cursor: pointer; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); list-style-position: inside; }
   details > div { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
@@ -91,6 +95,7 @@
     </div>
     <div class="msg" id="msg"></div>
     <div id="prompts"></div>
+    <div id="zcards"></div>
 
     <h1>Job</h1>
     <div class="note" id="jobinfo">No job yet.</div>
@@ -112,7 +117,27 @@
           <button class="sp"></button><button data-j="0,-1,0">Y-</button><button class="sp"></button><button data-j="0,0,-1">Z-</button>
         </div>
         <div class="row"><label>Go to X<input type="number" id="gx" step="any"></label><label>Go to Y<input type="number" id="gy" step="any"></label><button class="ghost" id="goto" style="align-self:flex-end">Go</button></div>
-        <div class="row"><button class="ghost" id="zeroxy">Zero X and Y here</button><button class="ghost" id="zeroz">Zero Z here</button></div>
+        <div class="grp">
+          <b>Machine Home</b>
+          <div class="note">The machine's own zero, found with its sensors. It does not change from job to job.</div>
+          <div class="row"><button id="homexy">Home X and Y</button><button id="platez">Zero Z on the plate</button></div>
+          <div class="row"><button class="ghost" id="gomachine">Go to Machine Home</button></div>
+          <div class="note" id="zinfo"></div>
+        </div>
+        <div class="grp">
+          <b>Project Home</b>
+          <div class="note">A temporary zero for one job, anywhere on the table.</div>
+          <div class="row"><button class="ghost" id="setproject">Set Project Home here</button><button class="ghost" id="goproject">Go to Project Home</button></div>
+          <label>Jobs cut from<select id="cutfrom"><option value="machine">Machine Home</option><option value="project">Project Home</option></select></label>
+          <div class="note" id="pinfo"></div>
+          <div class="row"><button class="ghost" id="zeroz">Z = 0 at this height (no plate)</button></div>
+        </div>
+        <div class="grp">
+          <b>Saved spots</b>
+          <div class="note">Places to send the head to, like Load Bit or Load Material. Z lifts to the travel height first.</div>
+          <div id="places"></div>
+          <div class="row"><button class="ghost" id="saveplace">Save this spot…</button></div>
+        </div>
         <div class="row"><button class="ghost" id="ron">Router on</button><button class="ghost" id="roff">Router off</button></div>
         <div class="io" id="io"></div>
       </div>
@@ -123,6 +148,7 @@
       <div>
         <div class="row"><label>Bed length (X)<input type="number" id="sw" step="any"></label><label>Bed width (Y)<input type="number" id="sh" step="any"></label></div>
         <div class="row"><label>Bit diameter<input type="number" id="sb" step="any"></label><label>Rapid speed, per second<input type="number" id="sr" step="any"></label></div>
+        <div class="row"><label>Travel height (Z lifts to this before going Home or to a saved spot)<input type="number" id="ss" step="any"></label></div>
         <label class="row" style="flex-direction:row"><input type="checkbox" id="chime" style="flex:0"> <span>Sound when a job finishes</span></label>
         <div class="note">Sizes are in the units SB3 is set to. Time remaining is an estimate from the job's feed rates and adjusts as the cut runs.</div>
       </div>
@@ -133,7 +159,7 @@
 
 <div class="modal" id="modal"><div class="box">
   <div id="mtext"></div>
-  <input type="password" id="minput" inputmode="numeric" autocomplete="off" hidden>
+  <input type="text" id="minput" autocomplete="off" maxlength="24" hidden>
   <div class="row"><button class="ghost" id="mno">Cancel</button><button id="myes">OK</button></div>
 </div></div>
 
@@ -141,7 +167,7 @@
 const $ = id => document.getElementById(id);
 const cv = $('cv'), ctx = cv.getContext('2d');
 const store = { get(k, d) { try { const v = localStorage.getItem('snorbcut.' + k); return v === null ? d : v; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem('snorbcut.' + k, v); } catch (e) { } } };
-const S = { bedW: +store.get('bedW', 96), bedH: +store.get('bedH', 48), bit: +store.get('bit', 0.25), rapid: +store.get('rapid', 4), chime: store.get('chime', '1') === '1' };
+const S = { bedW: +store.get('bedW', 96), bedH: +store.get('bedH', 48), bit: +store.get('bit', 0.25), rapid: +store.get('rapid', 4), safe: +store.get('safe', 1), chime: store.get('chime', '1') === '1' };
 // Inside SnorbStudio this page lives at /cut/ and the Pi passes /cut-api/ on to the ShopBot laptop; on the laptop itself it talks to the bridge directly.
 const EMB = location.pathname.indexOf('/cut/') === 0, API = EMB ? '/cut-api' : '/api';
 const framed = () => { try { return window.frameElement || null; } catch (e) { return null; } };
@@ -261,7 +287,7 @@ function size() {
   return { w: r.width, h: r.height, d };
 }
 function fit2d(which) {
-  const { w, h } = size(); let b = { x0: 0, y0: 0, x1: S.bedW, y1: S.bedH };
+  const { w, h } = size(); const [fx, fy] = bedO(); let b = { x0: fx, y0: fy, x1: fx + S.bedW, y1: fy + S.bedH };
   if (which === 'part' && job && job.cb) { const c = job.cb, m = Math.max(1, (c.x1 - c.x0) * 0.12, (c.y1 - c.y0) * 0.12); b = { x0: c.x0 - m, y0: c.y0 - m, x1: c.x1 + m, y1: c.y1 + m }; }
   const pad = 46; v2.sc = Math.min((w - 2 * pad) / (b.x1 - b.x0), (h - 2 * pad) / (b.y1 - b.y0));
   v2.ox = (w - v2.sc * (b.x1 - b.x0)) / 2 - b.x0 * v2.sc; v2.oy = h - (h - v2.sc * (b.y1 - b.y0)) / 2 + b.y0 * v2.sc; v2.auto = which;
@@ -272,15 +298,25 @@ function draw2d() {
   if (v2.auto) fit2d(v2.auto);
   ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, w, h);
   const X = x => v2.ox + x * v2.sc, Y = y => v2.oy - y * v2.sc;
-  ctx.fillStyle = col('--sheet'); ctx.fillRect(X(0), Y(S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
+  const [bx, by] = bedO();
+  ctx.fillStyle = col('--sheet'); ctx.fillRect(X(bx), Y(by + S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
   const step = [1, 6, 12, 24, 48].find(s => s * v2.sc >= 26) || 48;
   ctx.strokeStyle = col('--grid'); ctx.lineWidth = 1; ctx.beginPath();
-  for (let gx = step; gx < S.bedW; gx += step) { ctx.moveTo(X(gx), Y(0)); ctx.lineTo(X(gx), Y(S.bedH)); }
-  for (let gy = step; gy < S.bedH; gy += step) { ctx.moveTo(X(0), Y(gy)); ctx.lineTo(X(S.bedW), Y(gy)); }
+  for (let gx = step; gx < S.bedW; gx += step) { ctx.moveTo(X(bx + gx), Y(by)); ctx.lineTo(X(bx + gx), Y(by + S.bedH)); }
+  for (let gy = step; gy < S.bedH; gy += step) { ctx.moveTo(X(bx), Y(by + gy)); ctx.lineTo(X(bx + S.bedW), Y(by + gy)); }
   ctx.stroke();
-  ctx.strokeStyle = col('--plan'); ctx.lineWidth = 1.5; ctx.strokeRect(X(0), Y(S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
+  ctx.strokeStyle = col('--plan'); ctx.lineWidth = 1.5; ctx.strokeRect(X(bx), Y(by + S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
   ctx.fillStyle = col('--dim'); ctx.font = '11px system-ui, sans-serif';
-  ctx.fillText('0,0', X(0) + 4, Y(0) - 5); ctx.fillText(S.bedW + ' x ' + S.bedH, X(S.bedW) - 52, Y(S.bedH) + 14);
+  ctx.fillText(S.bedW + ' x ' + S.bedH, X(bx + S.bedW) - 52, Y(by + S.bedH) + 14);
+  // homes and saved spots
+  const mark = (x, y, label, color, solid) => { const px = X(x), py = Y(y); ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(px - 9, py); ctx.lineTo(px + 9, py); ctx.moveTo(px, py - 9); ctx.lineTo(px, py + 9); ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 7); if (solid) ctx.fill(); else ctx.stroke(); ctx.fillText(label, px + 8, py - 7); };
+  if (st && st.mref) {
+    mark(bx, by, 'Machine Home', col('--dim'), st.zeroIs === 'machine');
+    if (st.proj) mark(bx + st.proj[0], by + st.proj[1], 'Project Home', col('--accent'), st.zeroIs === 'project');
+    for (const p of (st.places || [])) { const px = X(bx + p.x), py = Y(by + p.y); ctx.strokeStyle = ctx.fillStyle = col('--warn'); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(px, py - 6); ctx.lineTo(px + 6, py); ctx.lineTo(px, py + 6); ctx.lineTo(px - 6, py); ctx.closePath(); ctx.stroke(); ctx.fillText(p.name, px + 9, py + 4); }
+  } else mark(0, 0, (st && st.zeroIs === 'project') ? 'Project Home' : '0,0', col('--dim'), true);
   if (job && paths) {
     while (doneUpTo < prog.i) { const s = job.segs[doneUpTo++]; if (isCutSeg(s)) { paths.done.moveTo(s.x0, s.y0); paths.done.lineTo(s.x1, s.y1); } }
     ctx.save(); ctx.setTransform(d * v2.sc, 0, 0, -d * v2.sc, d * v2.ox, d * v2.oy);
@@ -330,12 +366,13 @@ function draw3d() {
   const depth = job && job.b ? Math.max(0.25, -job.b.z0) : 0.75;
   const W = S.bedW, H = S.bedH;
   // sheet: bottom outline, sides, top face
-  poly([[0, 0, -depth], [W, 0, -depth], [W, H, -depth], [0, H, -depth]], null, col('--grid'), 1);
-  for (const [x, y] of [[0, 0], [W, 0], [W, H], [0, H]]) poly([[x, y, 0], [x, y, -depth], [x, y, 0]], null, col('--grid'), 1);
-  poly([[0, 0, 0], [W, 0, 0], [W, H, 0], [0, H, 0]], 'rgba(58,41,66,.75)', col('--plan'), 1.5);
+  const [bx, by] = bedO();
+  poly([[bx, by, -depth], [bx + W, by, -depth], [bx + W, by + H, -depth], [bx, by + H, -depth]], null, col('--grid'), 1);
+  for (const [x, y] of [[bx, by], [bx + W, by], [bx + W, by + H], [bx, by + H]]) poly([[x, y, 0], [x, y, -depth], [x, y, 0]], null, col('--grid'), 1);
+  poly([[bx, by, 0], [bx + W, by, 0], [bx + W, by + H, 0], [bx, by + H, 0]], 'rgba(58,41,66,.75)', col('--plan'), 1.5);
   ctx.strokeStyle = col('--grid'); ctx.lineWidth = 1; ctx.beginPath();
-  for (let gx = 12; gx < W; gx += 12) { const a = P(gx, 0, 0), b = P(gx, H, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
-  for (let gy = 12; gy < H; gy += 12) { const a = P(0, gy, 0), b = P(W, gy, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
+  for (let gx = 12; gx < W; gx += 12) { const a = P(bx + gx, by, 0), b = P(bx + gx, by + H, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
+  for (let gy = 12; gy < H; gy += 12) { const a = P(bx, by + gy, 0), b = P(bx + W, by + gy, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
   ctx.stroke();
   if (job) {
     const segs = job.segs, pass = (from, to, style, lw, dash, wantRapid) => {
@@ -437,7 +474,8 @@ $('resume').onclick = async () => { if (await needPin() && await ask('Resume the
 $('start').onclick = async () => {
   if (!job || !await needPin()) return;
   const where = st && st.preview ? 'SB3 is in Preview mode, so nothing will move.' : 'SB3 is in Move/Cut mode: the machine will move and the router may start.';
-  if (await ask('Start ' + (st.job || 'the job') + '? ' + where, { ok: 'Start' })) { finished = false; post(API + '/run', '', true); }
+  const zw = ' It will cut from ' + (st.zeroIs === 'project' ? 'Project Home' : st.zeroIs === 'machine' ? 'Machine Home' : 'wherever X and Y were last zeroed') + '.' + (st.zz === 'sensors' ? '' : ' Note: Z is ' + ZTXT[st.zz || ''] + '.');
+  if (await ask('Start ' + (st.job || 'the job') + '? ' + where + zw, { ok: 'Start' })) { finished = false; post(API + '/run', '', true); }
 };
 async function command(c, confirmText) {
   if (!await needPin()) return;
@@ -452,8 +490,64 @@ document.querySelectorAll('[data-j]').forEach(b => b.onclick = () => {
   else command((fast ? 'JY,' : 'MY,') + (last.y + dy * step).toFixed(4));
 });
 $('goto').onclick = () => { const x = $('gx').value, y = $('gy').value; if (x === '' || y === '') return say('Enter both X and Y.'); command(($('spd').value === 'J' ? 'J2,' : 'M2,') + (+x).toFixed(4) + ',' + (+y).toFixed(4)); };
-$('zeroxy').onclick = () => command('Z2', 'Set X and Y to zero at the current position?');
-$('zeroz').onclick = () => command('ZZ', 'Set Z to zero at the current height?');
+$('zeroz').onclick = () => command('ZZ', 'Set Z to zero at the height the bit is at now? This does not use the plate.');
+async function home(what, confirmText, name) {
+  if (!await needPin()) return;
+  if (confirmText && !await ask(confirmText, { ok: 'Yes' })) return;
+  return post(API + '/home?do=' + what + '&safe=' + encodeURIComponent(S.safe) + (name ? '&name=' + encodeURIComponent(name) : ''), '', true);
+}
+const lift = () => 'Z lifts to ' + S.safe + ' first if it is lower. Check the path is clear.';
+$('setproject').onclick = () => home('setproject', 'Set Project Home right where the bit is now? Jobs will cut from this spot until you change it. Machine Home is not affected.');
+$('goproject').onclick = () => home('goproject', 'Send the head to Project Home? ' + lift());
+$('gomachine').onclick = () => home('gomachine', 'Send the head to Machine Home? ' + lift());
+$('cutfrom').onchange = async () => { const v = $('cutfrom').value; renderHomes.key = ''; await home(v === 'machine' ? 'usemachine' : 'useproject', 'Cut jobs from ' + (v === 'machine' ? 'Machine Home' : 'Project Home') + '? The head does not move; only the zero changes.'); };
+$('saveplace').onclick = async () => {
+  if (!await needPin()) return;
+  const n = await ask('Name for this spot (for example Load Bit or Load Material). It saves where the head is now, X and Y only.', { input: true, ok: 'Save' });
+  if (n) home('saveplace', '', n);
+};
+function renderHomes(s) {
+  const f = v => (+v).toFixed(2), known = !!s.mref, off = s.off || [0, 0];
+  const key = JSON.stringify([s.mref, s.zeroIs, s.off, s.proj, s.places, s.local, s.queued]); if (renderHomes.key === key) return; renderHomes.key = key;
+  $('cutfrom').value = s.zeroIs === 'project' ? 'project' : 'machine';
+  $('pinfo').textContent = !known ? (s.zeroIs === 'project' ? 'Jobs cut from the Project Home you set. Its distance from Machine Home is not known until X and Y are homed on the sensors.' : 'Home X and Y on the sensors so SnorbCut knows where Machine Home is.')
+    : s.proj ? 'Project Home is X ' + f(s.proj[0]) + ', Y ' + f(s.proj[1]) + ' from Machine Home.' + (s.zeroIs === 'project' ? ' Jobs cut from it.' : ' Not in use: jobs cut from Machine Home.') : 'No Project Home stored. Jobs cut from Machine Home.';
+  const host = $('places'); host.innerHTML = '';
+  for (const p of (s.places || [])) {
+    const r = document.createElement('div'); r.className = 'place';
+    const t = document.createElement('span'); t.textContent = p.name; const sm = document.createElement('small'); sm.textContent = 'X ' + f(p.x) + ', Y ' + f(p.y) + ' from Machine Home'; t.appendChild(sm); r.appendChild(t);
+    const g = document.createElement('button'); g.textContent = 'Go'; g.dataset.need = 'mref'; g.onclick = () => home('goplace', 'Send the head to ' + p.name + '? ' + lift(), p.name); r.appendChild(g);
+    const x = document.createElement('button'); x.className = 'ghost'; x.textContent = 'Remove'; x.onclick = () => home('delplace', 'Remove the saved spot ' + p.name + '?', p.name); r.appendChild(x);
+    host.appendChild(r);
+  }
+  if (!(s.places || []).length) { const n = document.createElement('div'); n.className = 'note'; n.textContent = known ? 'None saved yet.' : 'Home X and Y on the sensors first; spots are measured from Machine Home.'; host.appendChild(n); }
+}
+// where the bed sits in the job's coordinates: its corner is Machine Home
+const bedO = () => (st && st.mref && st.off) ? [-st.off[0], -st.off[1]] : [0, 0];
+$('homexy').onclick = () => command('C3', 'Home X and Y? The gantry will travel to its X and Y sensors. Check the table is clear and the bit is raised above everything on it.');
+$('platez').onclick = () => command('C2', 'Zero Z on the plate? SB3 will ask before it moves. The bit will come down until it touches the plate, so the plate must be under the bit with the clip attached.');
+// after a sensor routine ends, the person at the machine confirms the new zero (or throws it out)
+const ZTXT = { '': 'not zeroed since SnorbCut started', check: 'waiting for you to check it', sensors: 'zeroed at the sensors', here: 'zeroed by hand' };
+const ZXY = { '': 'not homed since SnorbCut started', check: 'homed, waiting for you to check it', sensors: 'homed on the sensors', here: 'not homed since SnorbCut started' };
+function renderZero(s) {
+  const line = (name, v, at) => name + ': ' + (ZTXT[v] || ZTXT['']) + (at && v ? ', ' + at : '');
+  const info = 'X and Y: ' + (s.mref ? (s.zxy === 'check' ? ZXY.check : ZXY.sensors) : ZXY['']) + '\n' + line('Z', s.zz, s.zzAt);
+  if ($('zinfo').textContent !== info) { $('zinfo').textContent = info; $('zinfo').style.whiteSpace = 'pre-line'; }
+  const key = [s.zxy, s.zz, s.local, s.zxy === 'check' || s.zz === 'check' ? s.x + ',' + s.y + ',' + s.z : ''].join('|');
+  if (renderZero.key === key) return; renderZero.key = key;
+  const host = $('zcards'); host.innerHTML = '';
+  const card = (axis, title, reads) => {
+    const c = document.createElement('div'); c.className = 'card ok';
+    const t = document.createElement('b'); t.textContent = title; c.appendChild(t);
+    const p = document.createElement('pre'); p.textContent = 'The machine now reads ' + reads + '. Is that right?' + (s.local ? '' : '\nConfirm it on the ShopBot laptop.'); c.appendChild(p);
+    const bs = document.createElement('div'); bs.className = 'btns';
+    for (const [label, ok] of [['Yes, keep this zero', 1], ['No', 0]]) { const b = document.createElement('button'); b.className = ok ? '' : 'ghost'; b.textContent = label; b.disabled = !s.local;
+      b.onclick = () => post(API + '/zeroed?axis=' + axis + '&ok=' + ok, '', true); bs.appendChild(b); }
+    c.appendChild(bs); host.appendChild(c);
+  };
+  if (s.zxy === 'check') card('xy', 'X and Y homing finished', 'X ' + s.x.toFixed(3) + ', Y ' + s.y.toFixed(3));
+  if (s.zz === 'check') card('z', 'Z zeroing finished', 'Z ' + s.z.toFixed(3));
+}
 $('ron').onclick = () => command('SO,1,1', 'Turn the router ON? Make sure the machine is clear.');
 $('roff').onclick = () => command('SO,1,0');
 
@@ -507,19 +601,19 @@ async function tick() {
     if (s.job !== jobSeen) { jobSeen = s.job; await loadJob(); }
     if (s.sb3 && (!last || last.x !== s.x || last.y !== s.y || last.z !== s.z)) {
       last = { x: s.x, y: s.y, z: s.z };
-      if (!job && (s.running || s.paused)) { trail.push(last); if (trail.length > 20000) trail.splice(0, 5000); }
+      if (!job && !s.task && (s.running || s.paused)) { trail.push(last); if (trail.length > 20000) trail.splice(0, 5000); }
     }
-    const active = s.running || s.paused;
+    const active = s.running || s.paused, jobRun = active && !s.task;
     if (!active) seenIdle = true;
-    if (active && !wasActive) {   // a run began, or the page was opened part-way through one
+    if (jobRun && !wasActive) {   // a run began, or the page was opened part-way through one
       prog = { i: 0, f: 0, lostAt: 0 }; activeMs = 0; finished = false; knowStart = seenIdle;
       if (paths) { paths.done = new Path2D(); doneUpTo = 0; }
     }
-    if (s.running) { activeMs += dt; if (last) track(last, now); }
-    if (!active && wasActive) { finished = job && job.segs.length && prog.i >= job.segs.length - 2; if (finished && S.chime) beep(); }
-    wasRunning = s.running; wasActive = active;
+    if (s.running && jobRun) { activeMs += dt; if (last) track(last, now); }
+    if (!jobRun && wasActive && !s.task) { finished = job && job.segs.length && prog.i >= job.segs.length - 2; if (finished && S.chime) beep(); }
+    wasRunning = s.running; wasActive = jobRun;
 
-    const state = !s.sb3 ? 'SB3 is not running' : s.paused ? (s.local ? 'Paused' : 'Paused: resume at the machine') : s.running ? (s.preview ? 'Previewing' : 'Cutting') : finished ? 'Finished' : (s.preview ? 'Idle (Preview mode)' : 'Ready');
+    const state = !s.sb3 ? 'SB3 is not running' : s.paused ? (s.local ? 'Paused' : 'Paused: resume at the machine') : s.task === 'xy' ? 'Homing X and Y' : (s.queued && !s.running) ? 'Moving' : s.task === 'z' ? 'Zeroing Z on the plate' : s.running ? (s.preview ? 'Previewing' : 'Cutting') : finished ? 'Finished' : (s.preview ? 'Idle (Preview mode)' : 'Ready');
     $('state').textContent = state;
     $('dot').className = 'dot' + (!s.sb3 ? ' off' : s.paused ? ' pause' : s.running ? ' run' : '');
     $('file').textContent = (active && s.file) ? s.file : (s.job || '');
@@ -527,9 +621,12 @@ async function tick() {
     $('pause').disabled = !s.running; $('resume').disabled = !s.paused || !s.local; $('stop').disabled = !active;
     $('start').disabled = !job || !s.sb3 || active || s.pending || !s.local;
     const idle = s.sb3 && !active && !s.pending;
-    document.querySelectorAll('#ctl button').forEach(b => b.disabled = !idle || !s.local);
+    const idle2 = idle && !s.queued && !s.task;
+    document.querySelectorAll('#ctl button').forEach(b => b.disabled = !idle2 || !s.local || (b.dataset.need === 'mref' && !s.mref));
+    $('gomachine').disabled = $('saveplace').disabled = !idle2 || !s.local || !s.mref; $('goproject').disabled = !idle2 || !s.local || !(s.zeroIs === 'project' || (s.mref && s.proj));
+    $('cutfrom').disabled = !idle2 || !s.local || !s.mref; $('cutfrom').options[1].disabled = !s.proj;
     $('lockstate').textContent = s.local ? 'You are at the ShopBot laptop: full control.' : 'Away from the machine: watch, Pause and Stop only. Start, Resume, moves and the router work on the ShopBot laptop.';
-    renderPrompts(s.dialogs || []); renderIO(s);
+    renderPrompts(s.dialogs || []); renderZero(s); renderHomes(s); renderIO(s);
     if (job && job.total > 0 && (active || finished || prog.i > 0)) {
       const dn = finished ? job.total : doneTime(), frac = dn / job.total;
       let ratio = 1; if (knowStart && dn > 20 && activeMs > 0) ratio = Math.max(0.4, Math.min(3, (activeMs / 1000) / dn));
@@ -545,7 +642,7 @@ async function tick() {
 let wasActive = false, seenIdle = false;
 
 // settings
-for (const [id, k] of [['sw', 'bedW'], ['sh', 'bedH'], ['sb', 'bit'], ['sr', 'rapid']]) {
+for (const [id, k] of [['sw', 'bedW'], ['sh', 'bedH'], ['sb', 'bit'], ['sr', 'rapid'], ['ss', 'safe']]) {
   $(id).value = S[k];
   $(id).onchange = () => { const v = +$(id).value; if (v > 0) { S[k] = v; store.set(k, v); if (k === 'rapid') jobSeen = null; v2.auto = v2.auto || 'bed'; draw(); } };
 }
