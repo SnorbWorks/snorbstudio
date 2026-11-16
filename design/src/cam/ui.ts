@@ -753,8 +753,14 @@ export function mount(root: HTMLElement, studio: Studio) {
     const add = document.createElement('div'); add.className = 'cm-row';
     for (const [kind, t] of [['pause', '+ Pause'], ['toolchange', '+ Tool change'], ['material', '+ Material change'], ['custom', '+ Other step']] as [StepKind, string][]) {
       const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = t;
-      b.title = 'Adds the step at the end of the list; move it to where it belongs';
-      b.onclick = () => { const s = newStep(kind); editStep = s.id; reorder((l) => { l.push({ t: 'step', step: s }); }); };
+      b.title = 'Adds the step right after the selected cut or group (at the end of the list if nothing is selected)';
+      b.onclick = () => {
+        const s = newStep(kind); editStep = s.id;
+        // after the last selected cut; a group counts whole, so the step never lands inside it
+        let at = -1;
+        for (const u of unitsOf(entries)) for (let k = u.start; k < u.start + u.len; k++) { const e = entries[k]; if (e.t === 'cut' && sel.has(e.cut.key)) at = u.start + u.len; }
+        reorder((l) => { if (at < 0) l.push({ t: 'step', step: s }); else l.splice(at, 0, { t: 'step', step: s }); });
+      };
       add.appendChild(b);
     }
     panel.appendChild(add);
