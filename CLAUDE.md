@@ -123,6 +123,12 @@ order is holes, pockets, lines, inside cuts, then cut-outs last, with the
 fewest bit changes; arranging by hand stores `job.seq`. A run of cuts between
 steps is a **stage**: one bit, one G-code file. A tool change always sits
 where the bit changes (added automatically). Tests: `design/test/sequence.test.mjs`.
+**Groups** (`job.groups`, ⌘G / ⇧⌘G, right-click menu on the sheet or in
+the Cut Order): cuts that stay together as one row and move as one;
+`sequence()` gathers a group's cuts where the first stands. Properties shows
+"Apply to entire group" (copies one cut's settings to the rest). Selection is
+a set of `placed id:outline id` keys and can span parts.
+
 **Send to SnorbCut** posts the whole job as one text to `/cut-api/plan`
 (`planText`: `SNORBPLAN 1`, then `#stage|label` + that stage's G-code and
 `#step|kind|name|goto|rezero|note` lines). The bridge (0.5+) keeps it as

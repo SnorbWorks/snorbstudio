@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newJob, newOp, IN } from './build/cam/job.mjs';
 import { planJob, movesFor, gcode } from './build/cam/toolpath.mjs';
-import { sequence, runList, toSeq, newStep, groupOf, describeStep, planText } from './build/cam/sequence.mjs';
+import { sequence, runList, toSeq, newStep, groupOf, describeStep, planText, unitsOf, moveUnit } from './build/cam/sequence.mjs';
 
 const square = (x, y, s) => [[x, y], [x + s, y], [x + s, y + s], [x, y + s]];
 const circle = (cx, cy, r, n = 24) => Array.from({ length: n }, (_, i) => [cx + r * Math.cos((i / n) * 2 * Math.PI), cy + r * Math.sin((i / n) * 2 * Math.PI)]);
@@ -121,4 +121,39 @@ test('the plan sent to SnorbCut: every stage with its G-code, steps in between',
   const parts = txt.split(/^#.*$/m).slice(1).map((t) => t.trim()).filter(Boolean);
   assert.equal(parts.length, 2);
   for (const g of parts) { assert.match(g, /^G20\nG90\n/); assert.match(g, /G0 X0\.00000 Y0\.00000\nG4 P0\.1$/); }
+});
+
+test('a group stays together and moves as one row', () => {
+  const j = plate();
+  const p = planJob(j);
+  const key = (id) => p.cuts.find((c) => c.key.endsWith(':' + id)).key;
+  // the window (inside cut) grouped with the cut-out: the window waits for the cut-out's turn... no: the cut-out joins the window
+  j.groups = [{ id: 'g1', name: 'Group 1', cuts: [key('win'), key('out')] }];
+  let es = sequence(j, planJob(j));
+  const ids = cutsOf(es);
+  assert.equal(Math.abs(ids.indexOf('win') - ids.indexOf('out')), 1, 'next to each other');
+  let us = unitsOf(es);
+  const gu = us.findIndex((u) => u.gid === 'g1');
+  assert.equal(us[gu].len, 2);
+  assert.equal(us.reduce((n, u) => n + u.len, 0), es.length);
+  // move the group to the very top: both cuts go, still together
+  j.seq = toSeq(moveUnit(es, us, gu, 0));
+  es = sequence(j, planJob(j));
+  assert.deepEqual(cutsOf(es).slice(0, 2).sort(), ['out', 'win']);
+  assert.equal(cutsOf(es).length, 5);
+  // split the group: the order stays as it was arranged
+  const before = cutsOf(es);
+  j.groups = [];
+  assert.deepEqual(cutsOf(sequence(j, planJob(j))), before);
+});
+
+test('a group with two bits keeps its tool change inside the row', () => {
+  const j = plate('u125');
+  const p = planJob(j);
+  const key = (id) => p.cuts.find((c) => c.key.endsWith(':' + id)).key;
+  j.groups = [{ id: 'g1', name: 'Group 1', cuts: [key('h1'), key('poc')] }];
+  const es = sequence(j, planJob(j));
+  const u = unitsOf(es).find((x) => x.gid === 'g1');
+  assert.equal(u.len, 3, 'hole, tool change, pocket');
+  assert.equal(es[u.start + 1].t, 'step');
 });

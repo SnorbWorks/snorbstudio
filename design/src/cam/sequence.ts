@@ -6,7 +6,7 @@ import { Bit, Job, SeqItem, Step, StepKind, bbox, camId, IN } from './job.js';
 import { Cut, Plan, gcode, movesFor } from './toolpath.js';
 
 export type Entry =
-  | { t: 'cut'; cut: Cut; group: Group; warn?: string }
+  | { t: 'cut'; cut: Cut; group: Group; warn?: string; gid?: string }
   | { t: 'step'; step: Step };
 
 export type Group = 'hole' | 'pocket' | 'line' | 'inside' | 'outside';
@@ -77,6 +77,21 @@ export function sequence(job: Job, plan: Plan): Entry[] {
     }
   } else raw = autoOrder(job, plan.cuts).map((c) => ({ cut: c }));
 
+  // a group stays together: its cuts gather where the first of them stands
+  const gidOf = new Map<string, string>();
+  for (const g of job.groups || []) for (const k of g.cuts) if (!gidOf.has(k)) gidOf.set(k, g.id);
+  if (gidOf.size) {
+    const seen = new Set<string>(), pulled: typeof raw = [];
+    for (const r of raw) {
+      const gid = 'cut' in r ? gidOf.get(r.cut.key) : undefined;
+      if (!gid) { pulled.push(r); continue; }
+      if (seen.has(gid)) continue;
+      seen.add(gid);
+      for (const q of raw) if ('cut' in q && gidOf.get(q.cut.key) === gid) pulled.push(q);
+    }
+    raw = pulled;
+  }
+
   // tool changes belong exactly where the bit changes
   const out: Entry[] = [];
   let lastBit: Bit | null = null, changed = false;   // changed: a tool change step already sits since the last cut
@@ -95,7 +110,7 @@ export function sequence(job: Job, plan: Plan): Entry[] {
       out.push(kept || { t: 'step', step: autoToolChange(c.bit) });
     }
     pendingAuto = [];
-    out.push({ t: 'cut', cut: c, group: groupOf(c) });
+    out.push({ t: 'cut', cut: c, group: groupOf(c), gid: gidOf.get(c.key) });
     lastBit = c.bit; changed = false;
   }
   // steps left at the very start or end with nothing to do
@@ -114,6 +129,29 @@ export function sequence(job: Job, plan: Plan): Entry[] {
 /** The order as it is stored in the job (after the owner changes something). */
 export function toSeq(entries: Entry[]): SeqItem[] {
   return entries.map((e) => (e.t === 'cut' ? { cut: e.cut.key } : { step: { ...e.step } }));
+}
+
+/** A row of the Cut Order: one cut, one step, or a whole group (with any bit change inside it). */
+export interface Unit { start: number; len: number; gid?: string }
+export function unitsOf(entries: Entry[]): Unit[] {
+  const out: Unit[] = [];
+  for (let i = 0; i < entries.length;) {
+    const e = entries[i];
+    let len = 1;
+    const gid = e.t === 'cut' ? e.gid : undefined;
+    if (gid) for (let j = i + 1; j < entries.length; j++) { const f = entries[j]; if (f.t === 'cut') { if (f.gid !== gid) break; len = j - i + 1; } }
+    out.push({ start: i, len, gid });
+    i += len;
+  }
+  return out;
+}
+/** The order with one row moved to another row's place. */
+export function moveUnit(entries: Entry[], units: Unit[], from: number, to: number): Entry[] {
+  if (from < 0 || from >= units.length || to < 0 || to >= units.length) return entries;
+  const chunks = units.map((u) => entries.slice(u.start, u.start + u.len));
+  const [c] = chunks.splice(from, 1);
+  chunks.splice(to, 0, c);
+  return chunks.flat();
 }
 
 export interface Stage { n: number; bit: Bit; cuts: Cut[]; label: string }

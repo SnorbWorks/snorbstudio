@@ -61,6 +61,8 @@ export interface Step {
   auto?: boolean;        // put there by SnorbCAM because the bit changes; goes away if it no longer does
 }
 export type SeqItem = { cut: string } | { step: Step };
+/** Cuts that stay together: one row in the Cut Order, moved as one. A cut is in at most one group. */
+export interface CutGroup { id: string; name: string; cuts: string[] }
 
 export interface Job {
   version: 1;
@@ -76,6 +78,7 @@ export interface Job {
   parts: Part[];
   placed: Placed[];
   seq?: SeqItem[];        // the cut order as arranged by hand (cut = placed id : outline id); absent = automatic
+  groups?: CutGroup[];
 }
 
 export const IN = 25.4;

@@ -1,10 +1,10 @@
 // SnorbCAM: the tab. A sheet of material with parts laid on it; click an
 // outline to say how it's cut; the bit's paths show on the sheet as you go;
 // Export writes the ShopBot G-code (one file per bit).
-import { Bit, Contour, IN, Job, Op, OpKind, P2, Part, Placed, Step, StepKind, autoTabs, bitOf, camId, fractionAt, newJob, partBox, placedBox, placer, pointAt } from './job.js';
+import { Bit, Contour, CutGroup, IN, Job, Op, OpKind, P2, Part, Placed, Step, StepKind, autoTabs, bitOf, camId, fractionAt, newJob, partBox, placedBox, placer, pointAt } from './job.js';
 import { Plan, byBit, gcode, movesFor, planJob, runTime } from './toolpath.js';
 import { importCad, importDxf, importSvg } from './importers.js';
-import { Entry, GROUP_NAME, STEP_NAME, describeStep, newStep, planText, runList, sequence, toSeq } from './sequence.js';
+import { Entry, GROUP_NAME, STEP_NAME, describeStep, groupOf, moveUnit, newStep, planText, runList, sequence, toSeq, unitsOf } from './sequence.js';
 
 interface Studio { show?: (p: string) => void }
 
@@ -57,13 +57,17 @@ export function mount(root: HTMLElement, studio: Studio) {
 
   let job: Job = loadDraft() || newJob();
   let units: 'in' | 'mm' = job.units;
-  // selection: one placed part, and which of its outlines
+  // selection: outlines, as "placed id:outline id" (they can be on different parts), and the part last clicked
   let selPlaced: string | null = null;
-  let selKs = new Set<string>();
+  let sel = new Set<string>();
+  const K = (plId: string, cId: string) => `${plId}:${cId}`;
+  const selAll = (pl: Placed) => new Set(partOf(pl).contours.map((c) => K(pl.id, c.id)));
+  let openGroups = new Set<string>();   // groups shown opened in the Cut Order
+  let nameGroup = '';                   // the group being renamed
   let plan: Plan | null = null;
   let entries: Entry[] = [];        // the cut order, worked out from the plan
   let sideTab: 'props' | 'order' = 'props';
-  let hotKey = '';                  // the cut the pointer is over in the Cut Order list
+  let hot = new Set<string>();      // the cuts the pointer is over in the Cut Order list
   let editStep = '';                // the step whose settings are open
   let spots: string[] = [];         // saved spots in SnorbCut, for a step's "move the head to"
   let timeS = 0;
@@ -143,7 +147,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (($('#cm-paths') as HTMLInputElement).checked && plan) {
       const tp = el('g', { class: 'cm-tp' }, g);
       for (const c of plan.cuts) {
-        for (const t of c.tracks) el('path', { d: d(t.pts, t.closed), 'stroke-width': c.bit.dia, class: `cm-cut cm-${c.op.kind}${c.key === hotKey ? ' hot' : ''}` }, tp);
+        for (const t of c.tracks) el('path', { d: d(t.pts, t.closed), 'stroke-width': c.bit.dia, class: `cm-cut cm-${c.op.kind}${hot.has(c.key) ? ' hot' : ''}` }, tp);
       }
     }
     for (const pl of job.placed) {
@@ -156,7 +160,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       if (isSel) el('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0, class: 'cm-box' }, pg);
       for (const c of part.contours) {
         const pts = c.pts.map(T);
-        const on = isSel && selKs.has(c.id);
+        const on = sel.has(K(pl.id, c.id));
         el('path', { d: d(pts, c.closed), class: `cm-k cm-${c.op.kind}${on ? ' on' : ''}` }, pg);
         // tabs
         if (c.closed && c.op.tabs.length && (c.op.kind === 'outside' || c.op.kind === 'inside' || c.op.kind === 'on')) {
@@ -199,16 +203,17 @@ export function mount(root: HTMLElement, studio: Studio) {
     return null;
   }
   function hitTab(p: P2): { pl: Placed; c: Contour; i: number } | null {
-    if (!selPlaced) return null;
-    const pl = job.placed.find((q) => q.id === selPlaced);
-    if (!pl) return null;
-    const part = partOf(pl), T = placer(part, pl), tol = 8 / pxPerMm();
-    for (const c of part.contours) {
-      if (!selKs.has(c.id)) continue;
-      const pts = c.pts.map(T);
-      for (let i = 0; i < c.op.tabs.length; i++) {
-        const q = pointAt(pts, true, c.op.tabs[i]);
-        if (Math.hypot(q[0] - p[0], q[1] - p[1]) < tol) return { pl, c, i };
+    if (!sel.size) return null;
+    const tol = 8 / pxPerMm();
+    for (const pl of job.placed) {
+      const part = partOf(pl), T = placer(part, pl);
+      for (const c of part.contours) {
+        if (!sel.has(K(pl.id, c.id))) continue;
+        const pts = c.pts.map(T);
+        for (let i = 0; i < c.op.tabs.length; i++) {
+          const q = pointAt(pts, true, c.op.tabs[i]);
+          if (Math.hypot(q[0] - p[0], q[1] - p[1]) < tol) return { pl, c, i };
+        }
       }
     }
     return null;
@@ -231,20 +236,22 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (tab) { drag = { kind: 'tab', pl: tab.pl.id, k: tab.c.id, i: tab.i, snap: JSON.stringify(job) }; return; }
     const h = hitOutline(p);
     if (h) {
-      if (e.shiftKey && selPlaced === h.pl.id) { if (selKs.has(h.c.id)) selKs.delete(h.c.id); else selKs.add(h.c.id); }
-      else if (!(selPlaced === h.pl.id && selKs.has(h.c.id))) { selPlaced = h.pl.id; selKs = new Set([h.c.id]); }
+      const k = K(h.pl.id, h.c.id);
+      if (e.shiftKey || e.metaKey) { if (sel.has(k)) sel.delete(k); else sel.add(k); selPlaced = h.pl.id; }
+      else if (!sel.has(k)) { selPlaced = h.pl.id; sel = new Set([k]); }
+      else selPlaced = h.pl.id;
       drag = { kind: 'move', at: p, pl: h.pl.id, x: h.pl.x, y: h.pl.y, moved: false, snap: JSON.stringify(job) };
       refresh(false);
       return;
     }
     const pl = hitPart(p);
     if (pl) {
-      selPlaced = pl.id; selKs = new Set(partOf(pl).contours.map((c) => c.id));
+      selPlaced = pl.id; sel = selAll(pl);
       drag = { kind: 'move', at: p, pl: pl.id, x: pl.x, y: pl.y, moved: false, snap: JSON.stringify(job) };
       refresh(false);
       return;
     }
-    selPlaced = null; selKs.clear();
+    selPlaced = null; sel.clear();
     drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y };
     refresh(false);
   });
@@ -302,7 +309,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (h && h.c.closed && ['outside', 'inside', 'on'].includes(h.c.op.kind)) {
       const T = placer(partOf(h.pl), h.pl);
       const f = +fractionAt(h.c.pts.map(T), true, p).toFixed(5);
-      selPlaced = h.pl.id; selKs = new Set([h.c.id]);
+      selPlaced = h.pl.id; sel = new Set([K(h.pl.id, h.c.id)]);
       change(() => { h.c.op.tabs.push(f); h.c.op.tabs.sort((a, b) => a - b); });
     }
   });
@@ -329,14 +336,16 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
     if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
     if (mod && e.key.toLowerCase() === 'd' && pl) { e.preventDefault(); duplicate(pl); return; }
+    if (mod && e.key.toLowerCase() === 'g') { e.preventDefault(); e.shiftKey ? doUngroup() : doGroup(); return; }
     if (e.key === 'f') { fit(); draw(); return; }
+    if (e.key === 'Escape' && !pl && sel.size) { sel.clear(); refresh(false); return; }
     if (!pl) return;
     if ((e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); removePlaced(pl); return; }
     if (e.key === 'r') { change(() => { pl.rot = ((pl.rot + (e.shiftKey ? -90 : 90)) % 360 + 360) % 360; }); return; }
     const step = (e.shiftKey ? 10 : 1) * (units === 'in' ? IN / 16 : 1);
     const mv: Record<string, P2> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
     if (mv[e.key]) { e.preventDefault(); change(() => { pl.x += mv[e.key][0]; pl.y += mv[e.key][1]; }); }
-    if (e.key === 'Escape') { selPlaced = null; selKs.clear(); refresh(false); }
+    if (e.key === 'Escape') { selPlaced = null; sel.clear(); refresh(false); }
   };
   document.addEventListener('keydown', onKey);
 
@@ -358,7 +367,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     }
     const pl: Placed = { id: camId('pl'), part: part.id, x, y, rot: 0 };
     change((j) => { j.parts.push(part); j.placed.push(pl); });
-    selPlaced = pl.id; selKs = new Set(part.contours.map((c) => c.id));
+    selPlaced = pl.id; sel = selAll(pl);
     if (w > job.sheet.w || h > job.sheet.h) flash(`${part.name} is bigger than the sheet`);
     refresh(false);
   }
@@ -367,7 +376,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const [x0, , x1] = placedBox(partOf(pl), pl);
     const np: Placed = { ...pl, id: camId('pl'), x: pl.x + (x1 - x0) + (units === 'in' ? IN / 4 : 6) };
     change((j) => { j.placed.push(np); });
-    selPlaced = np.id;
+    selPlaced = np.id; sel = selAll(np);
     refresh(false);
   }
 
@@ -376,10 +385,158 @@ export function mount(root: HTMLElement, studio: Studio) {
       j.placed = j.placed.filter((q) => q.id !== pl.id);
       // drop the part itself once nothing on the sheet uses it
       if (!j.placed.some((q) => q.part === pl.part)) j.parts = j.parts.filter((p) => p.id !== pl.part);
+      if (j.groups) { j.groups = j.groups.map((g) => ({ ...g, cuts: g.cuts.filter((k) => !k.startsWith(pl.id + ':')) })).filter((g) => g.cuts.length); }
     });
-    selPlaced = null; selKs.clear();
+    selPlaced = null; sel.clear();
     refresh(false);
   }
+
+  // ------------------------------------------------------------ groups
+
+  const groups = (): CutGroup[] => job.groups || [];
+  const groupOfKey = (k: string) => groups().find((g) => g.cuts.includes(k));
+  /** The selected outlines that exist, with their part. */
+  function picked(): { pl: Placed; c: Contour; key: string }[] {
+    const out: { pl: Placed; c: Contour; key: string }[] = [];
+    for (const pl of job.placed) { const part = partOf(pl); if (part) for (const c of part.contours) if (sel.has(K(pl.id, c.id))) out.push({ pl, c, key: K(pl.id, c.id) }); }
+    return out;
+  }
+  function resolve(key: string): { pl: Placed; c: Contour } | null {
+    const [pid, cid] = key.split(':');
+    const pl = job.placed.find((q) => q.id === pid); const c = pl && partOf(pl)?.contours.find((x) => x.id === cid);
+    return pl && c ? { pl, c } : null;
+  }
+  const liveCuts = (g: CutGroup) => g.cuts.filter((k) => { const r = resolve(k); return !!r && r.c.op.kind !== 'none'; });
+  const selectKeys = (keys: string[]) => { sel = new Set(keys); const first = keys[0] && resolve(keys[0]); selPlaced = first ? first.pl.id : null; refresh(false); };
+  /** The groups the selection touches. */
+  const selGroups = () => groups().filter((g) => g.cuts.some((k) => sel.has(k)));
+
+  function doGroup() {
+    const keys = picked().filter((x) => x.c.op.kind !== 'none').map((x) => x.key);
+    if (!keys.length) { flash('Select the cuts to group first (outlines that are set to be cut).'); return; }
+    let n = 1; while (groups().some((g) => g.name === `Group ${n}`)) n++;
+    const g: CutGroup = { id: camId('g'), name: `Group ${n}`, cuts: keys };
+    change((j) => { j.groups = [...(j.groups || []).map((x) => ({ ...x, cuts: x.cuts.filter((k) => !keys.includes(k)) })).filter((x) => x.cuts.length), g]; });
+    flash(`${g.name}: ${keys.length} cut${keys.length === 1 ? '' : 's'}. It is one row in the Cut Order.`);
+  }
+  /** Split: the groups the selection touches are dissolved; their cuts stay where they are in the order. */
+  function doUngroup(only?: string) {
+    const ids = only ? [only] : selGroups().map((g) => g.id);
+    if (!ids.length) { flash('Nothing selected is in a group.'); return; }
+    const asShown = toSeq(entries);   // the cuts stay where the group stood
+    change((j) => { j.groups = (j.groups || []).filter((g) => !ids.includes(g.id)); if (j.seq) j.seq = asShown; });
+  }
+  function addToGroup(gid: string) {
+    const keys = picked().filter((x) => x.c.op.kind !== 'none').map((x) => x.key);
+    if (!keys.length) return;
+    change((j) => { j.groups = (j.groups || []).map((g) => ({ ...g, cuts: g.id === gid ? [...new Set([...g.cuts, ...keys])] : g.cuts.filter((k) => !keys.includes(k)) })).filter((g) => g.cuts.length); });
+  }
+  function removeFromGroup(keys: string[]) {
+    change((j) => { j.groups = (j.groups || []).map((g) => ({ ...g, cuts: g.cuts.filter((k) => !keys.includes(k)) })).filter((g) => g.cuts.length); });
+  }
+
+  /** Other outlines like this one. 'size': the same shape size and cut; 'type': every hole, every pocket... */
+  function selectSimilar(key: string, how: 'size' | 'type') {
+    const src = resolve(key); if (!src) return;
+    const size = (c: Contour) => { const xs = c.pts.map((p) => p[0]), ys = c.pts.map((p) => p[1]); const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys); return [Math.min(w, h), Math.max(w, h)]; };
+    const typeOf = (k: string, c: Contour) => { const cut = plan?.cuts.find((x) => x.key === k); return cut ? groupOf(cut) : c.op.kind; };
+    const [sw, sh] = size(src.c), st = typeOf(key, src.c);
+    const keys: string[] = [];
+    for (const pl of job.placed) for (const c of partOf(pl).contours) {
+      const k = K(pl.id, c.id);
+      if (how === 'type') { if (typeOf(k, c) === st) keys.push(k); continue; }
+      const [w, h] = size(c);
+      if (c.closed === src.c.closed && c.op.kind === src.c.op.kind && Math.abs(w - sw) < 0.2 && Math.abs(h - sh) < 0.2) keys.push(k);
+    }
+    selectKeys([key, ...keys.filter((k) => k !== key)]);
+    flash(`${keys.length} selected`);
+  }
+  const TYPE_WORDS: Record<string, string> = { hole: 'holes', pocket: 'pockets', line: 'on-the-line cuts', inside: 'inside cuts', outside: 'cut-outs', none: 'outlines that are off', on: 'on-the-line cuts' };
+
+  /** Copy how one cut is set to every cut in its group (tabs are spread again on each outline). */
+  function applyToGroup(g: CutGroup, from: Contour) {
+    const src: Op = JSON.parse(JSON.stringify(from.op));
+    const tabKinds = ['outside', 'inside', 'on'];
+    change(() => {
+      const done = new Set<Contour>([from]);
+      for (const k of g.cuts) {
+        const r = resolve(k); if (!r || done.has(r.c)) continue;
+        done.add(r.c);
+        const old = r.c.op;
+        const kind = !r.c.closed && src.kind !== 'on' && src.kind !== 'none' ? old.kind : src.kind;   // an open line can't be an inside cut or a pocket
+        const tabs = r.c.closed && tabKinds.includes(kind) && src.tabs.length ? (old.tabs.length === src.tabs.length ? old.tabs : spread(src.tabs.length)) : [];
+        r.c.op = { ...JSON.parse(JSON.stringify(src)), kind, tabs };
+      }
+    });
+    flash(`Applied to all of ${g.name}.`);
+  }
+
+  /** At the top of Properties when the selection is in a group. */
+  function groupBar() {
+    const gs = selGroups();
+    if (gs.length !== 1) return;
+    const g = gs[0], live = liveCuts(g), ps = picked();
+    if (!ps.every((x) => g.cuts.includes(x.key))) return;
+    const box = document.createElement('div'); box.className = 'cm-grpbar';
+    const t = document.createElement('b'); t.textContent = `${g.name} · ${live.length} cut${live.length === 1 ? '' : 's'}`;
+    const row = document.createElement('div'); row.className = 'cm-row';
+    const ap = document.createElement('button'); ap.className = 'btn primary sm'; ap.textContent = 'Apply to entire group';
+    ap.title = ps.length > 1 ? 'Every cut in the group gets the settings of the first selected cut' : 'Every cut in the group gets this cut\'s settings: type, depth, bit, passes, tabs';
+    ap.onclick = () => applyToGroup(g, ps[0].c);
+    row.appendChild(ap);
+    if (ps.length < live.length) { const a = document.createElement('button'); a.className = 'btn ghost sm'; a.textContent = 'Select the group'; a.onclick = () => selectKeys(live); row.appendChild(a); }
+    box.append(t, row); panel.appendChild(box);
+  }
+
+  // right-click menu, on the sheet and in the Cut Order
+  let menuEl: HTMLElement | null = null;
+  const closeMenu = () => { menuEl?.remove(); menuEl = null; };
+  document.addEventListener('pointerdown', (e) => { if (menuEl && !menuEl.contains(e.target as Node)) closeMenu(); }, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); }, true);
+  function showMenu(x: number, y: number, key: string | null) {
+    closeMenu();
+    const items: ([string, () => void, boolean?] | null)[] = [];
+    const ps = picked(), cutN = ps.filter((q) => q.c.op.kind !== 'none').length, gs = selGroups();
+    if (ps.length) {
+      items.push([`Group${cutN > 1 ? ` these ${cutN} cuts` : ''}   ⌘G`, doGroup, !cutN]);
+      for (const g of groups()) if (!ps.every((q) => g.cuts.includes(q.key))) items.push([`Add to ${g.name}`, () => addToGroup(g.id), !cutN]);
+      if (gs.length) {
+        items.push(null);
+        items.push(['Remove from group', () => removeFromGroup(ps.map((q) => q.key))]);
+        for (const g of gs) items.push([`Split ${g.name}   ⇧⌘G`, () => doUngroup(g.id)]);
+        if (gs.length === 1 && ps.length < liveCuts(gs[0]).length) items.push([`Select all of ${gs[0].name}`, () => selectKeys(liveCuts(gs[0]))]);
+      }
+    }
+    if (key) {
+      const r = resolve(key);
+      if (r) {
+        const cut = plan?.cuts.find((c) => c.key === key);
+        const ty = cut ? groupOf(cut) : r.c.op.kind;
+        if (items.length) items.push(null);
+        items.push(['Select similar: same size and cut', () => selectSimilar(key, 'size')]);
+        items.push([`Select similar: all ${TYPE_WORDS[ty] || 'like this'}`, () => selectSimilar(key, 'type')]);
+        if (sideTab === 'order') items.push(['Open in Properties', () => { sideTab = 'props'; hot.clear(); draw(); render(); }]);
+      }
+    }
+    if (!items.length) return;
+    const m = document.createElement('div'); m.className = 'cm-menu';
+    for (const it of items) {
+      if (!it) { const hr = document.createElement('hr'); m.appendChild(hr); continue; }
+      const b = document.createElement('button'); b.textContent = it[0]; b.disabled = !!it[2];
+      b.onclick = () => { closeMenu(); it[1](); };
+      m.appendChild(b);
+    }
+    document.body.appendChild(m); menuEl = m;
+    const r = m.getBoundingClientRect();
+    m.style.left = `${Math.max(4, Math.min(x, window.innerWidth - r.width - 6))}px`;
+    m.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 6))}px`;
+  }
+  svg.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const h = hitOutline(toSheet(e));
+    if (h) { const k = K(h.pl.id, h.c.id); if (!sel.has(k)) { sel = new Set([k]); selPlaced = h.pl.id; refresh(false); } showMenu(e.clientX, e.clientY, k); }
+    else if (sel.size) showMenu(e.clientX, e.clientY, null);
+  });
 
   // ------------------------------------------------------------ the side panel
 
@@ -389,8 +546,8 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (sideTab === 'order') { orderPanel(); return; }
     const pl = job.placed.find((q) => q.id === selPlaced);
     const part = pl && partOf(pl);
-    const ks = part ? part.contours.filter((c) => selKs.has(c.id)) : [];
-    if (pl && part && ks.length) cutPanel(part, ks);
+    const ks = [...new Set(picked().map((x) => x.c))];
+    if (ks.length) { groupBar(); cutPanel(ks); }
     if (pl && part) partPanel(pl, part);
     if (!pl) jobPanel();
   }
@@ -448,7 +605,7 @@ export function mount(root: HTMLElement, studio: Studio) {
   const same = <T,>(xs: T[]): T | null => (xs.every((x) => x === xs[0]) ? xs[0] : null);
   const num = (xs: number[], f: (v: number) => number = (v) => v) => { const v = same(xs.map((x) => +f(x).toFixed(4))); return v; };
 
-  function cutPanel(part: Part, ks: Contour[]) {
+  function cutPanel(ks: Contour[]) {
     const ops = ks.map((k) => k.op);
     const all = (fn: (o: Op, k: Contour) => void) => change(() => ks.forEach((k) => fn(k.op, k)));
     H(ks.length > 1 ? `${ks.length} outlines` : ks[0].note || (ks[0].closed ? 'Outline' : 'Open line'));
@@ -524,9 +681,9 @@ export function mount(root: HTMLElement, studio: Studio) {
     b('Turn 90°', () => change(() => { pl.rot = (pl.rot + 90) % 360; }), 'R');
     b('Duplicate', () => duplicate(pl), '⌘D');
     b('Remove', () => removePlaced(pl), 'Delete');
-    if (selKs.size < part.contours.length) {
+    if (part.contours.some((c) => !sel.has(K(pl.id, c.id)))) {
       const a = document.createElement('button'); a.className = 'btn ghost sm'; a.textContent = 'Select every outline';
-      a.onclick = () => { selKs = new Set(part.contours.map((c) => c.id)); refresh(false); };
+      a.onclick = () => { sel = selAll(pl); refresh(false); };
       row.appendChild(a);
     }
   }
@@ -555,7 +712,7 @@ export function mount(root: HTMLElement, studio: Studio) {
   // ------------------------------------------------------------ the Cut Order tab
 
   root.querySelectorAll<HTMLButtonElement>('#cm-tabs button').forEach((b) => {
-    b.onclick = () => { sideTab = b.dataset.tab as 'props' | 'order'; hotKey = ''; if (sideTab === 'order') loadSpots(); draw(); render(); };
+    b.onclick = () => { sideTab = b.dataset.tab as 'props' | 'order'; hot.clear(); if (sideTab === 'order') loadSpots(); draw(); render(); };
   });
   /** The saved spots live in SnorbCut (on the ShopBot laptop); ask for their names when the tab opens. */
   async function loadSpots() {
@@ -572,7 +729,6 @@ export function mount(root: HTMLElement, studio: Studio) {
     fn(list);
     change(() => { job.seq = toSeq(list); });
   }
-  const move = (i: number, to: number) => reorder((l) => { if (to < 0 || to >= l.length) return; const [it] = l.splice(i, 1); l.splice(to, 0, it); });
   function setStep(id: string, fn: (s: Step) => void) {
     reorder((l) => {
       const e = l.find((x) => x.t === 'step' && x.step.id === id);
@@ -593,7 +749,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const stageList = run.filter((r) => r.t === 'stage');
     const nCuts = entries.filter((e) => e.t === 'cut').length;
     H('Cut Order');
-    note(`${nCuts} cut${nCuts === 1 ? '' : 's'} in ${stageList.length} stage${stageList.length === 1 ? '' : 's'}, top to bottom. Drag a row or use the arrows. ${job.seq ? 'This is your own order.' : 'This is the automatic order: holes, pockets and inside cuts first, cut-outs last.'}`);
+    note(`${nCuts} cut${nCuts === 1 ? '' : 's'} in ${stageList.length} stage${stageList.length === 1 ? '' : 's'}, top to bottom. Drag a row or use the arrows; click cuts to select them. ${job.seq ? 'This is your own order.' : 'This is the automatic order: holes, pockets and inside cuts first, cut-outs last.'}`);
     const add = document.createElement('div'); add.className = 'cm-row';
     for (const [kind, t] of [['pause', '+ Pause'], ['toolchange', '+ Tool change'], ['material', '+ Material change'], ['custom', '+ Other step']] as [StepKind, string][]) {
       const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = t;
@@ -603,72 +759,159 @@ export function mount(root: HTMLElement, studio: Studio) {
     }
     panel.appendChild(add);
 
+    // group / ungroup for what is selected
+    const grow = document.createElement('div'); grow.className = 'cm-row';
+    const gb = (txt: string, title: string, fn: () => void, off: boolean) => { const b = document.createElement('button'); b.className = 'btn ghost sm'; b.textContent = txt; b.title = title; b.disabled = off; b.onclick = fn; grow.appendChild(b); };
+    const selCuts = picked().filter((x) => x.c.op.kind !== 'none').length;
+    gb('Group', 'Keep the selected cuts together as one row (⌘G). Click a cut to select it; ⌘-click or Shift-click for more.', doGroup, !selCuts);
+    gb('Split group', 'Take the selected group apart (⇧⌘G)', () => doUngroup(), !selGroups().length);
+    panel.appendChild(grow);
+
     const list = document.createElement('div'); list.className = 'cm-ord';
+    const us = unitsOf(entries);
+    const moveU = (u: number, to: number) => { if (to < 0 || to >= us.length) return; const l = moveUnit(entries, us, u, to); change(() => { job.seq = toSeq(l); }); };
+    // the arrows step over automatic tool changes (those follow the bits, they can't be passed)
+    const isAuto = (k: number) => { const e = entries[us[k].start]; return e.t === 'step' && !!e.step.auto; };
+    const nudge = (u: number, dir: 1 | -1) => { let to = u + dir; if (!isAuto(u)) while (to >= 0 && to < us.length && isAuto(to)) to += dir; moveU(u, to); };
+    const canNudge = (u: number, dir: 1 | -1) => { let to = u + dir; if (!isAuto(u)) while (to >= 0 && to < us.length && isAuto(to)) to += dir; return to >= 0 && to < us.length; };
     let stageNo = 0, lastWasCut = false, cutNo = 0, lastBit = '';
-    entries.forEach((e, i) => {
+    const stageHead = (e: Entry): HTMLElement | null => {
+      let h: HTMLElement | null = null;
       if (e.t === 'cut' && (!lastWasCut || e.cut.bit.id !== lastBit)) {
         const st = stageList[stageNo++];
-        if (st && st.t === 'stage') { const h = document.createElement('div'); h.className = 'cm-ord-stage'; h.textContent = `Stage ${st.stage.n} · ${st.stage.bit.name}`; list.appendChild(h); }
+        if (st && st.t === 'stage') { h = document.createElement('div'); h.className = 'cm-ord-stage'; h.textContent = `Stage ${st.stage.n} · ${st.stage.bit.name}`; }
       }
       lastWasCut = e.t === 'cut'; if (e.t === 'cut') lastBit = e.cut.bit.id;
-      const row = document.createElement('div');
-      row.className = `cm-ord-row ${e.t === 'cut' ? `cm-ord-cut cm-g-${e.group}` : 'cm-ord-step'}`;
-      row.dataset.i = String(i);
+      return h;
+    };
+    const tools = (row: HTMLElement) => {
+      const box = document.createElement('div'); box.className = 'cm-ord-tools'; row.appendChild(box);
+      return (txt: string, title: string, fn: () => void, off = false) => { const b = document.createElement('button'); b.className = 'cm-ord-b'; b.textContent = txt; b.title = title; b.disabled = off; b.onclick = (ev) => { ev.stopPropagation(); fn(); }; box.appendChild(b); };
+    };
+    // dragging a row by its grip (pointer events, so it works with a mouse, a trackpad and a finger)
+    const gripFor = (row: HTMLElement, u: number) => {
       const grip = document.createElement('span'); grip.className = 'cm-ord-grip'; grip.textContent = '⋮⋮'; grip.title = 'Drag to move';
-      // dragging by the grip (pointer events, so it works with a mouse, a trackpad and a finger)
       grip.onpointerdown = (ev) => {
         ev.preventDefault(); grip.setPointerCapture(ev.pointerId); row.classList.add('drag');
-        let to = i;
+        let to = u;
         const clear = () => list.querySelectorAll('.over-a, .over-b').forEach((x) => x.classList.remove('over-a', 'over-b'));
         grip.onpointermove = (mv) => {
           clear();
-          const rows = [...list.querySelectorAll<HTMLElement>('.cm-ord-row')];
+          const rows = [...list.querySelectorAll<HTMLElement>('[data-u]')];
           let best: HTMLElement | null = null, after = false;
           for (const r of rows) { const b = r.getBoundingClientRect(); if (mv.clientY >= b.top - 6) { best = r; after = mv.clientY > b.top + b.height / 2; } }
           if (!best) { best = rows[0]; after = false; }
-          const bi = +best.dataset.i!;
-          to = bi + (after ? 1 : 0); if (i < to) to--;
-          if (to !== i) best.classList.add(after ? 'over-b' : 'over-a');
+          const bi = +best.dataset.u!;
+          to = bi + (after ? 1 : 0); if (u < to) to--;
+          if (to !== u) best.classList.add(after ? 'over-b' : 'over-a');
           // keep the list scrolling while dragging near its edges
           const pr = panel.getBoundingClientRect();
           if (mv.clientY < pr.top + 30) panel.scrollTop -= 12; else if (mv.clientY > pr.bottom - 30) panel.scrollTop += 12;
         };
-        const end = (cancel: boolean) => { grip.onpointermove = grip.onpointerup = grip.onpointercancel = null; clear(); row.classList.remove('drag'); if (!cancel && to !== i) move(i, to); };
+        const end = (cancel: boolean) => { grip.onpointermove = grip.onpointerup = grip.onpointercancel = null; clear(); row.classList.remove('drag'); if (!cancel && to !== u) moveU(u, to); };
         grip.onpointerup = () => end(false);
         grip.onpointercancel = () => end(true);
       };
+      return grip;
+    };
+    const cutBody = (e: Entry & { t: 'cut' }, row: HTMLElement) => {
       const body = document.createElement('div'); body.className = 'cm-ord-body';
       const t = document.createElement('b'), sub = document.createElement('span');
-      if (e.t === 'cut') {
-        t.textContent = `${++cutNo}. ${e.cut.label}`;
-        const deep = -e.cut.levels[e.cut.levels.length - 1];
-        sub.textContent = `${GROUP_NAME[e.group]} · ${fmt(deep)} ${units} deep${e.cut.levels.length > 1 ? ` in ${e.cut.levels.length} passes` : ''}`;
-        body.append(t, sub);
-        if (e.warn) { const w = document.createElement('span'); w.className = 'cm-ord-warn'; w.textContent = `⚠ ${e.warn}`; body.appendChild(w); }
-        row.onmouseenter = () => { hotKey = e.cut.key; draw(); };
-        row.onmouseleave = () => { if (hotKey === e.cut.key) { hotKey = ''; draw(); } };
-        body.onclick = () => {      // show it in Properties
-          const [pid, cid] = e.cut.key.split(':');
-          selPlaced = pid; selKs = new Set([cid]); hotKey = ''; sideTab = 'props'; draw(); render();
-        };
-        body.title = 'Click to open this cut in Properties';
-      } else {
+      t.textContent = `${++cutNo}. ${e.cut.label}`;
+      const deep = -e.cut.levels[e.cut.levels.length - 1];
+      sub.textContent = `${GROUP_NAME[e.group]} · ${fmt(deep)} ${units} deep${e.cut.levels.length > 1 ? ` in ${e.cut.levels.length} passes` : ''}`;
+      body.append(t, sub);
+      if (e.warn) { const w = document.createElement('span'); w.className = 'cm-ord-warn'; w.textContent = `⚠ ${e.warn}`; body.appendChild(w); }
+      const key = e.cut.key;
+      if (sel.has(key)) row.classList.add('sel');
+      row.onmouseenter = () => { hot = new Set([key]); draw(); };
+      row.onmouseleave = () => { if (hot.has(key)) { hot.clear(); draw(); } };
+      row.onclick = (ev) => {
+        if (ev.metaKey || ev.shiftKey || ev.ctrlKey) { if (sel.has(key)) sel.delete(key); else sel.add(key); selPlaced = key.split(':')[0]; refresh(false); }
+        else selectKeys([key]);
+      };
+      row.ondblclick = () => { selectKeys([key]); sideTab = 'props'; hot.clear(); draw(); render(); };
+      row.oncontextmenu = (ev) => { ev.preventDefault(); if (!sel.has(key)) selectKeys([key]); showMenu(ev.clientX, ev.clientY, key); };
+      body.title = 'Click to select (⌘-click for more), double-click to open in Properties, right-click for more';
+      return body;
+    };
+    us.forEach((u, ui) => {
+      const first = entries[u.start];
+      const g = u.gid ? groups().find((x) => x.id === u.gid) : undefined;
+      if (g && first.t === 'cut') {
+        // a group: one row; its cuts show underneath when it is opened
+        const inner = entries.slice(u.start, u.start + u.len);
+        const cuts = inner.filter((x): x is Entry & { t: 'cut' } => x.t === 'cut');
+        const keys = cuts.map((x) => x.cut.key);
+        const open = openGroups.has(g.id);
+        const h0 = stageHead(first); if (h0) list.appendChild(h0);
+        const row = document.createElement('div'); row.className = 'cm-ord-row cm-ord-grp'; row.dataset.u = String(ui);
+        if (keys.every((k) => sel.has(k))) row.classList.add('sel');
+        const body = document.createElement('div'); body.className = 'cm-ord-body';
+        const sub = document.createElement('span');
+        const kinds = [...new Set(cuts.map((x) => GROUP_NAME[x.group]))], bits = [...new Set(cuts.map((x) => x.cut.bit.name))];
+        sub.textContent = `${cuts.length} cut${cuts.length === 1 ? '' : 's'} · ${kinds.length === 1 ? kinds[0] : 'mixed'} · ${bits.length === 1 ? bits[0] : `${bits.length} bits (tool change inside)`}`;
+        if (nameGroup === g.id) {
+          const inp = document.createElement('input'); inp.className = 'cm-input'; inp.value = g.name; inp.spellcheck = false;
+          const done = () => { const v = inp.value.trim(); nameGroup = ''; if (v && v !== g.name) change((j) => { j.groups = (j.groups || []).map((x) => (x.id === g.id ? { ...x, name: v } : x)); }); else render(); };
+          inp.onkeydown = (ev) => { if (ev.key === 'Enter') inp.blur(); if (ev.key === 'Escape') { inp.value = g.name; inp.blur(); } };
+          inp.onblur = done; inp.onclick = (ev) => ev.stopPropagation();
+          body.append(inp, sub); setTimeout(() => { inp.focus(); inp.select(); });
+        } else { const t = document.createElement('b'); t.textContent = g.name; body.append(t, sub); }
+        const warn = cuts.find((x) => x.warn); if (warn) { const w = document.createElement('span'); w.className = 'cm-ord-warn'; w.textContent = `⚠ ${warn.warn}`; body.appendChild(w); }
+        row.onmouseenter = () => { hot = new Set(keys); draw(); };
+        row.onmouseleave = () => { hot.clear(); draw(); };
+        row.onclick = (ev) => { if (ev.metaKey || ev.shiftKey || ev.ctrlKey) { const allIn = keys.every((k) => sel.has(k)); keys.forEach((k) => (allIn ? sel.delete(k) : sel.add(k))); refresh(false); } else selectKeys(keys); };
+        row.ondblclick = () => { selectKeys(keys); sideTab = 'props'; hot.clear(); draw(); render(); };
+        row.oncontextmenu = (ev) => { ev.preventDefault(); if (!keys.every((k) => sel.has(k))) selectKeys(keys); showMenu(ev.clientX, ev.clientY, null); };
+        body.title = 'Click to select the group, double-click to open it in Properties, right-click for more';
+        row.append(gripFor(row, ui), body);
+        const tb = tools(row);
+        tb(open ? '▾' : '▸', open ? 'Hide the cuts in this group' : 'Show the cuts in this group', () => { if (open) openGroups.delete(g.id); else openGroups.add(g.id); render(); });
+        tb('▲', 'Earlier', () => nudge(ui, -1), !canNudge(ui, -1));
+        tb('▼', 'Later', () => nudge(ui, 1), !canNudge(ui, 1));
+        tb('✎', 'Rename this group', () => { nameGroup = g.id; render(); });
+        tb('Split', 'Take the group apart; the cuts stay where they are', () => doUngroup(g.id));
+        list.appendChild(row);
+        const kids = document.createElement('div'); kids.className = 'cm-ord-kids';
+        inner.forEach((e, n) => {
+          const h = n ? stageHead(e) : null;
+          if (e.t === 'cut') {
+            if (h) kids.appendChild(h);
+            const r = document.createElement('div'); r.className = `cm-ord-row cm-ord-cut cm-ord-sub cm-g-${e.group}`;
+            r.appendChild(cutBody(e, r));
+            tools(r)('✕', 'Take this cut out of the group', () => removeFromGroup([e.cut.key]));
+            kids.appendChild(r);
+          } else { const sn = document.createElement('div'); sn.className = 'cm-ord-stage'; sn.textContent = `${e.step.name} (${describeStep(e.step)})`; kids.appendChild(sn); }
+        });
+        if (open) list.appendChild(kids);
+        return;
+      }
+      const e = first;
+      const h = stageHead(e); if (h) list.appendChild(h);
+      const row = document.createElement('div');
+      row.className = `cm-ord-row ${e.t === 'cut' ? `cm-ord-cut cm-g-${e.group}` : 'cm-ord-step'}`;
+      row.dataset.u = String(ui);
+      row.appendChild(gripFor(row, ui));
+      if (e.t === 'cut') row.appendChild(cutBody(e, row));
+      else {
+        const body = document.createElement('div'); body.className = 'cm-ord-body';
+        const t = document.createElement('b'), sub = document.createElement('span');
         const s = e.step;
         t.textContent = s.name || STEP_NAME[s.kind];
         sub.textContent = `${STEP_NAME[s.kind]}${s.auto ? ' (automatic: the bit changes here)' : ''}: ${describeStep(s)}`;
         body.append(t, sub);
         if (s.note) { const n = document.createElement('span'); n.className = 'cm-ord-note'; n.textContent = s.note; body.appendChild(n); }
+        row.appendChild(body);
       }
-      const tools = document.createElement('div'); tools.className = 'cm-ord-tools';
-      const tb = (txt: string, title: string, fn: () => void, off = false) => { const b = document.createElement('button'); b.className = 'cm-ord-b'; b.textContent = txt; b.title = title; b.disabled = off; b.onclick = (ev) => { ev.stopPropagation(); fn(); }; tools.appendChild(b); };
-      tb('▲', 'Earlier', () => move(i, i - 1), i === 0);
-      tb('▼', 'Later', () => move(i, i + 1), i === entries.length - 1);
+      const tb = tools(row);
+      tb('▲', 'Earlier', () => nudge(ui, -1), !canNudge(ui, -1));
+      tb('▼', 'Later', () => nudge(ui, 1), !canNudge(ui, 1));
       if (e.t === 'step') {
         const s = e.step;
         tb(editStep === s.id ? 'Done' : 'Edit', 'What this step does', () => { editStep = editStep === s.id ? '' : s.id; render(); });
-        tb('✕', s.auto ? 'The bit changes here, so a tool change is needed' : 'Remove this step', () => reorder((l) => { l.splice(i, 1); }), !!s.auto);
+        tb('✕', s.auto ? 'The bit changes here, so a tool change is needed' : 'Remove this step', () => reorder((l) => { l.splice(u.start, 1); }), !!s.auto);
       }
-      row.append(grip, body, tools);
       list.appendChild(row);
       if (e.t === 'step' && editStep === e.step.id) list.appendChild(stepEditor(e.step));
     });
@@ -676,7 +919,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const foot = document.createElement('div'); foot.className = 'cm-row';
     const auto = document.createElement('button'); auto.className = 'btn ghost sm'; auto.textContent = 'Back to the automatic order';
     auto.disabled = !job.seq; auto.title = 'Drops your arrangement and every step you added';
-    auto.onclick = () => { if (window.confirm('Go back to the automatic order? Your arrangement and the steps you added are removed.')) { editStep = ''; change(() => { delete job.seq; }); } };
+    auto.onclick = () => { if (window.confirm('Go back to the automatic order? Your arrangement and the steps you added are removed. Groups stay.')) { editStep = ''; change(() => { delete job.seq; }); } };
     foot.appendChild(auto);
     panel.appendChild(foot);
     note('Each stage is one G-code file. Steps happen between stages: the machine stops and waits for you at the ShopBot.');
@@ -800,7 +1043,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (dirty && job.placed.length && !confirmDiscard()) return;
     const bits = job.bits;
     job = newJob(); job.bits = bits; job.units = units;
-    undo.length = 0; redo.length = 0; dirty = false; selPlaced = null; selKs.clear();
+    undo.length = 0; redo.length = 0; dirty = false; selPlaced = null; sel.clear();
     saveDraft(); fit(); refresh();
   };
   const confirmDiscard = () => window.confirm('Start over? This job has changes that aren\'t saved on the Pi.');
@@ -849,7 +1092,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     const j = await (await fetch(`${API}/${encodeURIComponent(name)}.json`)).json();
     if (dirty && job.placed.length && !confirmDiscard()) return;
     job = j; units = job.units || 'in';
-    undo.length = 0; redo.length = 0; dirty = false; selPlaced = null; selKs.clear();
+    undo.length = 0; redo.length = 0; dirty = false; selPlaced = null; sel.clear();
     saveDraft(); fit(); refresh();
   }, true);
 

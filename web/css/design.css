@@ -414,3 +414,16 @@
 .cm-ord-edit { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 2px; margin: 0 0 4px 10px; background: var(--bg2); }
 .cm-check { display: block; font-size: 13px; margin: 6px 0 8px; }
 .cm-ord-grip { touch-action: none; padding: 6px 4px; margin: -6px 0; }
+.cm-ord-row.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.cm-ord-cut, .cm-ord-grp { cursor: pointer; }
+.cm-ord-grp { background: var(--card2); border-left-color: #f7b6c8; }
+.cm-ord-kids { display: flex; flex-direction: column; gap: 3px; margin: 0 0 4px 16px; padding-left: 6px; border-left: 2px solid var(--line); }
+.cm-ord-sub { padding: 3px 6px; }
+.cm-ord-body .cm-input { width: 100%; font-size: 13px; padding: 2px 4px; }
+.cm-grpbar { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.cm-grpbar .cm-row { margin: 0; }
+.cm-menu { position: fixed; z-index: 1000; min-width: 220px; background: #2a1a30; border: 1px solid #452d4d; border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45); display: flex; flex-direction: column; }
+.cm-menu button { background: none; border: 0; color: #f4e9f5; text-align: left; font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 5px; cursor: pointer; white-space: pre; }
+.cm-menu button:hover:not(:disabled) { background: #452d4d; }
+.cm-menu button:disabled { opacity: .4; cursor: default; }
+.cm-menu hr { border: 0; border-top: 1px solid #452d4d; margin: 4px 2px; }
