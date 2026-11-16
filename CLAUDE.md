@@ -18,7 +18,8 @@ board, Klipper + Moonraker). The top bar holds the apps:
   ShopBot 4'x8' CNC router.
 - **SnorbPrint** (`web/js/`): the printer. Pages Prepare, Print, Control,
   Files, Maintenance. PrusaSlicer CLI slices on the Pi (`server/studio_server.py`).
-- SnorbCut is planned (CNC router app).
+- **SnorbCut** (`web/cut/index.html`): the ShopBot. One self-contained page
+  shown in a frame; see "SnorbCut" below.
 
 Brand: Snorb bunny logo (`web/img/snorb*.png`), **dark plum** theme
 (bg #170e1a, bar #211427, cards #2a1a30/#33213a, line #452d4d, text #f4e9f5,
@@ -112,6 +113,22 @@ safety Z 0.25", start/end Z 2.0", end `G0 X0 Y0` + `G4 P0.1`. Zero: X/Y at
 the sheet's lower-left, Z on top of the material. Mostly 1/4" compression
 bits. Tested in `design/test/cam.test.mjs`; **not yet air-cut on the real
 machine**.
+
+## SnorbCut
+
+The ShopBot keeps its own control software (SB3, on a Windows laptop at the
+shop, on another network). A small bridge program on that laptop reads SB3's
+position and state and can press its Stop/Pause; it is **not in this repo**.
+The Pi relays `/cut-api/` to the bridge over Tailscale (`deploy/nginx-studio.conf`;
+the laptop's address is only in `/etc/nginx/snippets/studio-cut.conf` on the Pi).
+
+- `web/cut/index.html` is the **same file** the bridge serves on the laptop
+  (there it talks to `/api/` directly). Keep it self-contained: plain JS, no
+  imports, no build. Change it in one place and copy it to the other.
+- **Owner safety rule:** from anywhere: watch, Pause, Stop, send a job file.
+  **Only on the laptop itself** (the bridge checks the request is local, not
+  the page): Start, Resume after a pause, moves, zeroing, router on/off.
+  Never add a way around that through the Pi.
 
 ## Open items
 

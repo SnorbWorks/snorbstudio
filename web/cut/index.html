@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SnorbCut</title>
+<style>
+  :root { --bg:#170e1a; --panel:#2a1a30; --panel2:#33213a; --line:#452d4d; --text:#f4e9f5; --dim:#a893ab; --accent:#d9a3d8; --stop:#e5484d; --ok:#5fd08a; --warn:#f0b54a;
+          --sheet:#3a2942; --grid:#4b3755; --plan:#8f6f99; --done:#ffd9ff; --rapid:#6e5c76; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 340px; height: 100%; }
+  .view { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .tabs { position: absolute; left: 12px; top: 12px; display: flex; gap: 6px; z-index: 2; }
+  .tabs button, .tools button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  .tabs button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .tools { position: absolute; right: 12px; top: 12px; display: flex; gap: 6px; z-index: 2; }
+  .hud { position: absolute; left: 12px; bottom: 10px; color: var(--dim); font-size: 12px; pointer-events: none; }
+  .side { background: var(--panel); border-left: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  h1 { font-size: 13px; margin: 6px 0 0; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+  .state { font-size: 19px; font-weight: 600; }
+  .state small { display: block; font-size: 12px; font-weight: 400; color: var(--dim); margin-top: 2px; word-break: break-all; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); margin-right: 8px; }
+  .dot.run { background: var(--ok); } .dot.pause { background: var(--warn); } .dot.off { background: var(--stop); }
+  .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .times { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; font-variant-numeric: tabular-nums; }
+  .times div { background: var(--panel2); border-radius: 8px; padding: 6px 8px; }
+  .times b { display: block; font-size: 11px; font-weight: 500; color: var(--dim); }
+  .times span { font-size: 17px; }
+  .pos { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-variant-numeric: tabular-nums; }
+  .pos div { background: var(--panel2); border-radius: 8px; padding: 6px 8px; }
+  .pos b { color: var(--dim); font-weight: 600; font-size: 11px; display: block; }
+  .pos span { font-size: 19px; }
+  button { font: inherit; border: 0; border-radius: 9px; padding: 10px 12px; cursor: pointer; color: var(--bg); background: var(--accent); font-weight: 600; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 500; }
+  button.stop { background: var(--stop); color: #fff; }
+  button.warn { background: var(--warn); }
+  button.go { background: var(--ok); }
+  button:disabled { opacity: .35; cursor: default; }
+  .main3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .main3 button { padding: 18px 6px; font-size: 16px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; min-width: 0; }
+  .note { font-size: 12px; color: var(--dim); }
+  .msg { font-size: 13px; min-height: 18px; color: var(--warn); }
+  .card { border: 1px solid var(--warn); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .card b { color: var(--warn); }
+  .card pre { margin: 0; white-space: pre-wrap; font: inherit; font-size: 13px; color: var(--text); }
+  .card .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card .btns button { flex: 1; padding: 8px; }
+  .jog { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .jog button { padding: 14px 0; background: var(--panel2); color: var(--text); border: 1px solid var(--line); }
+  .jog .sp { visibility: hidden; }
+  select, input[type=number], input[type=text], input[type=password] { font: inherit; width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  label { font-size: 12px; color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  .io { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--dim); flex-wrap: wrap; }
+  .io i { width: 16px; height: 16px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; font-style: normal; font-size: 10px; }
+  .io i.on { background: var(--ok); color: var(--bg); border-color: var(--ok); }
+  details { border-top: 1px solid var(--line); padding-top: 8px; }
+  details > summary { cursor: pointer; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); list-style-position: inside; }
+  details > div { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+  .modal { position: fixed; inset: 0; background: rgba(10, 5, 14, .7); display: none; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
+  .modal.on { display: flex; }
+  .modal .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; max-width: 380px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+  @media (max-width: 800px) { .app { grid-template-columns: 1fr; grid-template-rows: 44vh 1fr; } .side { border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="view">
+    <canvas id="cv"></canvas>
+    <div class="tabs"><button id="tab2d" class="on">Bed</button><button id="tab3d">3D</button></div>
+    <div class="tools"><button id="fitbed">Whole bed</button><button id="fitpart">Part</button><button id="zx" hidden>Depth x1</button></div>
+    <div class="hud" id="hud"></div>
+  </div>
+  <div class="side">
+    <div class="state"><span class="dot" id="dot"></span><span id="state">Connecting</span><small id="file"></small></div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="times">
+      <div><b>Done</b><span id="pct">-</span></div>
+      <div><b>Elapsed</b><span id="tel">-</span></div>
+      <div><b>Remaining</b><span id="trem">-</span></div>
+    </div>
+    <div class="pos"><div><b>X</b><span id="px">-</span></div><div><b>Y</b><span id="py">-</span></div><div><b>Z</b><span id="pz">-</span></div></div>
+    <div class="main3">
+      <button class="warn" id="pause" disabled>Pause</button>
+      <button class="go" id="resume" disabled>Resume</button>
+      <button class="stop" id="stop" disabled>Stop</button>
+    </div>
+    <div class="msg" id="msg"></div>
+    <div id="prompts"></div>
+
+    <h1>Job</h1>
+    <div class="note" id="jobinfo">No job yet.</div>
+    <input type="file" id="pick" accept=".sbp,.nc,.gcode,.tap" hidden>
+    <div class="row"><button class="ghost" id="send">Send a file</button><select id="jobs"><option value="">Jobs on the ShopBot PC</option></select></div>
+    <button class="go" id="start" disabled>Start job</button>
+
+    <details id="ctl">
+      <summary>Machine control</summary>
+      <div>
+        <div class="row"><span class="note" id="lockstate"></span></div>
+        <div class="row">
+          <label>Step<select id="step"><option>0.01</option><option>0.1</option><option selected>1</option><option>5</option><option>12</option></select></label>
+          <label>Speed<select id="spd"><option value="M">Move (slow)</option><option value="J">Jog (fast)</option></select></label>
+        </div>
+        <div class="jog">
+          <button class="sp"></button><button data-j="0,1,0">Y+</button><button class="sp"></button><button data-j="0,0,1">Z+</button>
+          <button data-j="-1,0,0">X-</button><button class="sp"></button><button data-j="1,0,0">X+</button><button class="sp"></button>
+          <button class="sp"></button><button data-j="0,-1,0">Y-</button><button class="sp"></button><button data-j="0,0,-1">Z-</button>
+        </div>
+        <div class="row"><label>Go to X<input type="number" id="gx" step="any"></label><label>Go to Y<input type="number" id="gy" step="any"></label><button class="ghost" id="goto" style="align-self:flex-end">Go</button></div>
+        <div class="row"><button class="ghost" id="zeroxy">Zero X and Y here</button><button class="ghost" id="zeroz">Zero Z here</button></div>
+        <div class="row"><button class="ghost" id="ron">Router on</button><button class="ghost" id="roff">Router off</button></div>
+        <div class="io" id="io"></div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Settings</summary>
+      <div>
+        <div class="row"><label>Bed length (X)<input type="number" id="sw" step="any"></label><label>Bed width (Y)<input type="number" id="sh" step="any"></label></div>
+        <div class="row"><label>Bit diameter<input type="number" id="sb" step="any"></label><label>Rapid speed, per second<input type="number" id="sr" step="any"></label></div>
+        <label class="row" style="flex-direction:row"><input type="checkbox" id="chime" style="flex:0"> <span>Sound when a job finishes</span></label>
+        <div class="note">Sizes are in the units SB3 is set to. Time remaining is an estimate from the job's feed rates and adjusts as the cut runs.</div>
+      </div>
+    </details>
+    <div class="note">The E-stop on the machine is the emergency stop. Pause and Stop here work SB3's own controls over the network.</div>
+  </div>
+</div>
+
+<div class="modal" id="modal"><div class="box">
+  <div id="mtext"></div>
+  <input type="password" id="minput" inputmode="numeric" autocomplete="off" hidden>
+  <div class="row"><button class="ghost" id="mno">Cancel</button><button id="myes">OK</button></div>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const store = { get(k, d) { try { const v = localStorage.getItem('snorbcut.' + k); return v === null ? d : v; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem('snorbcut.' + k, v); } catch (e) { } } };
+const S = { bedW: +store.get('bedW', 96), bedH: +store.get('bedH', 48), bit: +store.get('bit', 0.25), rapid: +store.get('rapid', 4), chime: store.get('chime', '1') === '1' };
+// Inside SnorbStudio this page lives at /cut/ and the Pi passes /cut-api/ on to the ShopBot laptop; on the laptop itself it talks to the bridge directly.
+const EMB = location.pathname.indexOf('/cut/') === 0, API = EMB ? '/cut-api' : '/api';
+const framed = () => { try { return window.frameElement || null; } catch (e) { return null; } };
+const hiddenNow = () => { const f = framed(); return document.hidden || (f && !f.offsetParent); };
+function getJ(url) { const c = new AbortController(), t = setTimeout(() => c.abort(), 6000); return fetch(url, { signal: c.signal }).then(r => r.json()).finally(() => clearTimeout(t)); }
+function badge(on) { try { const f = framed(); if (!f) return; const b = f.ownerDocument.querySelector('#tabs [data-app="cut"]'); const h = on ? 'SnorbCut <span class="badge">\u25cf</span>' : 'SnorbCut'; if (b && b.innerHTML !== h) b.innerHTML = h; } catch (e) { } }
+let st = null, last = null, fails = 0, tab = '2d', zx = 1;
+let job = null, jobSeen = null, trail = [];
+let prog = { i: 0, f: 0, lostAt: 0 }, wasRunning = false, activeMs = 0, lastTick = 0, knowStart = false, finished = false;
+let paths = null, doneUpTo = 0;
+const v2 = { sc: 1, ox: 0, oy: 0, auto: 'bed' };
+const v3 = { az: -0.5, el: 0.95, dist: 0, tx: 0, ty: 0, tz: 0 };
+
+// ---------- job parsing: G-code (G0/G1, arcs as straight lines) and ShopBot moves ----------
+function parseJob(text) {
+  const segs = []; let x = null, y = null, z = null, mode = 1, feed = 1, mvXY = 2, mvZ = 1, jgXY = S.rapid, jgZ = S.rapid / 2;
+  const add = (nx, ny, nz, rapid, sp) => {
+    if (x === null || y === null) { x = nx; y = ny; z = nz; return; }
+    const len = Math.hypot(nx - x, ny - y, nz - z);
+    if (len > 1e-6) segs.push({ x0: x, y0: y, z0: z, x1: nx, y1: ny, z1: nz, rapid, len, t: len / Math.max(sp, 0.01) });
+    x = nx; y = ny; z = nz;
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.split("'")[0].split(';')[0].replace(/\(.*?\)/g, '').trim().toUpperCase();
+    if (!line) continue;
+    const isSb = /^[A-Z][A-Z0-9]\s*(,|$)/.test(line) && !/^[GMTNF]\d/.test(line.replace(/\s/g, '')) || /^[MJ][XYZ23]\s*,/.test(line);
+    if (!isSb) {
+      const g = line.match(/G0*([0123])(?![0-9])/); if (g) mode = +g[1];
+      const f = line.match(/F(-?\d*\.?\d+)/); if (f) feed = +f[1] / 60;
+      const mx = line.match(/X(-?\d*\.?\d+)/), my = line.match(/Y(-?\d*\.?\d+)/), mz = line.match(/Z(-?\d*\.?\d+)/);
+      if (mx || my || mz) {
+        const nx = mx ? +mx[1] : (x === null ? 0 : x), ny = my ? +my[1] : (y === null ? 0 : y), nz = mz ? +mz[1] : (z === null ? 0 : z);
+        if (z === null) z = nz;
+        add(nx, ny, nz, mode === 0, mode === 0 ? S.rapid : feed);
+      }
+      continue;
+    }
+    const p = line.split(',').map(s => s.trim()); const c = p[0];
+    const num = i => (p[i] !== undefined && p[i] !== '' && !isNaN(+p[i])) ? +p[i] : null;
+    const cx = x === null ? 0 : x, cy = y === null ? 0 : y, cz = z === null ? 0 : z;
+    if (c === 'MS') { if (num(1) !== null) mvXY = num(1); if (num(2) !== null) mvZ = num(2); continue; }
+    if (c === 'JS') { if (num(1) !== null) jgXY = num(1); if (num(2) !== null) jgZ = num(2); continue; }
+    const rapid = c[0] === 'J';
+    let nx = cx, ny = cy, nz = cz, hit = false;
+    if (c === 'M2' || c === 'J2' || c === 'M3' || c === 'J3') { if (num(1) !== null) nx = num(1); if (num(2) !== null) ny = num(2); if (c[1] === '3' && num(3) !== null) nz = num(3); hit = true; }
+    else if (c === 'MX' || c === 'JX') { if (num(1) !== null) { nx = num(1); hit = true; } }
+    else if (c === 'MY' || c === 'JY') { if (num(1) !== null) { ny = num(1); hit = true; } }
+    else if (c === 'MZ' || c === 'JZ') { if (num(1) !== null) { nz = num(1); hit = true; } }
+    if (!hit) continue;
+    if (z === null) z = nz;
+    const xy = Math.hypot(nx - cx, ny - cy) > 1e-6;
+    add(nx, ny, nz, rapid, rapid ? (xy ? jgXY : jgZ) : (xy ? mvXY : mvZ));
+  }
+  let cum = 0, b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity }, cb = null;
+  for (const s of segs) {
+    cum += s.t; s.cum = cum; s.cut = !s.rapid && Math.min(s.z0, s.z1) < -1e-6;
+    for (const [px, py, pz] of [[s.x0, s.y0, s.z0], [s.x1, s.y1, s.z1]]) {
+      b.x0 = Math.min(b.x0, px); b.x1 = Math.max(b.x1, px); b.y0 = Math.min(b.y0, py); b.y1 = Math.max(b.y1, py); b.z0 = Math.min(b.z0, pz); b.z1 = Math.max(b.z1, pz);
+    }
+    if (s.cut) { cb = cb || { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      cb.x0 = Math.min(cb.x0, s.x0, s.x1); cb.x1 = Math.max(cb.x1, s.x0, s.x1); cb.y0 = Math.min(cb.y0, s.y0, s.y1); cb.y1 = Math.max(cb.y1, s.y0, s.y1); }
+  }
+  return { segs, total: cum, b: segs.length ? b : null, cb: cb || (segs.length ? b : null), anyCut: !!cb };
+}
+
+function buildPaths() {
+  paths = { plan: new Path2D(), rapid: new Path2D(), done: new Path2D() }; doneUpTo = 0;
+  if (!job) return;
+  for (const s of job.segs) { const p = (s.cut || !job.anyCut && !s.rapid) ? paths.plan : paths.rapid; p.moveTo(s.x0, s.y0); p.lineTo(s.x1, s.y1); }
+}
+function isCutSeg(s) { return s.cut || (!job.anyCut && !s.rapid); }
+
+// ---------- progress along the job ----------
+function nearest(s, p) {
+  const dx = s.x1 - s.x0, dy = s.y1 - s.y0, dz = s.z1 - s.z0, L = dx * dx + dy * dy + dz * dz;
+  let f = L > 0 ? ((p.x - s.x0) * dx + (p.y - s.y0) * dy + (p.z - s.z0) * dz) / L : 0; f = Math.max(0, Math.min(1, f));
+  const qx = s.x0 + dx * f, qy = s.y0 + dy * f, qz = s.z0 + dz * f;
+  return { f, dxy: Math.hypot(p.x - qx, p.y - qy), dz: Math.abs(p.z - qz) };
+}
+function track(p, now) {
+  if (!job || !job.segs.length) return;
+  const segs = job.segs, n = segs.length;
+  let acc = 0, found = -1, ff = 0;
+  for (let j = prog.i; j < n && acc < 8 && j < prog.i + 600; j++) {
+    const r = nearest(segs[j], p);
+    if (r.dxy < 0.12 && r.dz < 0.05 && !(j === prog.i && r.f < prog.f - 0.02)) { found = j; ff = r.f; break; }
+    acc += segs[j].len;
+  }
+  if (found < 0) {
+    if (!prog.lostAt) prog.lostAt = now;
+    if (now - prog.lostAt < 2500) return;
+    let best = Infinity;
+    for (let j = 0; j < n; j++) { const r = nearest(segs[j], p), d = r.dxy + r.dz * 3; if (d < best - 1e-9) { best = d; found = j; ff = r.f; } }
+    if (best > 0.5) return;
+  }
+  prog.lostAt = 0;
+  if (found < prog.i) { doneUpTo = 0; paths.done = new Path2D(); }
+  prog.i = found; prog.f = ff;
+}
+function doneTime() { if (!job || !job.segs.length) return 0; const s = job.segs[Math.min(prog.i, job.segs.length - 1)]; return s.cum - s.t * (1 - prog.f); }
+function fmt(sec) { if (!isFinite(sec)) return '-'; sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0'); }
+
+// ---------- 2D bed view ----------
+function size() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * d) || cv.height !== Math.round(r.height * d)) { cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); }
+  return { w: r.width, h: r.height, d };
+}
+function fit2d(which) {
+  const { w, h } = size(); let b = { x0: 0, y0: 0, x1: S.bedW, y1: S.bedH };
+  if (which === 'part' && job && job.cb) { const c = job.cb, m = Math.max(1, (c.x1 - c.x0) * 0.12, (c.y1 - c.y0) * 0.12); b = { x0: c.x0 - m, y0: c.y0 - m, x1: c.x1 + m, y1: c.y1 + m }; }
+  const pad = 46; v2.sc = Math.min((w - 2 * pad) / (b.x1 - b.x0), (h - 2 * pad) / (b.y1 - b.y0));
+  v2.ox = (w - v2.sc * (b.x1 - b.x0)) / 2 - b.x0 * v2.sc; v2.oy = h - (h - v2.sc * (b.y1 - b.y0)) / 2 + b.y0 * v2.sc; v2.auto = which;
+}
+function col(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function draw2d() {
+  const { w, h, d } = size();
+  if (v2.auto) fit2d(v2.auto);
+  ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, w, h);
+  const X = x => v2.ox + x * v2.sc, Y = y => v2.oy - y * v2.sc;
+  ctx.fillStyle = col('--sheet'); ctx.fillRect(X(0), Y(S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
+  const step = [1, 6, 12, 24, 48].find(s => s * v2.sc >= 26) || 48;
+  ctx.strokeStyle = col('--grid'); ctx.lineWidth = 1; ctx.beginPath();
+  for (let gx = step; gx < S.bedW; gx += step) { ctx.moveTo(X(gx), Y(0)); ctx.lineTo(X(gx), Y(S.bedH)); }
+  for (let gy = step; gy < S.bedH; gy += step) { ctx.moveTo(X(0), Y(gy)); ctx.lineTo(X(S.bedW), Y(gy)); }
+  ctx.stroke();
+  ctx.strokeStyle = col('--plan'); ctx.lineWidth = 1.5; ctx.strokeRect(X(0), Y(S.bedH), S.bedW * v2.sc, S.bedH * v2.sc);
+  ctx.fillStyle = col('--dim'); ctx.font = '11px system-ui, sans-serif';
+  ctx.fillText('0,0', X(0) + 4, Y(0) - 5); ctx.fillText(S.bedW + ' x ' + S.bedH, X(S.bedW) - 52, Y(S.bedH) + 14);
+  if (job && paths) {
+    while (doneUpTo < prog.i) { const s = job.segs[doneUpTo++]; if (isCutSeg(s)) { paths.done.moveTo(s.x0, s.y0); paths.done.lineTo(s.x1, s.y1); } }
+    ctx.save(); ctx.setTransform(d * v2.sc, 0, 0, -d * v2.sc, d * v2.ox, d * v2.oy);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = col('--rapid'); ctx.lineWidth = 1 / v2.sc; ctx.setLineDash([4 / v2.sc, 4 / v2.sc]); ctx.stroke(paths.rapid); ctx.setLineDash([]);
+    const bw = Math.max(S.bit, 2 / v2.sc);
+    ctx.strokeStyle = col('--plan'); ctx.globalAlpha = 0.55; ctx.lineWidth = bw; ctx.stroke(paths.plan); ctx.globalAlpha = 1;
+    ctx.strokeStyle = col('--done'); ctx.lineWidth = bw; ctx.stroke(paths.done);
+    const s = job.segs[prog.i];
+    if (s && isCutSeg(s) && prog.f > 0) { ctx.beginPath(); ctx.moveTo(s.x0, s.y0); ctx.lineTo(s.x0 + (s.x1 - s.x0) * prog.f, s.y0 + (s.y1 - s.y0) * prog.f); ctx.stroke(); }
+    ctx.restore();
+  } else if (trail.length) {
+    ctx.strokeStyle = col('--done'); ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.beginPath();
+    trail.forEach((p, i) => { if (i === 0) ctx.moveTo(X(p.x), Y(p.y)); else ctx.lineTo(X(p.x), Y(p.y)); }); ctx.stroke();
+  }
+  if (last) {
+    const r = Math.max(S.bit * v2.sc / 2, 3);
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(X(last.x), Y(last.y), r, 0, 7); ctx.fill();
+    ctx.strokeStyle = col('--accent'); ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(X(last.x), Y(last.y), r + 7, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(last.x) - r - 13, Y(last.y)); ctx.lineTo(X(last.x) + r + 13, Y(last.y)); ctx.moveTo(X(last.x), Y(last.y) - r - 13); ctx.lineTo(X(last.x), Y(last.y) + r + 13); ctx.lineWidth = 1; ctx.stroke();
+  }
+  $('hud').textContent = 'Grid ' + step + '   Drag to move, scroll or pinch to zoom';
+}
+
+// ---------- 3D view ----------
+function fit3d() {
+  const b = (job && job.cb) ? job.cb : { x0: 0, y0: 0, x1: S.bedW, y1: S.bedH };
+  v3.tx = (b.x0 + b.x1) / 2; v3.ty = (b.y0 + b.y1) / 2; v3.tz = 0;
+  v3.dist = Math.max(b.x1 - b.x0, b.y1 - b.y0, 2) * 1.9;
+}
+function draw3d() {
+  const { w, h, d } = size();
+  if (!v3.dist) fit3d();
+  ctx.setTransform(d, 0, 0, d, 0, 0); ctx.clearRect(0, 0, w, h);
+  const ca = Math.cos(v3.az), sa = Math.sin(v3.az), ce = Math.cos(v3.el), se = Math.sin(v3.el), f = Math.min(w, h) * 1.25;
+  const P = (x, y, z) => {
+    x -= v3.tx; y -= v3.ty; z = (z - v3.tz) * zx;
+    const xr = x * ca - y * sa, yr = x * sa + y * ca, up = yr * se + z * ce, dp = v3.dist + yr * ce - z * se;
+    if (dp < v3.dist * 0.05) return null;
+    return [w / 2 + f * xr / dp, h / 2 - f * up / dp];
+  };
+  const poly = (pts, fill, stroke, lw) => {
+    const q = pts.map(p => P(p[0], p[1], p[2])); if (q.some(p => !p)) return;
+    ctx.beginPath(); q.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); } if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 1; ctx.stroke(); }
+  };
+  const depth = job && job.b ? Math.max(0.25, -job.b.z0) : 0.75;
+  const W = S.bedW, H = S.bedH;
+  // sheet: bottom outline, sides, top face
+  poly([[0, 0, -depth], [W, 0, -depth], [W, H, -depth], [0, H, -depth]], null, col('--grid'), 1);
+  for (const [x, y] of [[0, 0], [W, 0], [W, H], [0, H]]) poly([[x, y, 0], [x, y, -depth], [x, y, 0]], null, col('--grid'), 1);
+  poly([[0, 0, 0], [W, 0, 0], [W, H, 0], [0, H, 0]], 'rgba(58,41,66,.75)', col('--plan'), 1.5);
+  ctx.strokeStyle = col('--grid'); ctx.lineWidth = 1; ctx.beginPath();
+  for (let gx = 12; gx < W; gx += 12) { const a = P(gx, 0, 0), b = P(gx, H, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
+  for (let gy = 12; gy < H; gy += 12) { const a = P(0, gy, 0), b = P(W, gy, 0); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
+  ctx.stroke();
+  if (job) {
+    const segs = job.segs, pass = (from, to, style, lw, dash, wantRapid) => {
+      ctx.strokeStyle = style; ctx.lineWidth = lw; ctx.setLineDash(dash); ctx.beginPath();
+      for (let i = from; i < to; i++) { const s = segs[i]; if (s.rapid !== wantRapid) continue; const a = P(s.x0, s.y0, s.z0), b = P(s.x1, s.y1, s.z1); if (a && b) { ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } }
+      ctx.stroke(); ctx.setLineDash([]);
+    };
+    pass(0, segs.length, col('--rapid'), 1, [3, 4], true);
+    pass(prog.i, segs.length, col('--plan'), 1.3, [], false);
+    pass(0, prog.i, col('--done'), 2, [], false);
+    const s = segs[prog.i];
+    if (s && !s.rapid && prog.f > 0) { const a = P(s.x0, s.y0, s.z0), b = P(s.x0 + (s.x1 - s.x0) * prog.f, s.y0 + (s.y1 - s.y0) * prog.f, s.z0 + (s.z1 - s.z0) * prog.f);
+      if (a && b) { ctx.strokeStyle = col('--done'); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); } }
+  }
+  if (last) {
+    // the plane the tool is cutting on
+    const b = (job && job.cb) ? job.cb : { x0: last.x - 6, y0: last.y - 6, x1: last.x + 6, y1: last.y + 6 }, m = Math.max(1, (b.x1 - b.x0) * 0.08);
+    const z = Math.min(last.z, 0);
+    if (last.z < 0.0005) {
+      poly([[b.x0 - m, b.y0 - m, z], [b.x1 + m, b.y0 - m, z], [b.x1 + m, b.y1 + m, z], [b.x0 - m, b.y1 + m, z]], 'rgba(219,158,219,.22)', col('--accent'), 1.5);
+      const lp = P(b.x1 + m, b.y0 - m, z); if (lp) { ctx.fillStyle = col('--accent'); ctx.font = '12px system-ui, sans-serif'; ctx.fillText('Cutting at Z ' + last.z.toFixed(3), lp[0] + 6, lp[1] + 4); }
+    }
+    const a = P(last.x, last.y, last.z), t = P(last.x, last.y, last.z + Math.max(2, depth * 3) / zx);
+    if (a && t) { ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(3, S.bit * f / v3.dist); ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(t[0], t[1]); ctx.stroke(); ctx.lineCap = 'butt';
+      ctx.fillStyle = col('--accent'); ctx.beginPath(); ctx.arc(a[0], a[1], 5, 0, 7); ctx.fill(); }
+  }
+  $('hud').textContent = 'Drag to orbit, scroll or pinch to zoom';
+}
+function draw() { if (tab === '2d') draw2d(); else draw3d(); }
+
+// ---------- pointer control of the view ----------
+const pts = new Map(); let pinch = 0;
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); pinch = 0; });
+cv.addEventListener('pointerup', e => { pts.delete(e.pointerId); pinch = 0; });
+cv.addEventListener('pointercancel', e => { pts.delete(e.pointerId); pinch = 0; });
+function zoomAt(mx, my, k) {
+  if (tab === '2d') { v2.auto = null; const r = cv.getBoundingClientRect(), x = mx - r.left, y = my - r.top; v2.ox = x - (x - v2.ox) * k; v2.oy = y - (y - v2.oy) * k; v2.sc *= k; }
+  else v3.dist = Math.max(0.5, v3.dist / k);
+}
+cv.addEventListener('pointermove', e => {
+  const p = pts.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+  if (pts.size >= 2) {
+    const a = [...pts.values()], dist = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+    if (pinch) zoomAt((a[0].x + a[1].x) / 2, (a[0].y + a[1].y) / 2, dist / pinch); pinch = dist;
+  } else if (tab === '2d') { v2.auto = null; v2.ox += dx; v2.oy += dy; }
+  else { v3.az += dx * 0.008; v3.el = Math.max(0.12, Math.min(1.5, v3.el + dy * 0.008)); }
+  draw();
+});
+cv.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015)); draw(); }, { passive: false });
+$('tab2d').onclick = () => setTab('2d'); $('tab3d').onclick = () => setTab('3d');
+function setTab(t) { tab = t; $('tab2d').classList.toggle('on', t === '2d'); $('tab3d').classList.toggle('on', t === '3d'); $('zx').hidden = t !== '3d'; $('fitbed').hidden = t === '3d'; draw(); }
+$('fitbed').onclick = () => { fit2d('bed'); draw(); };
+$('fitpart').onclick = () => { if (tab === '2d') fit2d('part'); else fit3d(); draw(); };
+$('zx').onclick = () => { zx = zx === 1 ? 4 : zx === 4 ? 10 : 1; $('zx').textContent = 'Depth x' + zx; draw(); };
+
+// ---------- talking to the bridge ----------
+function ask(text, opts) {
+  opts = opts || {};
+  return new Promise(res => {
+    $('mtext').textContent = text; $('minput').hidden = !opts.input; $('minput').value = ''; $('myes').textContent = opts.ok || 'OK';
+    $('modal').classList.add('on'); if (opts.input) $('minput').focus();
+    const done = v => { $('modal').classList.remove('on'); $('myes').onclick = $('mno').onclick = null; res(v); };
+    $('myes').onclick = () => done(opts.input ? $('minput').value.trim() : true); $('mno').onclick = () => done(opts.input ? null : false);
+  });
+}
+function say(m) { $('msg').textContent = m || ''; }
+async function post(url, body, locked) {
+  try {
+    const r = await fetch(url, { method: 'POST', body: body || '', });
+    const j = await r.json();
+    say(j.message || j.note || ''); return j;
+  } catch (e) { say('Could not reach the ShopBot PC. Use the E-stop or space bar at the machine.'); return null; }
+}
+const AWAY = 'This only works on the ShopBot laptop itself. From here you can watch, Pause and Stop.';
+async function needPin() { if (st && st.local) return true; say(AWAY); return false; }
+
+$('pause').onclick = () => post(API + '/pause');
+$('stop').onclick = () => post(API + '/stop');
+$('resume').onclick = async () => { if (await needPin() && await ask('Resume the cut? Make sure the machine is clear.', { ok: 'Resume' })) post(API + '/resume', '', true); };
+$('start').onclick = async () => {
+  if (!job || !await needPin()) return;
+  const where = st && st.preview ? 'SB3 is in Preview mode, so nothing will move.' : 'SB3 is in Move/Cut mode: the machine will move and the router may start.';
+  if (await ask('Start ' + (st.job || 'the job') + '? ' + where, { ok: 'Start' })) { finished = false; post(API + '/run', '', true); }
+};
+async function command(c, confirmText) {
+  if (!await needPin()) return;
+  if (confirmText && !await ask(confirmText, { ok: 'Yes' })) return;
+  post(API + '/command', c, true);
+}
+document.querySelectorAll('[data-j]').forEach(b => b.onclick = () => {
+  if (!last) return;
+  const [dx, dy, dz] = b.dataset.j.split(',').map(Number), step = +$('step').value, fast = $('spd').value === 'J';
+  if (dz) command((dz < 0 || !fast ? 'MZ,' : 'JZ,') + (last.z + dz * step).toFixed(4));
+  else if (dx) command((fast ? 'JX,' : 'MX,') + (last.x + dx * step).toFixed(4));
+  else command((fast ? 'JY,' : 'MY,') + (last.y + dy * step).toFixed(4));
+});
+$('goto').onclick = () => { const x = $('gx').value, y = $('gy').value; if (x === '' || y === '') return say('Enter both X and Y.'); command(($('spd').value === 'J' ? 'J2,' : 'M2,') + (+x).toFixed(4) + ',' + (+y).toFixed(4)); };
+$('zeroxy').onclick = () => command('Z2', 'Set X and Y to zero at the current position?');
+$('zeroz').onclick = () => command('ZZ', 'Set Z to zero at the current height?');
+$('ron').onclick = () => command('SO,1,1', 'Turn the router ON? Make sure the machine is clear.');
+$('roff').onclick = () => command('SO,1,0');
+
+$('send').onclick = () => $('pick').click();
+$('pick').onchange = async () => {
+  const f = $('pick').files[0]; if (!f) return;
+  const j = await post(API + '/job?name=' + encodeURIComponent(f.name), await f.text());
+  $('pick').value = ''; if (j && j.ok) { jobSeen = null; loadJobs(); }
+};
+$('jobs').onchange = async () => { const n = $('jobs').value; if (!n) return; await post(API + '/open?name=' + encodeURIComponent(n)); $('jobs').value = ''; jobSeen = null; };
+async function loadJobs() {
+  try { const j = await (await fetch(API + '/jobs')).json(); $('jobs').innerHTML = '<option value="">Jobs on the ShopBot PC</option>';
+    for (const f of j.jobs) { const o = document.createElement('option'); o.value = f.name; o.textContent = f.name + '  (' + f.when + ')'; $('jobs').appendChild(o); } } catch (e) { }
+}
+async function loadJob() {
+  try {
+    const j = await (await fetch(API + '/job')).json();
+    job = j.text ? parseJob(j.text) : null; if (job && !job.segs.length) job = null;
+    prog = { i: 0, f: 0, lostAt: 0 }; buildPaths(); trail = []; v3.dist = 0; if (job) v2.auto = 'part';
+    $('jobinfo').textContent = job ? j.name + ': ' + job.segs.length + ' moves, about ' + fmt(job.total) + (job.b ? ', deepest cut ' + Math.max(0, -job.b.z0).toFixed(3) : '') : 'No job yet.';
+  } catch (e) { }
+}
+
+function renderPrompts(list) {
+  const key = JSON.stringify(list) + (st && st.local); if (renderPrompts.key === key) return; renderPrompts.key = key;
+  const host = $('prompts'); host.innerHTML = '';
+  for (const g of list) {
+    if (/^PAUSED/i.test(g.title)) continue;
+    const c = document.createElement('div'); c.className = 'card';
+    const t = document.createElement('b'); t.textContent = 'SB3 is asking: ' + (g.title || 'a question'); c.appendChild(t);
+    if (g.text) { const p = document.createElement('pre'); p.textContent = g.text; c.appendChild(p); }
+    const bs = document.createElement('div'); bs.className = 'btns';
+    for (const label of g.buttons) { const b = document.createElement('button'); b.className = 'ghost'; b.textContent = label; b.disabled = !(st && st.local);
+      b.onclick = async () => { if (await needPin()) post(API + '/dialog?id=' + g.id + '&button=' + encodeURIComponent(label), '', true); }; bs.appendChild(b); }
+    c.appendChild(bs); host.appendChild(c);
+  }
+}
+function renderIO(s) {
+  let h = 'Out ';
+  for (let i = 0; i < 8; i++) h += '<i class="' + ((s.outputs >> i & 1) ? 'on' : '') + '">' + (i + 1) + '</i>';
+  h += ' &nbsp;In ';
+  for (let i = 0; i < 8; i++) h += '<i class="' + ((s.inputs >> i & 1) ? 'on' : '') + '">' + (i + 1) + '</i>';
+  if ($('io').innerHTML !== h) $('io').innerHTML = h;
+}
+function beep() { try { const a = new (window.AudioContext || window.webkitAudioContext)(), o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; o.connect(g); g.connect(a.destination); g.gain.setValueAtTime(0.2, a.currentTime); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + 0.9); o.start(); o.stop(a.currentTime + 0.9); } catch (e) { } }
+
+async function tick() {
+  const now = performance.now(), dt = lastTick ? now - lastTick : 0; lastTick = now;
+  try {
+    const s = await getJ(API + '/status'); fails = 0; st = s; badge(s.running || s.paused);
+    if (s.job !== jobSeen) { jobSeen = s.job; await loadJob(); }
+    if (s.sb3 && (!last || last.x !== s.x || last.y !== s.y || last.z !== s.z)) {
+      last = { x: s.x, y: s.y, z: s.z };
+      if (!job && (s.running || s.paused)) { trail.push(last); if (trail.length > 20000) trail.splice(0, 5000); }
+    }
+    const active = s.running || s.paused;
+    if (!active) seenIdle = true;
+    if (active && !wasActive) {   // a run began, or the page was opened part-way through one
+      prog = { i: 0, f: 0, lostAt: 0 }; activeMs = 0; finished = false; knowStart = seenIdle;
+      if (paths) { paths.done = new Path2D(); doneUpTo = 0; }
+    }
+    if (s.running) { activeMs += dt; if (last) track(last, now); }
+    if (!active && wasActive) { finished = job && job.segs.length && prog.i >= job.segs.length - 2; if (finished && S.chime) beep(); }
+    wasRunning = s.running; wasActive = active;
+
+    const state = !s.sb3 ? 'SB3 is not running' : s.paused ? (s.local ? 'Paused' : 'Paused: resume at the machine') : s.running ? (s.preview ? 'Previewing' : 'Cutting') : finished ? 'Finished' : (s.preview ? 'Idle (Preview mode)' : 'Ready');
+    $('state').textContent = state;
+    $('dot').className = 'dot' + (!s.sb3 ? ' off' : s.paused ? ' pause' : s.running ? ' run' : '');
+    $('file').textContent = (active && s.file) ? s.file : (s.job || '');
+    $('px').textContent = s.x.toFixed(3); $('py').textContent = s.y.toFixed(3); $('pz').textContent = s.z.toFixed(3);
+    $('pause').disabled = !s.running; $('resume').disabled = !s.paused || !s.local; $('stop').disabled = !active;
+    $('start').disabled = !job || !s.sb3 || active || s.pending || !s.local;
+    const idle = s.sb3 && !active && !s.pending;
+    document.querySelectorAll('#ctl button').forEach(b => b.disabled = !idle || !s.local);
+    $('lockstate').textContent = s.local ? 'You are at the ShopBot laptop: full control.' : 'Away from the machine: watch, Pause and Stop only. Start, Resume, moves and the router work on the ShopBot laptop.';
+    renderPrompts(s.dialogs || []); renderIO(s);
+    if (job && job.total > 0 && (active || finished || prog.i > 0)) {
+      const dn = finished ? job.total : doneTime(), frac = dn / job.total;
+      let ratio = 1; if (knowStart && dn > 20 && activeMs > 0) ratio = Math.max(0.4, Math.min(3, (activeMs / 1000) / dn));
+      $('bar').style.width = (frac * 100).toFixed(1) + '%'; $('pct').textContent = Math.round(frac * 100) + '%';
+      $('tel').textContent = knowStart ? fmt(activeMs / 1000) : '-'; $('trem').textContent = finished ? '0:00' : fmt((job.total - dn) * ratio);
+      document.title = (active ? Math.round(frac * 100) + '% ' : '') + 'SnorbCut';
+    } else { $('bar').style.width = '0'; $('pct').textContent = '-'; $('tel').textContent = active ? fmt(activeMs / 1000) : '-'; $('trem').textContent = job ? fmt(job.total) : '-'; document.title = 'SnorbCut'; }
+  } catch (e) {
+    if (++fails > 3) { st = null; badge(false); $('state').textContent = 'ShopBot not reachable'; $('file').textContent = EMB ? 'Is the ShopBot laptop on, with SnorbCut running?' : ''; $('dot').className = 'dot off'; document.querySelectorAll('.main3 button, #start, #ctl button').forEach(b => b.disabled = true); }
+  }
+  if (!hiddenNow()) draw();
+}
+let wasActive = false, seenIdle = false;
+
+// settings
+for (const [id, k] of [['sw', 'bedW'], ['sh', 'bedH'], ['sb', 'bit'], ['sr', 'rapid']]) {
+  $(id).value = S[k];
+  $(id).onchange = () => { const v = +$(id).value; if (v > 0) { S[k] = v; store.set(k, v); if (k === 'rapid') jobSeen = null; v2.auto = v2.auto || 'bed'; draw(); } };
+}
+$('chime').checked = S.chime; $('chime').onchange = () => { S.chime = $('chime').checked; store.set('chime', S.chime ? '1' : '0'); };
+loadJobs();
+window.addEventListener('resize', draw);
+if (navigator.wakeLock) { const lock = () => navigator.wakeLock.request('screen').catch(() => { }); lock(); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') lock(); }); }
+// Polls fast while you are looking, slowly while the tab is in the background; wakes at once when shown again.
+let loopTimer = 0, ticking = false;
+async function loop() { clearTimeout(loopTimer); if (ticking) return; ticking = true; try { await tick(); } finally { ticking = false; } loopTimer = setTimeout(loop, hiddenNow() ? 3000 : fails > 3 ? 2000 : 170); }
+window.wake = () => { draw(); loop(); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden) window.wake(); });
+loop();
+</script>
+</body>
+</html>

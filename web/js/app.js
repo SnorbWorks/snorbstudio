@@ -11,7 +11,7 @@ import { initMaint, restartFirmware, restartService } from './maint.js';
 
 const pageListeners = [];
 // Which app each page belongs to (the tabs in the bar); an app's own pages sit in a row under it.
-const APP_OF = { design: 'design', cam: 'cam', prepare: 'print', print: 'print', control: 'print', files: 'print', maint: 'print' };
+const APP_OF = { design: 'design', cam: 'cam', cut: 'cut', prepare: 'print', print: 'print', control: 'print', files: 'print', maint: 'print' };
 const lastPageOf = (a) => { try { const p = localStorage.getItem(`studio.page.${a}`); if (APP_OF[p] === a) return p; } catch (e) { /* ignore */ } return a === 'print' ? 'prepare' : a; };
 const app = {
   page: 'prepare',
@@ -88,7 +88,7 @@ function updateBanner() {
   const show = mr.connected && mr.klippy !== 'ready';
   b.classList.toggle('hidden', !show && mr.connected);
   // designing doesn't need the printer: no banner taking up room on the Design tab
-  if (app.page === 'design' || app.page === 'cam') { b.classList.add('hidden'); return; }
+  if (app.page === 'design' || app.page === 'cam' || app.page === 'cut') { b.classList.add('hidden'); return; }
   if (!mr.connected) {
     $('#kb-title').textContent = 'Can\'t reach the Pi';
     $('#kb-msg').textContent = 'Reconnecting…';
@@ -148,6 +148,14 @@ function init() {
     .then((m) => m.mount($('#cam-root'), app))
     .catch((e) => { cam = null; toast(`SnorbCAM failed to load: ${e.message}`, 'err', 10000); });
   app.onPage((p) => { if (p === 'cam') loadCam(); });
+  // SnorbCut (the ShopBot) is its own small page, shared with the bridge on the ShopBot laptop.
+  // It loads on first visit and talks to the laptop through the Pi (/cut-api/).
+  app.onPage((p) => {
+    if (p !== 'cut') return;
+    const f = $('#cut-root iframe');
+    if (f) { try { f.contentWindow.wake(); } catch (e) { /* still loading */ } return; }
+    $('#cut-root').append(el('iframe', { src: 'cut/index.html', title: 'SnorbCut', allow: 'screen-wake-lock' }));
+  });
   // SnorbCAD's "Send to SnorbCAM": add that part to the router job
   app.sendToCam = async (project, name) => {
     app.show('cam');
@@ -168,7 +176,7 @@ function init() {
 
   let start = location.hash.slice(1);
   try { start ||= localStorage.getItem('studio.page'); } catch (e) { /* ignore */ }
-  app.show(['design', 'cam', 'prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
+  app.show(['design', 'cam', 'cut', 'prepare', 'print', 'control', 'files', 'maint'].includes(start) ? start : 'prepare');
   window.addEventListener('hashchange', () => {
     const p = location.hash.slice(1);
     if (p && p !== app.page) app.show(p);
