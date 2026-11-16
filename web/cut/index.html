@@ -148,6 +148,16 @@ const framed = () => { try { return window.frameElement || null; } catch (e) { r
 const hiddenNow = () => { const f = framed(); return document.hidden || (f && !f.offsetParent); };
 function getJ(url) { const c = new AbortController(), t = setTimeout(() => c.abort(), 6000); return fetch(url, { signal: c.signal }).then(r => r.json()).finally(() => clearTimeout(t)); }
 function badge(on) { try { const f = framed(); if (!f) return; const b = f.ownerDocument.querySelector('#tabs [data-app="cut"]'); const h = on ? 'SnorbCut <span class="badge">\u25cf</span>' : 'SnorbCut'; if (b && b.innerHTML !== h) b.innerHTML = h; } catch (e) { } }
+// The ghost router glides between position reports (SB3 gives 5-6 a second) instead of hopping.
+let disp = null, animId = 0, animAt = 0;
+function animate(t) {
+  animId = 0; if (!last || tab !== '3d' || hiddenNow()) { disp = null; return; }
+  if (!disp) disp = { x: last.x, y: last.y, z: last.z };
+  const dx = last.x - disp.x, dy = last.y - disp.y, dz = last.z - disp.z, far = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+  if (far < 0.002 || far > 30) { disp = { x: last.x, y: last.y, z: last.z }; draw3d(); return; }
+  if (t - animAt > 30) { const k = Math.min(1, (animAt ? t - animAt : 33) / 160); animAt = t; disp.x += dx * k; disp.y += dy * k; disp.z += dz * k; draw3d(); }
+  animId = requestAnimationFrame(animate);
+}
 let st = null, last = null, fails = 0, tab = '2d', zx = 1;
 let job = null, jobSeen = null, trail = [];
 let prog = { i: 0, f: 0, lostAt: 0 }, wasRunning = false, activeMs = 0, lastTick = 0, knowStart = false, finished = false;
@@ -298,8 +308,8 @@ function draw2d() {
 // ---------- 3D view ----------
 function fit3d() {
   const b = (job && job.cb) ? job.cb : { x0: 0, y0: 0, x1: S.bedW, y1: S.bedH };
-  v3.tx = (b.x0 + b.x1) / 2; v3.ty = (b.y0 + b.y1) / 2; v3.tz = 0;
-  v3.dist = Math.max(b.x1 - b.x0, b.y1 - b.y0, 2) * 1.9;
+  v3.tx = (b.x0 + b.x1) / 2; v3.ty = (b.y0 + b.y1) / 2; v3.tz = 2;   // aim a little above the sheet so the router fits in view
+  v3.dist = Math.max(b.x1 - b.x0, b.y1 - b.y0, 14) * 2.1;
 }
 function draw3d() {
   const { w, h, d } = size();
@@ -348,9 +358,27 @@ function draw3d() {
       poly([[b.x0 - m, b.y0 - m, z], [b.x1 + m, b.y0 - m, z], [b.x1 + m, b.y1 + m, z], [b.x0 - m, b.y1 + m, z]], 'rgba(219,158,219,.22)', col('--accent'), 1.5);
       const lp = P(b.x1 + m, b.y0 - m, z); if (lp) { ctx.fillStyle = col('--accent'); ctx.font = '12px system-ui, sans-serif'; ctx.fillText('Cutting at Z ' + last.z.toFixed(3), lp[0] + 6, lp[1] + 4); }
     }
-    const a = P(last.x, last.y, last.z), t = P(last.x, last.y, last.z + Math.max(2, depth * 3) / zx);
-    if (a && t) { ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(3, S.bit * f / v3.dist); ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(t[0], t[1]); ctx.stroke(); ctx.lineCap = 'butt';
-      ctx.fillStyle = col('--accent'); ctx.beginPath(); ctx.arc(a[0], a[1], 5, 0, 7); ctx.fill(); }
+  }
+  if (last) {
+    // ghost of the router and bit at the live position (see-through, so the cut stays visible behind it)
+    const tp = disp || last, RING = 28;
+    const ring = (r, hgt) => { const o = []; for (let i = 0; i < RING; i++) { const an = i / RING * Math.PI * 2, q = P(tp.x + Math.cos(an) * r, tp.y + Math.sin(an) * r, tp.z + hgt / zx); if (!q) return null; o.push(q); } return o; };
+    const hull = (pts) => { pts = pts.slice().sort((m, n) => m[0] - n[0] || m[1] - n[1]); const cr = (o, m, n) => (m[0] - o[0]) * (n[1] - o[1]) - (m[1] - o[1]) * (n[0] - o[0]), lo = [], up = [];
+      for (const q of pts) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+      for (let i = pts.length - 1; i >= 0; i--) { const q = pts[i]; while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+      lo.pop(); up.pop(); return lo.concat(up); };
+    const path = (pts) => { ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); ctx.closePath(); };
+    const cyl = (r0, r1, h0, h1, fill, stroke) => { const lo = ring(r0, h0), hi = ring(r1, h1); if (!lo || !hi) return;
+      path(hull(lo.concat(hi))); ctx.fillStyle = fill; ctx.fill(); ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); path(hi); ctx.stroke(); path(lo); ctx.globalAlpha = 0.45; ctx.stroke(); ctx.globalAlpha = 1; };
+    const br = Math.max(0.03, S.bit / 2), G = 'rgba(255,255,255,.10)', GS = 'rgba(255,255,255,.5)';
+    // where the tool is over the sheet: a thin ring on the surface under the router
+    if (tp.z > 0.0005) { const sh = []; for (let i = 0; i < RING; i++) { const an = i / RING * Math.PI * 2, q = P(tp.x + Math.cos(an) * 1.75, tp.y + Math.sin(an) * 1.75, 0); if (q) sh.push(q); } if (sh.length === RING) { path(sh); ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]); } }
+    cyl(1.6, 1.6, 9.7, 10.6, G, GS);          // top cap
+    cyl(1.75, 1.75, 3.2, 9.7, G, GS);         // router body
+    cyl(0.75, 1.75, 2.4, 3.2, G, GS);         // nose
+    cyl(0.55, 0.55, 1.5, 2.4, 'rgba(255,255,255,.16)', GS);   // collet nut
+    cyl(br, br, 0, 1.5, 'rgba(217,163,216,.55)', col('--accent'));   // the bit
+    const tip = P(tp.x, tp.y, tp.z); if (tip) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(tip[0], tip[1], 2.5, 0, 7); ctx.fill(); }
   }
   $('hud').textContent = 'Drag to orbit, scroll or pinch to zoom';
 }
@@ -512,7 +540,7 @@ async function tick() {
   } catch (e) {
     if (++fails > 3) { st = null; badge(false); $('state').textContent = 'ShopBot not reachable'; $('file').textContent = EMB ? 'Is the ShopBot laptop on, with SnorbCut running?' : ''; $('dot').className = 'dot off'; document.querySelectorAll('.main3 button, #start, #ctl button').forEach(b => b.disabled = true); }
   }
-  if (!hiddenNow()) draw();
+  if (!hiddenNow()) { if (tab === '3d' && last && disp && !animId) animId = requestAnimationFrame(animate); else { if (tab === '3d' && last && !disp) disp = { x: last.x, y: last.y, z: last.z }; draw(); } }
 }
 let wasActive = false, seenIdle = false;
 
