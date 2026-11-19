@@ -28,6 +28,11 @@ Listens on 127.0.0.1:8091; nginx exposes it as /studio-api/.
   GET/PUT/DELETE /studio-api/cam[/<name>.json]   SnorbCAM jobs, the same way
   GET/PUT/DELETE /studio-api/footprints[/<name>.json]   SnorbCAD footprints (Save › Footprints)
   GET/PUT/DELETE /studio-api/components[/<name>.json]   SnorbCAD components (Save › Components)
+  GET    /studio-api/calibration/size     saved size calibrations, per filament
+  POST   /studio-api/calibration/size     {"material", "measured", "save"}: work out
+                                          (and save) the size corrections
+  DELETE /studio-api/calibration/size/<material>
+  POST   /studio-api/calibration/size_test {"material"}: slice the test plate
 """
 import base64
 import json
@@ -43,6 +48,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
+import sizecal
 import updater
 
 HOME = os.path.expanduser("~")
@@ -57,6 +63,7 @@ CAMJOBS = os.path.join(HOME, "printer_data", "cam")
 FOOTPRINTS = os.path.join(HOME, "printer_data", "design-footprints")
 COMPONENTS = os.path.join(HOME, "printer_data", "design-components")
 # JSON stores: SnorbCAD parts, SnorbCAD footprints the owner saved, SnorbCAM jobs
+SIZE_CAL = sizecal.Store(os.path.join(HOME, "printer_data", "size_calibration.json"))
 STORES = {"designs": DESIGNS, "footprints": FOOTPRINTS, "components": COMPONENTS, "cam": CAMJOBS}
 
 # What the UI offers.  Values are PrusaSlicer config keys.
@@ -441,8 +448,13 @@ def run_slice(job_id, stl_paths, opts, workdir):
     job = jobs[job_id]
     try:
         cfg_path = os.path.join(workdir, "job.ini")
+        cfg = job_config(opts)
+        # The filament's size calibration (scale + outsides); the test plate
+        # itself is sliced without it.
+        if opts.get("size_fix", True) and not opts.get("raw_size"):
+            sizecal.apply(SIZE_CAL.get(opts.get("material", "pla")), stl_paths, cfg)
         with open(cfg_path, "w") as f:
-            for k, v in job_config(opts).items():
+            for k, v in cfg.items():
                 f.write("%s = %s\n" % (k, v))
         out_path = os.path.join(workdir, "out.gcode")
         # Each model arrives already placed in bed coordinates; --merge keeps
@@ -548,6 +560,11 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if parts == ["update"]:
                 return self.send_json(UPDATER.status())
+            if parts == ["calibration", "size"]:
+                return self.send_json({
+                    "saved": SIZE_CAL.all(),
+                    "measures": [{"key": k, "label": v[0], "size": v[1]}
+                                 for k, v in sizecal.MEASURES.items()]})
             if parts == ["models"]:
                 os.makedirs(MODELS, exist_ok=True)
                 out = []
@@ -668,6 +685,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         parts = self.route()
         try:
+            if len(parts) == 3 and parts[:2] == ["calibration", "size"]:
+                SIZE_CAL.forget(unquote(parts[2]))
+                return self.send_json({"ok": True})
             if len(parts) == 2 and parts[0] == "models":
                 p = os.path.join(MODELS, safe_name(parts[1], MODEL_EXT))
                 if os.path.isfile(p):
@@ -689,6 +709,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.start_slice()
         if parts == ["calibration", "temp_tower"]:
             return self.start_temp_tower()
+        if parts == ["calibration", "size_test"]:
+            return self.start_size_test()
+        if parts == ["calibration", "size"]:
+            return self.size_calibration()
         if parts == ["gcode", "color_changes"]:
             return self.color_changes()
         if parts[:1] == ["update"]:
@@ -836,6 +860,40 @@ class Handler(BaseHTTPRequestHandler):
         if not job_id:
             return self.error("Already slicing - wait for it to finish", 409)
         return self.send_json({"id": job_id, "temps": temps})
+
+    def start_size_test(self):
+        try:
+            material = json.loads(self.body() or b"{}").get("material", "pla")
+        except ValueError:
+            return self.error("bad request")
+        if material not in MATERIAL:
+            return self.error("unknown material")
+        workdir = tempfile.mkdtemp(prefix="studio-cal-")
+        path = os.path.join(workdir, "size_test.stl")
+        sizecal.plate_stl(path)
+        opts = {"name": "size_test_%s" % material, "quality": "standard",
+                "material": material, "supports": "none", "infill": 20,
+                "brim": 0, "raw_size": True}
+        job_id = self.new_job(opts, [path], workdir)
+        if not job_id:
+            return self.error("Already slicing - wait for it to finish", 409)
+        return self.send_json({"id": job_id})
+
+    def size_calibration(self):
+        try:
+            req = json.loads(self.body() or b"{}")
+        except ValueError:
+            return self.error("bad request")
+        material = req.get("material", "pla")
+        if material not in MATERIAL:
+            return self.error("unknown material")
+        try:
+            result = sizecal.compute(req.get("measured") or {})
+        except sizecal.CalError as e:
+            return self.error(str(e))
+        if req.get("save"):
+            result = SIZE_CAL.save(material, result)
+        return self.send_json(result)
 
 
 def main():

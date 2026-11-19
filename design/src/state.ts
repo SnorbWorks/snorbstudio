@@ -18,8 +18,19 @@ const CLIP_KEY = 'studio.design.clip';
 /** Everything that belongs to one open part (for switching between part tabs). */
 export interface Doc { p: Project; undo: string[]; redo: string[]; sels: string[] }
 
-/** The printer fit new parts start with: the owner's last setting, else 0.2 mm. */
+/** The hole fit from the printer's size calibration (Maintenance › Size calibration), once loaded: PLA's if saved, else the first saved. */
+export let calibratedFit: { fit: number; material: string; date: string } | null = null;
+export async function loadCalibratedFit(): Promise<void> {
+  try {
+    const saved = ((await (await fetch('/studio-api/calibration/size')).json()).saved || {}) as Record<string, { hole_fit: number; date?: string }>;
+    const k = saved.pla ? 'pla' : Object.keys(saved)[0];
+    calibratedFit = k && Number.isFinite(saved[k].hole_fit) ? { fit: saved[k].hole_fit, material: k, date: saved[k].date || '' } : null;
+  } catch { calibratedFit = null; }
+}
+
+/** The printer fit new parts start with: the size calibration's, else the owner's last setting, else 0.2 mm. */
 export function defaultFit(): number {
+  if (calibratedFit) return calibratedFit.fit;
   try { const v = parseFloat(localStorage.getItem(FIT_KEY) || ''); if (Number.isFinite(v) && v >= 0) return v; } catch { /* default */ }
   return DEFAULT_FIT;
 }

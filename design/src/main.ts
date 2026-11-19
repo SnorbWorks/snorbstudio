@@ -6,7 +6,7 @@ import { newProject, newId, isShape, findRef, profile, type P2 } from './model.j
 import { FOOTPRINTS, placeFootprint, footprintFrom, savedFootprint, type Footprint, type SavedFootprint } from './footprints.js';
 import { openSaveDialog, lastWhere } from './savedialog.js';
 import { compFootprint, copiesOf, defFromCopy, detach, differs, insertCopy, linkCopy, makeComponent, members, updateCopies, type CompDef } from './components.js';
-import { State, align, distribute, rememberFit, type AlignHow, type Tool } from './state.js';
+import { State, align, distribute, rememberFit, loadCalibratedFit, type AlignHow, type Tool } from './state.js';
 import { VIEWS, parallel } from './views.js';
 import { fmtLen } from './sheet.js';
 import { Sheet, isTyping } from './sheet.js';
@@ -155,7 +155,9 @@ export function mount(root: HTMLElement, studio: Studio) {
   const MAX_TABS = 8;
   const tabs: { list: (TabDoc | null)[]; cur: number } = { list: [null], cur: 0 };
   const sheet = new Sheet($('#ds-sheet'), st);
-  new Panel($('#ds-panel'), st, {
+  // the size calibration's hole fit: new parts start with it, the Sheet panel offers it
+  loadCalibratedFit().then(() => panel.render());
+  const panel = new Panel($('#ds-panel'), st, {
     gear: (id) => editGear(id, false),
     compUpdate: (inst) => compUpdate(inst),
     compReset: (inst) => compReset(inst),

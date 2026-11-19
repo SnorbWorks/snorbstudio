@@ -97,3 +97,25 @@ test('an outline with one side bowed out', () => {
   close(build(cube([back])).volume, BLOCK + 5 * (100 + seg), 0.5);
   assert.ok(profile(f).length >= 19, "the arc is drawn as many points");
 });
+
+test('printer fit on a hex cut (a nut trap drawn as a polygon) grows it across the flats', () => {
+  const af = 11, n = 6, r = af / 2 / Math.cos(Math.PI / n);
+  const hexA = (af2) => (Math.sqrt(3) / 2) * af2 ** 2;
+  const f = { type: 'polygon', sides: 6, r, op: 'cut', through: true };
+  close(build(cube([feat(f)], { fit: 0.4 })).volume, BLOCK - hexA(11) * 20, 0.5);            // off unless asked
+  close(build(cube([feat({ ...f, fit: true })], { fit: 0.4 })).volume, BLOCK - hexA(11.4) * 20, 0.5);
+});
+
+test('printer fit on a rectangle cut makes it bigger each way', () => {
+  const r = build(cube([feat({ w: 6, h: 4, op: 'cut', through: true, fit: true })], { fit: 0.4 }));
+  close(r.volume, BLOCK - 6.4 * 4.4 * 20, 0.5);
+});
+
+test('printer fit on a drawn outline offsets it outward', () => {
+  const pts = [[-3, -3], [3, -3], [0, 3]];
+  const base = build(cube([feat({ type: 'poly', pts, op: 'cut', through: true })], { fit: 0.4 })).volume;
+  const grown = build(cube([feat({ type: 'poly', pts, op: 'cut', through: true, fit: true })], { fit: 0.4 })).volume;
+  // perimeter × 0.2 per side (plus a little at the corners) more cut away
+  const per = 6 + 2 * Math.hypot(3, 6);
+  assert.ok(base - grown > per * 0.2 * 20 * 0.95, `${base - grown}`);
+});

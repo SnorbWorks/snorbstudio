@@ -324,6 +324,7 @@ function buildExtras() {
   layout.append(cal);
   layout.append(extruderCard());
   layout.append(squishCard());
+  layout.append(sizeCard());
 
   // Config editor
   const files = el('div', { class: 'editor-files', id: 'cfg-files' });
@@ -487,6 +488,150 @@ function squishCard() {
   };
   fil.materials().then((m) => { mats = m; render(); });
   mr.on('status', (st) => { if (st && 'save_variables' in st) render(); });
+  return card;
+}
+
+// --------------------------------------------------------------- size calibration
+
+// Print an L-shaped plate (sliced with no corrections), measure eight sizes
+// with calipers, and the server works out how much this filament prints too
+// small or big. Saved per filament: the slicer then scales every print and
+// fixes the outsides; holes go to SnorbCAD's printer fit.
+const pct = (s) => `${Math.abs((s - 1) * 100).toFixed(2)} % ${s < 1 ? 'small' : 'big'}`;
+const mm = (v, d = 2) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)} mm`;
+
+function sizeSummary(c) {
+  return `X ${pct(c.sx)}, Y ${pct(c.sy)}, outsides ${c.outside >= 0 ? '+' : '−'}${Math.abs(c.outside).toFixed(2)} mm, holes ${c.hole_fit.toFixed(2)} mm small`;
+}
+
+function sizePicture() {
+  // Seen from above, front of the bed at the bottom (mm, Y flipped for SVG).
+  const Y = (y) => 100 - y;
+  const hex = (cx, cy, af) => {
+    const r = af / 2 / Math.cos(Math.PI / 6);
+    return Array.from({ length: 6 }, (_, k) => `${(cx + r * Math.cos(k * Math.PI / 3)).toFixed(2)},${(cy + r * Math.sin(k * Math.PI / 3)).toFixed(2)}`).join(' ');
+  };
+  const tag = (n, x, y) => `<g class="sz-tag"><circle cx="${x}" cy="${y}" r="4.2"/><text x="${x}" y="${y + 1.6}">${n}</text></g>`;
+  const dimH = (x0, x1, y) => `<path class="sz-dim" d="M${x0} ${y}H${x1}M${x0} ${y - 2}v4M${x1} ${y - 2}v4"/>`;
+  const dimV = (x, y0, y1) => `<path class="sz-dim" d="M${x} ${y0}V${y1}M${x - 2} ${y0}h4M${x - 2} ${y1}h4"/>`;
+  const svg = `<svg viewBox="-16 -8 152 126" class="sz-pic" role="img" aria-label="The size test plate seen from above, with the eight measurements numbered">
+    <path class="sz-body" d="M0 ${Y(0)}H120V${Y(20)}H20V${Y(100)}H0Z"/>
+    <circle class="sz-hole" cx="30" cy="${Y(10)}" r="2.5"/><circle class="sz-hole" cx="50" cy="${Y(10)}" r="5"/>
+    <polygon class="sz-hole" points="${hex(70, Y(10), 11)}"/><circle class="sz-hole" cx="90" cy="${Y(10)}" r="7"/>
+    ${dimH(0, 120, 108)}${tag(1, 60, 108)}
+    ${dimH(0, 20, Y(70))}${tag(2, 10, Y(70) - 6)}
+    ${dimV(-8, 0, 100)}${tag(3, -8, 50)}
+    ${dimV(110, Y(20), Y(0))}${tag(4, 110, Y(20) - 6)}
+    ${tag(5, 30, Y(26))}${tag(6, 50, Y(26))}${tag(7, 70, Y(26))}${tag(8, 90, Y(26))}
+    <text class="sz-note" x="60" y="${Y(40)}">front of the bed ↓</text>
+  </svg>`;
+  const box = el('div', { class: 'sz-pic-wrap' });
+  box.innerHTML = svg;
+  return box;
+}
+
+function sizeCard() {
+  const matSel = el('select', { id: 'sz-mat' });
+  const inputs = el('div', { class: 'sz-inputs' });
+  const result = el('div', { class: 'sz-result muted small' });
+  const saved = el('div', { class: 'sz-saved small' });
+  let measures = [], mats = {}, last = null;
+
+  const card = el('div', { class: 'card wide' },
+    el('div', { class: 'panel-h' }, 'Size calibration'),
+    el('p', { class: 'muted small' }, 'Makes prints come out the size you drew them. Print the test plate, let it cool, measure the eight numbered sizes with calipers and type them in. It works out how much this filament prints too small or big; the slicer then fixes every print, and holes are handled by SnorbCAD\'s printer fit.'),
+    el('div', { class: 'row' }, el('label', {}, 'Filament ', matSel),
+      el('button', { class: 'btn sm', onclick: printPlate }, 'Print the test plate')),
+    el('div', { class: 'sz-layout' }, sizePicture(),
+      el('div', {}, inputs,
+        el('p', { class: 'muted small' }, 'Measure the arms a little above the bottom (the first layer spreads). Holes: measure across in two directions and type the average. The hex hole is across the flats.'),
+        el('div', { class: 'row' }, el('button', { class: 'btn sm primary', onclick: () => work(false) }, 'Work it out')),
+        result)),
+    el('div', { class: 'panel-h small' }, 'Saved'), saved);
+
+  function matLabel(k) { return mats[k]?.label || k; }
+
+  function renderInputs() {
+    inputs.replaceChildren(...measures.map((m, i) => el('label', { class: 'sz-in' },
+      el('b', {}, `${i + 1}`), el('span', {}, m.label),
+      el('input', { type: 'number', step: '0.01', min: '0', 'data-sz': m.key, placeholder: m.size.toFixed(2) }),
+      el('i', { class: 'muted' }, 'mm'))));
+  }
+
+  async function renderSaved() {
+    const r = await (await fetch('/studio-api/calibration/size')).json();
+    measures = r.measures; if (!inputs.childElementCount) renderInputs();
+    const rows = Object.entries(r.saved || {});
+    saved.replaceChildren(...(rows.length ? rows.map(([k, c]) => el('div', { class: 'sz-row' },
+      el('b', {}, matLabel(k)), el('span', {}, `${sizeSummary(c)} · ${c.date || ''}`),
+      el('button', { class: 'btn sm ghost', onclick: () => forget(k) }, 'Forget'))) :
+      [el('span', { class: 'muted' }, 'Nothing saved yet: prints are sliced at the size drawn.')]));
+  }
+
+  function readings() {
+    const out = {};
+    for (const f of inputs.querySelectorAll('[data-sz]')) if (f.value !== '') out[f.dataset.sz] = +f.value;
+    return out;
+  }
+
+  async function work(save) {
+    const key = matSel.value;
+    try {
+      const r = await fetch('/studio-api/calibration/size', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ material: key, measured: save && last ? last.measured : readings(), save }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Failed');
+      if (save) {
+        toast(`Saved for ${matLabel(key)}`, 'ok');
+        window.dispatchEvent(new CustomEvent('sizecal-changed'));
+        result.replaceChildren(); last = null;
+        return renderSaved();
+      }
+      last = j;
+      const holes = Object.entries(j.holes).map(([k, v]) => `${measures.find((m) => m.key === k)?.label}: ${mm(v)}`).join(' · ');
+      result.replaceChildren(
+        el('p', {}, el('b', {}, 'Size: '), `prints ${pct(j.sx)} in X and ${pct(j.sy)} in Y. Every print is scaled to make up for it.`),
+        el('p', {}, el('b', {}, 'Outsides: '), Math.abs(j.outside) < 0.005 ? 'already right.' :
+          `${mm(Math.abs(j.outside))} per side too ${j.outside > 0 ? 'big' : 'small'}. The slicer moves the walls to fix it.`),
+        el('p', {}, el('b', {}, 'Holes: '), `print ${mm(j.hole_fit)} small across, after the fixes above. That becomes SnorbCAD's printer fit for new parts (and a "Use" button on existing ones).`),
+        el('p', {}, `Each hole was small by: ${holes}. If one is far from the others, re-measure it.`),
+        el('button', { class: 'btn sm primary', onclick: () => work(true) }, `Save for ${matLabel(key)}`));
+    } catch (e) { toast(e.message, 'err', 9000); }
+  }
+
+  async function forget(k) {
+    if (!await confirmBox(`Forget the ${matLabel(k)} size calibration?`, 'Prints with this filament go back to the size drawn, with no corrections.', 'Forget')) return;
+    await attempt(() => fetch(`/studio-api/calibration/size/${encodeURIComponent(k)}`, { method: 'DELETE' }), 'Forgotten');
+    window.dispatchEvent(new CustomEvent('sizecal-changed'));
+    renderSaved();
+  }
+
+  async function printPlate() {
+    const key = matSel.value;
+    if (!await confirmBox(`Size test plate – ${matLabel(key)}`,
+      'An L-shaped plate 120 × 100 mm, 3 mm thick, with four holes (about 30 minutes). It is sliced with no size corrections, so it shows what the printer really does. It appears in Files when ready.', 'Create')) return;
+    toast('Slicing the size test plate…');
+    try {
+      const r = await fetch('/studio-api/calibration/size_test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ material: key }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Failed');
+      for (let i = 0; i < 180; i++) {
+        await new Promise((res) => setTimeout(res, 1000));
+        const st = await (await fetch(`/studio-api/jobs/${j.id}`)).json();
+        if (st.state === 'done') { toast(`Ready: ${st.file}`, 'ok'); app.prepare.previewFile(st.file); return; }
+        if (st.state === 'error') throw new Error(st.message);
+      }
+    } catch (e) { toast(e.message, 'err', 9000); }
+  }
+
+  matSel.onchange = () => { result.replaceChildren(); last = null; };
+  fil.materials().then((m) => {
+    mats = m;
+    const cur = m[fil.selectedMaterial()] ? fil.selectedMaterial() : 'pla';
+    matSel.replaceChildren(...Object.entries(m).map(([k, v]) => el('option', { value: k, selected: k === cur }, v.label)));
+    renderSaved().catch(() => saved.replaceChildren(el('span', { class: 'muted' }, 'Couldn\'t load the saved calibrations.')));
+  });
   return card;
 }
 

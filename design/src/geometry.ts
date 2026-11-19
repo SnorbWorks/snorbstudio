@@ -5,6 +5,7 @@ import {
   cast, getOC, makeBaseBox, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
   draw, drawCircle, drawText,
 } from 'replicad';
+import type { Drawing } from 'replicad';
 import type { Feature, Op, P2, Project, Vec3, ViewName } from './model.js';
 import { shellCavity, canRevolve, revolveCrosses, canTeardrop, teardropPoints, upIn, bulgeMid, cornerRadii, depthRange, farDepth, fitOf, nearDepth, fromRef, gearProfile, hasArcs, instances, into, isShape, polyPath, roundCorner, slotPath, verts } from './model.js';
 import { hexPoints } from './holes.js';
@@ -83,14 +84,32 @@ function arcOutline(f: Feature) {
   return pen.close();
 }
 
+/** Rounded corners stay the same shape when an outline is made bigger. */
+function grownCorners(f: Feature, grow: number): Partial<Feature> {
+  const g = (c: number) => (c > 1e-9 ? c + grow / 2 : 0);
+  return { corner: g(f.corner || 0), ...(f.corners ? { corners: f.corners.map(g) } : {}) };
+}
+
 /** The feature's 2D drawing in its own view (u, v); grow: made this much bigger across (printer fit). */
-function drawing(f: Feature, grow = 0) {
+function drawing(f: Feature, grow = 0): Drawing | null {
   if (f.type === 'circle' && f.teardrop && canTeardrop(f)) return f.r + grow / 2 > 1e-6 ? polyline(teardropPoints(f.cu, f.cv, f.r + grow / 2, upIn(f.view)!, 64)) : null;
   if (f.type === 'circle') return f.r + grow / 2 > 1e-6 ? drawCircle(f.r + grow / 2).translate(f.cu, f.cv) : null;
   if (f.type === 'slot') {
     const s = slotPath(f, grow);
     if (!s) return null;
     return draw(s.a).lineTo(s.b).threePointsArcTo(s.c, s.m1).lineTo(s.d).threePointsArcTo(s.a, s.m2).close();
+  }
+  // printer fit on an outline: a rectangle or polygon is simply made bigger
+  // (its corners keep their shape); anything else is offset outward
+  if (grow > 1e-9) {
+    if (f.type === 'rect') return drawing({ ...f, w: f.w + grow, h: f.h + grow, ...grownCorners(f, grow) });
+    if (f.type === 'polygon') {
+      const n = Math.max(3, Math.round(f.sides || 6));
+      return drawing({ ...f, r: f.r + grow / 2 / Math.cos(Math.PI / n), ...grownCorners(f, grow) });
+    }
+    const d: Drawing | null = drawing(f);
+    if (!d) return d;
+    try { return d.offset(grow / 2); } catch { return d; }
   }
   if (hasArcs(f)) return arcOutline(f);
   if (f.type === 'gear' && f.gear) {

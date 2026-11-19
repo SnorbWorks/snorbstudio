@@ -46,3 +46,11 @@ export function activeFilament() {
   const f = mr.printer['gcode_macro _STUDIO_FILAMENT'] || {};
   return { material: f.material || '', squish: +(f.squish || 0) };
 }
+
+// Saved size calibrations ({material: {sx, sy, outside, hole_fit, date}}).
+let sizeCals = null;
+export async function sizeCal() {
+  if (!sizeCals) sizeCals = fetch('/studio-api/calibration/size').then((r) => r.json()).then((j) => j.saved || {}).catch(() => { sizeCals = null; return {}; });
+  return sizeCals;
+}
+window.addEventListener('sizecal-changed', () => { sizeCals = null; });

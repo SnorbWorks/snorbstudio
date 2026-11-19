@@ -100,6 +100,21 @@ The Pi keeps a git checkout of this repo and follows **master on GitHub**.
   now (right-hand points at X 235). The saved mesh is 9×9.
 - Klipper refuses `BED_MESH_PROFILE SAVE=default` ("reserved"): calibrate
   straight into the default profile, then `SAVE_CONFIG`.
+- **Size calibration** (Maintenance › Size calibration, `server/sizecal.py`):
+  an L-shaped test plate (X arm 120, Y arm 100, 20 wide, 3 thick; holes 5/10/14
+  round + 11 hex across the flats) sliced with **no** corrections (`raw_size`).
+  The owner types 8 caliper readings; the server works out per filament the X/Y
+  scale, the outside offset and the hole fit, saved in
+  `~/printer_data/size_calibration.json`. Every slice (unless the Prepare
+  page's Size fix box is off) scales the STLs by 1/scale in X/Y about each
+  part's centre and sets `xy_size_compensation = -outside` (an Advanced
+  Hole/size fix typed by hand wins). Holes: the hole fit becomes SnorbCAD's
+  printer fit (new parts start with it; Sheet panel offers "Use calibrated").
+  First owner numbers (2026-11-18, before the plate): an outside 51.75 printed
+  51.51 (−0.46 %), an 11 mm hex nut trap with no fit printed 10.59.
+- SnorbCAD printer fit: Hole shapes and cut slots take it by default; any other
+  cut only when its "Add printer fit" box is ticked (rect/polygon grow, other
+  outlines are offset outward; before 2026-11-18 only circles and slots grew).
 - Extruder: direct drive kit (since 2026-11-11), rotation_distance 32.15,
   retraction 0.5–1 mm. Older G-code files have 5 mm retraction: re-slice.
 - `SAVE_CONFIG` restarts Klipper and **turns the heaters off**.

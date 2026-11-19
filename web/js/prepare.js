@@ -555,6 +555,9 @@ async function loadInfo() {
 
 // What the chosen filament changes, so it's not a mystery.
 let materials = {};
+let sizeFixOn = true;     // this session: use the filament's size calibration
+let infoDraw = 0;
+window.addEventListener('sizecal-changed', () => materialInfo());
 function materialInfo() {
   const key = $('#material').value;
   const m = materials[key];
@@ -574,6 +577,16 @@ function materialInfo() {
       el('span', {}, `Fan ${val('max_fan_speed', 'fan')}%${edited('max_fan_speed')}`),
       el('span', {}, `Retraction ${val('retract_length', 'retract')} mm${edited('retract_length')}`)),
     el('div', { class: 'muted small' }, m.note));
+  const draw = ++infoDraw;
+  fil.sizeCal().then((cals) => {
+    if (draw !== infoDraw) return;
+    const c = cals[key];
+    if (!c) return box.append(el('div', { class: 'muted small' }, 'Size: not calibrated for this filament (Maintenance › Size calibration).'));
+    const cb = el('input', { type: 'checkbox', checked: sizeFixOn, onchange: () => { sizeFixOn = cb.checked; invalidateSlice(); } });
+    const f = (s) => `${s < 1 ? '+' : '−'}${Math.abs((1 / s - 1) * 100).toFixed(2)} %`;
+    box.append(el('label', { class: 'small size-fix', title: `Measured ${c.date || ''}. Scales the part in X and Y and moves its walls so it prints the size drawn.` }, cb,
+      ` Size fix: X ${f(c.sx)}, Y ${f(c.sy)}, walls ${c.outside > 0 ? '−' : '+'}${Math.abs(c.outside).toFixed(2)} mm`));
+  });
 }
 
 // --------------------------------------------------------------- slicing
@@ -596,7 +609,7 @@ async function slice() {
   const opts = {
     name, quality: $('#quality').value, material: $('#material').value,
     supports: $('#supports').value, overhang: angle(), infill: +$('#infill').value,
-    brim: +$('#brim').value, thumbnail: viewer.snapshot(300), advanced: advancedValues(),
+    brim: +$('#brim').value, thumbnail: viewer.snapshot(300), advanced: advancedValues(), size_fix: sizeFixOn,
     parts: ms.map((m, i) => ({ name: m.userData.name, bytes: bufs[i].byteLength })),
   };
   const head = new TextEncoder().encode(JSON.stringify(opts));

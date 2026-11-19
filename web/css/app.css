@@ -319,3 +319,20 @@ details.adv summary { cursor: pointer; font-weight: 600; }
 #page-cut { overflow: hidden; }
 #cut-root { flex: 1; display: flex; min-height: 0; min-width: 0; }
 #cut-root iframe { flex: 1; width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+
+/* size calibration */
+.sz-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; align-items: start; margin-top: 8px; }
+@media (max-width: 760px) { .sz-layout { grid-template-columns: 1fr; } }
+.sz-pic-wrap { background: var(--card2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.sz-pic { width: 100%; height: auto; display: block; }
+.sz-body { fill: var(--line); stroke: var(--accent); stroke-width: 0.6; }
+.sz-hole { fill: var(--card2); stroke: var(--accent); stroke-width: 0.5; }
+.sz-dim { stroke: var(--pink, #f7b6c8); stroke-width: 0.6; fill: none; }
+.sz-tag circle { fill: var(--pink, #f7b6c8); }
+.sz-tag text { fill: #170e1a; font-size: 5px; font-weight: 700; text-anchor: middle; }
+.sz-note { fill: var(--muted); font-size: 4.2px; text-anchor: middle; }
+.sz-inputs { display: grid; gap: 4px; }
+.sz-in { display: grid; grid-template-columns: 18px 1fr 90px 22px; gap: 6px; align-items: center; font-size: 13px; }
+.sz-in b { color: var(--pink, #f7b6c8); }
+.sz-result p { margin: 6px 0; }
+.sz-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: center; margin: 4px 0; }
