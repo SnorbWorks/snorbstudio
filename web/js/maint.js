@@ -609,7 +609,7 @@ function sizeCard() {
   async function printPlate() {
     const key = matSel.value;
     if (!await confirmBox(`Size test plate – ${matLabel(key)}`,
-      'An L-shaped plate 120 × 100 mm, 3 mm thick, with four holes (about 30 minutes). It is sliced with no size corrections, so it shows what the printer really does. It appears in Files when ready.', 'Create')) return;
+      'An L-shaped plate 120 × 100 mm, 3 mm thick, with four holes (about 50 minutes). It is sliced with no size corrections, so it shows what the printer really does. It appears in Files when ready.', 'Create')) return;
     toast('Slicing the size test plate…');
     try {
       const r = await fetch('/studio-api/calibration/size_test', { method: 'POST', headers: { 'Content-Type': 'application/json' },
