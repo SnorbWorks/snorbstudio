@@ -15,6 +15,7 @@ import { Preview3D } from './preview3d.js';
 import { openGearDialog } from './geardialog.js';
 import { openHoleDialog } from './holedialog.js';
 import { openRotateDialog } from './rotatedialog.js';
+import { openScaleDialog } from './scaledialog.js';
 import { axisOf } from './views.js';
 import { viewDxf } from './dxf.js';
 import { checkPrint, type Issue } from './check.js';
@@ -36,6 +37,7 @@ const ico = (body: string) => `<svg viewBox="0 0 24 24" width="20" height="20" f
 const ICONS = {
   select: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="currentColor" stroke-width="1.2"/>'),
   direct: ico('<path d="M6 3.5l12.5 8.2-6 1.2-3 5.6z" fill="none" stroke-width="1.4"/>'),
+  scale: ico('<rect x="4" y="11" width="9" height="9"/><path d="M10 4h10v10"/><path d="M13 11l7-7"/>'),
   rotate: ico('<path d="M5 13a7 7 0 1 0 2.6-5.5"/><path d="M7.5 3.5v4.2h4.2"/><rect x="9.5" y="10.5" width="5" height="5" transform="rotate(20 12 13)"/>'),
   measure: ico('<path d="M3.5 16.5l13-13 4 4-13 13z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
   rect: ico('<rect x="4" y="6" width="16" height="12" rx="0.5"/>'),
@@ -73,6 +75,7 @@ const PICKERS: typeof SHAPES = [
   { tool: 'select', name: 'Select', key: 'V', tip: 'Click or drag a box to select; Shift-click for more; drag just outside a corner to turn' },
   { tool: 'direct', name: 'Direct Selection', key: 'A', tip: "Click a shape to see its points: drag a point or a curve handle, click a side to add a point, Option-click a point for smooth/corner, ⌫ deletes the picked point" },
   { tool: 'rotate', name: 'Rotate', key: '⇧R', tip: 'Click the shapes to turn, then set the angle and the point to turn about' },
+  { tool: 'scale', name: 'Scale', key: '⇧S', tip: 'Click the shapes to resize, then set the size (proportions locked or free) and the point to scale from' },
 ];
 const MEASURES: typeof SHAPES = [
   { tool: 'dim', name: 'Dimension', key: 'D', tip: "Click a shape near the side to dimension it; double-click a dimension's number to type a new size" },
@@ -420,6 +423,7 @@ export function mount(root: HTMLElement, studio: Studio) {
       sheet.cancelLine();
       if (st.tool !== 'measure') sheet.measure = null;
       if (st.tool === 'rotate' && st.sels.some((id) => id !== 'stock')) queueMicrotask(editRotate);
+      if (st.tool === 'scale' && st.sels.some((id) => id !== 'stock')) queueMicrotask(editScale);
       if (st.tool === 'edge' && st.built && !st.built.edges.length) requestBuild();
       // leaving a re-pick without applying: the part with its fillet again
       if (st.tool !== 'edge' && wasRepick) requestBuild();
@@ -1502,6 +1506,44 @@ export function mount(root: HTMLElement, studio: Studio) {
     });
   }
   sheet.onRotate = editRotate;
+
+  // ---------------------------------------------------------- scale
+  const LOCK_KEY = 'studio.design.scaleLock';
+  let scaling = false;
+  function editScale() {
+    if (scaling || root.querySelector('.ds-modal')) return;
+    const view = st.activeView;
+    const b = sheet.selBox(view);
+    if (!b) return;
+    const V = VIEWS[view];
+    const [ua, us] = axisOf(V.uDir), [va, vs] = axisOf(V.vDir);
+    const orig = JSON.stringify(st.p);
+    const restore = () => { st.p = JSON.parse(orig); st.changed(); };
+    let lock = true;
+    try { lock = localStorage.getItem(LOCK_KEY) !== '0'; } catch { /* default */ }
+    const ids = st.sels.filter((id) => id !== 'stock');
+    scaling = true;
+    openScaleDialog(root, {
+      box: b, axes: ['XYZ'[ua], 'XYZ'[va]], signs: [us, vs], units: st.p.units, count: ids.length, lock,
+      preview(sx, sy, pu, pv) { st.p = JSON.parse(orig); st.sels = ids; st.scaleSelected(sx, sy, V.toWorld(pu, pv, 0), view, false); },
+      apply(sx, sy, pu, pv, copy, lk) {
+        scaling = false;
+        st.p = JSON.parse(orig);
+        st.sels = ids;
+        try { localStorage.setItem(LOCK_KEY, lk ? '1' : '0'); } catch { /* fine */ }
+        if (copy) st.duplicate(view, 0);
+        const n = st.scaleSelected(sx, sy, V.toWorld(pu, pv, 0), view, !copy);
+        const say = [
+          n.moved ? `${n.moved} hole${n.moved > 1 ? 's' : ''} or gear${n.moved > 1 ? 's' : ''} kept ${n.moved > 1 ? 'their' : 'its'} real size and only moved` : '',
+          n.skipped ? `${n.skipped} shape${n.skipped > 1 ? 's' : ''} left as ${n.skipped > 1 ? 'they were' : 'it was'} (drawn on another face, or text stretched one way only)` : '',
+        ].filter(Boolean);
+        if (say.length) flash(say.join('. ') + '.');
+        sheet.relayout();
+      },
+      cancel() { scaling = false; restore(); },
+    });
+  }
+  sheet.onScale = editScale;
   sheet.onNote = (t) => flash(t);
 
   // ---------------------------------------------------------- keys
@@ -1530,6 +1572,7 @@ export function mount(root: HTMLElement, studio: Studio) {
     if (root.querySelector('.ds-modal')) return;
     if (k === 'escape' && st.tool === 'edge' && st.edges.length) { st.edges = []; st.emit('select'); return; }
     if (k === 'r' && e.shiftKey) { e.preventDefault(); st.setTool('rotate'); return; }
+    if (k === 's' && e.shiftKey) { e.preventDefault(); st.setTool('scale'); return; }
     const keys: Record<string, Tool> = { a: 'direct', v: 'select', m: 'measure', x: 'section', r: 'rect', s: 'slot', c: 'circle', p: 'polygon', l: 'line', o: 'hole', g: 'gear', t: 'text', e: 'edge', d: 'dim', z: 'zoom' };
     if (k === 'escape') { st.setTool('select'); st.select([]); if (st.farFace) { st.farFace = false; st.emit('tool'); } }
     else if (keys[k]) st.setTool(keys[k]);

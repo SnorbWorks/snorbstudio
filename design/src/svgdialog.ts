@@ -3,7 +3,7 @@
 // units the file claims, and confirm the size before anything is added.
 import type { P2, Project, ViewName, Feature } from './model.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
-import { svgSize, svgFeatures, nesting, UNIT_MM, UNIT_NAMES, type SvgSize } from './svgimport.js';
+import { svgSize, svgFeatures, splitSubpaths, nesting, UNIT_MM, UNIT_NAMES, type SvgSize } from './svgimport.js';
 
 export interface SvgRead { loops: P2[][]; open: number; texts: number; size: SvgSize; name: string }
 
@@ -25,6 +25,17 @@ export function readSvg(text: string, name: string): SvgRead {
   try {
     const loops: P2[][] = [];
     let open = 0;
+    // one path holding many outlines (a whole logo): measure each outline on its own, it's far quicker
+    for (const el of Array.from(svg.querySelectorAll('path'))) {
+      const parts = splitSubpaths(el.getAttribute('d') || '');
+      if (parts.length < 2) continue;
+      for (const d of parts) {
+        const piece = el.cloneNode(false) as Element;
+        piece.setAttribute('d', d);
+        el.parentNode!.insertBefore(piece, el);
+      }
+      el.remove();
+    }
     const els = Array.from(svg.querySelectorAll('path, rect, circle, ellipse, polygon, polyline, line')) as SVGGeometryElement[];
     // the overall size sets how finely to follow curves
     let diag = 0;
@@ -81,7 +92,10 @@ export function openSvgDialog(root: HTMLElement, o: SvgDialogOpts) {
   // drawing units per file unit: fixed by the file; what a file unit is can be changed
   const perUnit = read.size.mmPerUser / UNIT_MM[read.size.unit];
   let unit = read.size.unit;
-  let scale = read.size.mmPerUser;      // mm per drawing unit
+  let scale = read.size.mmPerUser;      // mm per drawing unit, across
+  let pctX = 1, pctY = 1;               // scaled from the file's own size (1 = as drawn)
+  let lock = true;                      // width and height change together
+  const sX = () => scale * pctX, sY = () => scale * pctY;
   let view: ViewName = o.view;
   let depth = 0, holes = true;
   const all = read.loops.flat();
@@ -121,9 +135,14 @@ export function openSvgDialog(root: HTMLElement, o: SvgDialogOpts) {
       <div class="ds-field ds-field-wide"><span>Put it on the view</span><select class="ds-select" id="sv-view">${viewOpts}</select></div>
       <p class="ds-note ${read.size.stated ? '' : 'ds-warn'}">${read.size.why}</p>
       <div class="ds-field ds-field-wide"><span>Units in the file</span><select class="ds-select" id="sv-unit">${unitOpts}</select></div>
-      <label class="ds-field"><span>Width</span><input type="number" step="any" min="0" id="sv-w" value="${fmt(bw * scale)}"><i>${units}</i></label>
-      <label class="ds-field"><span>Height</span><input type="number" step="any" min="0" id="sv-h" value="${fmt(bh * scale)}"><i>${units}</i></label>
-      <p class="ds-note">Is that the size you expect? Change either one and the other follows.</p>
+      <label class="ds-field"><span>Width</span><input type="number" step="any" min="0" id="sv-w" value="${fmt(bw * sX())}"><i>${units}</i></label>
+      <label class="ds-field"><span>Height</span><input type="number" step="any" min="0" id="sv-h" value="${fmt(bh * sY())}"><i>${units}</i></label>
+      ${lock
+        ? `<label class="ds-field"><span>Scale</span><input type="number" step="any" min="0" id="sv-px" value="${+(pctX * 100).toFixed(3)}"><i>%</i></label>`
+        : `<label class="ds-field"><span>Across</span><input type="number" step="any" min="0" id="sv-px" value="${+(pctX * 100).toFixed(3)}"><i>%</i></label>
+           <label class="ds-field"><span>Up</span><input type="number" step="any" min="0" id="sv-py" value="${+(pctY * 100).toFixed(3)}"><i>%</i></label>`}
+      <label class="ds-check"><input type="checkbox" id="sv-lock" ${lock ? 'checked' : ''}> Lock proportions</label>
+      <p class="ds-note">${lock ? 'Is that the size you expect? Change the width, height or scale and the rest follow.' : 'Width and height change on their own: the drawing stretches.'} 100% is the size the file says.</p>
       <label class="ds-field"><span>Depth</span><input type="number" step="any" min="0" id="sv-d" value="${fmt(depth)}"><i>${units}</i></label>
       <p class="ds-note">0: flat sketches you give a depth later. More: shapes that tall, holes cut as deep.</p>
       <label class="ds-check"><input type="checkbox" id="sv-holes" ${holes ? 'checked' : ''}> Outlines inside others are holes</label>
@@ -134,12 +153,22 @@ export function openSvgDialog(root: HTMLElement, o: SvgDialogOpts) {
     const q = <T extends HTMLElement>(s: string) => card.querySelector(s) as T;
     q<HTMLSelectElement>('#sv-view').onchange = (e) => { view = (e.target as HTMLSelectElement).value as ViewName; };
     q<HTMLSelectElement>('#sv-unit').onchange = (e) => { unit = (e.target as HTMLSelectElement).value; scale = perUnit * UNIT_MM[unit]; render(); };
-    const sizeIn = (id: string, span: number) => {
-      const inp = q<HTMLInputElement>(id);
-      inp.addEventListener('keydown', (e) => e.stopPropagation());
-      inp.onchange = () => { const v = fromU(parseFloat(inp.value)); if (v > 0 && span > 0) { scale = v / span; render(); } };
+    const sizeTo = (axis: 0 | 1, f: number) => {
+      if (!(f > 0) || !Number.isFinite(f)) return;
+      if (lock) pctX = pctY = f; else if (axis === 0) pctX = f; else pctY = f;
+      render();
     };
-    sizeIn('#sv-w', bw); sizeIn('#sv-h', bh);
+    const numIn = (id: string, fn: (v: number) => void) => {
+      const inp = q<HTMLInputElement>(id);
+      if (!inp) return;
+      inp.addEventListener('keydown', (e) => e.stopPropagation());
+      inp.onchange = () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) fn(v); };
+    };
+    numIn('#sv-w', (v) => { if (bw > 0) sizeTo(0, fromU(v) / bw / scale); });
+    numIn('#sv-h', (v) => { if (bh > 0) sizeTo(1, fromU(v) / bh / scale); });
+    numIn('#sv-px', (v) => sizeTo(0, v / 100));
+    numIn('#sv-py', (v) => sizeTo(1, v / 100));
+    q<HTMLInputElement>('#sv-lock').onchange = (e) => { lock = (e.target as HTMLInputElement).checked; if (lock) pctY = pctX; render(); };
     const dIn = q<HTMLInputElement>('#sv-d');
     dIn.addEventListener('keydown', (e) => e.stopPropagation());
     dIn.onchange = () => { const v = fromU(parseFloat(dIn.value)); depth = v > 0 ? v : 0; };
@@ -151,7 +180,7 @@ export function openSvgDialog(root: HTMLElement, o: SvgDialogOpts) {
     // a number still being typed counts
     const d = fromU(parseFloat((card.querySelector('#sv-d') as HTMLInputElement).value));
     depth = d > 0 ? d : 0;
-    const fs = svgFeatures(read.loops, p, { view, scale, depth, holes });
+    const fs = svgFeatures(read.loops, p, { view, scale: sX(), scaleY: sY(), depth, holes });
     close();
     if (fs.length) o.add(fs, view);
   };

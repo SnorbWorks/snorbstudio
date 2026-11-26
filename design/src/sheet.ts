@@ -62,6 +62,7 @@ const CURSORS: Record<string, string> = {
   edge: cursorSvg("<path d='M15 27v-5a6 6 0 0 1 6-6h6'/>"),
   dim: cursorSvg("<path d='M14 22h13M14 18v8M27 18v8'/>"),
   measure: cursorSvg("<path d='M14 26l12-12M17 23l-2-2M20 20l-2-2M23 17l-2-2'/>"),
+  scaleTool: cursorSvg("<rect x='14' y='20' width='7' height='7'/><path d='M18 16h9v9M22 21l5-5'/>"),
   rotateTool: cursorSvg("<path d='M16 24a6 6 0 1 1 9 0'/><path d='M23 25l2-1 1 2'/>"),
   // the turn arrows by a selection's corner (hotspot in the middle)
   rotate: `url("data:image/svg+xml,${encodeURIComponent(
@@ -103,7 +104,8 @@ export class Sheet {
   private dimHits: { id: string; view: ViewName; x: number; y: number; w: number; h: number }[] = [];
   private dimInput: HTMLInputElement | null = null;
   private lastClick: { t: number; x: number; y: number } | null = null;
-  onRotate: () => void = () => {};               // the rotate tool picked shapes: open its box
+  onRotate: () => void = () => {};
+  onScale: () => void = () => {};                // the scale tool picked shapes: open its box               // the rotate tool picked shapes: open its box
   measure: { view: ViewName; a: P2; b: P2 } | null = null;   // the measure tool's last reading
   private trail: { view: ViewName; a: P2; b: P2 } | null = null;   // the measure tool, clicked once: follows the pointer until the next click drops a guide
   private trailDropped = 0;                                        // when a guide was dropped (the second click of a double-click is not a new start)
@@ -724,13 +726,13 @@ export class Sheet {
       return;
     }
     const hit = this.pick(view, u, v);
-    if (tool === 'rotate') {
-      // the rotate tool picks like the select tool, then asks how far to turn
+    if (tool === 'rotate' || tool === 'scale') {
+      // the rotate and scale tools pick like the select tool, then ask how far
       if (!hit || hit === 'stock') { startBox(false); return; }
       const s = this.st.sels;
       this.st.select(e.shiftKey ? (s.includes(hit) ? s.filter((id) => id !== hit) : [...s, hit]) : [hit]);
       this.render();
-      if (this.st.sels.length) this.onRotate();
+      if (this.st.sels.length) { if (tool === 'scale') this.onScale(); else this.onRotate(); }
       return;
     }
     if (hit === 'stock' && e.shiftKey) {
@@ -986,7 +988,7 @@ export class Sheet {
     }
     else if (d.kind === 'rotate') { if (d.started) { this.relayout(); this.st.changed(); } }
     else if (d.kind === 'path') { if (d.started) { const f = this.st.feature(d.id); if (f) recentre(f); this.relayout(); this.st.changed(); } this.showNote(); }
-    else if (d.kind === 'box') { this.finishBox(d); if (this.st.tool === 'rotate' && this.st.sels.some((id) => id !== 'stock')) this.onRotate(); }
+    else if (d.kind === 'box') { this.finishBox(d); if (this.st.sels.some((id) => id !== 'stock')) { if (this.st.tool === 'rotate') this.onRotate(); else if (this.st.tool === 'scale') this.onScale(); } }
     else if (d.kind === 'zoom') {
       const r = this.svg.getBoundingClientRect();
       if (d.started && !d.out) this.zoomToRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1));
@@ -1509,11 +1511,11 @@ export class Sheet {
   private hoverAt(x: number, y: number, alt: boolean) {
     const view = this.viewAt(x, y);
     let h: string | null = null, cur = '';
-    if (view && (this.st.tool === 'select' || this.st.tool === 'rotate')) {
+    if (view && (this.st.tool === 'select' || this.st.tool === 'rotate' || this.st.tool === 'scale')) {
       const [u, v] = this.fromSheet(view, x, y);
       const hd = this.st.tool === 'select' ? this.handleAt(view, u, v) : null;
       if (this.rotateCornerAt(view, u, v) && !hd) cur = CURSORS.rotate;
-      else if (this.st.tool === 'rotate') { h = this.pick(view, u, v); if (h === 'stock') h = null; }
+      else if (this.st.tool === 'rotate' || this.st.tool === 'scale') { h = this.pick(view, u, v); if (h === 'stock') h = null; }
       else if (this.bulgeAt(view, u, v)) cur = 'grab';
       else if (hd) cur = hd.horiz ? 'ew-resize' : 'ns-resize';
       else if (alt && this.pickSide(view, u, v)) cur = 'pointer';
@@ -1532,6 +1534,7 @@ export class Sheet {
     else if (this.st.tool === 'zoom') c = this.altDown ? CURSORS.zoomOut : CURSORS.zoom;
     else if (this.drag?.kind === 'rotate') c = CURSORS.rotate;
     else if (this.st.tool === 'rotate') c = this.hoverCursor || CURSORS.rotateTool;
+    else if (this.st.tool === 'scale') c = this.hoverCursor || CURSORS.scaleTool;
     else if (this.st.tool !== 'select') c = CURSORS[this.st.tool] || 'crosshair';
     else c = this.hoverCursor || 'default';
     if (this.svg.style.cursor !== c) this.svg.style.cursor = c;

@@ -1,12 +1,12 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
 import type { Feature, Project, Vec3, ViewName } from './model.js';
-import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, withGroups, profile, DEFAULT_FIT, type P2 } from './model.js';
+import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, scaleFeature, withGroups, profile, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
 import type { BuildResult } from './geometry.js';
 import { VIEWS, axisOf } from './views.js';
 
-export type Tool = 'select' | 'direct' | 'rotate' | 'measure' | 'section' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
+export type Tool = 'select' | 'direct' | 'rotate' | 'scale' | 'measure' | 'section' | 'rect' | 'slot' | 'circle' | 'polygon' | 'line' | 'hole' | 'gear' | 'text' | 'edge' | 'dim' | 'zoom';
 type Listener = (what: 'model' | 'select' | 'built' | 'tool' | 'view') => void;
 
 const KEY = 'studio.design.project';
@@ -176,6 +176,20 @@ export class State {
       }
     }, record);
     return skipped;
+  }
+
+  /** Scale the selected shapes about a point (sx across, sy up, as `view` shows them). How many only moved (holes, gears) or were left (other faces, stretched text). */
+  scaleSelected(sx: number, sy: number, pivot: Vec3, view: ViewName, record = true): { moved: number; skipped: number } {
+    const n = { moved: 0, skipped: 0 };
+    this.change((p) => {
+      for (const id of this.sels) {
+        const f = p.features.find((x) => x.id === id);
+        if (!f) continue;
+        const r = scaleFeature(f, pivot, view, sx, sy);
+        if (r !== 'scaled') n[r]++;
+      }
+    }, record);
+    return n;
   }
 
   /** Copy the selected shapes (and the roundings and dimensions that only touch them) to a clipboard every part tab shares. */

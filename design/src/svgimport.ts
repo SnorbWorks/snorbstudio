@@ -43,6 +43,53 @@ export function svgSize(attrs: { width?: string | null; height?: string | null; 
   return { unit: pxUnit, stated: false, mmPerUser: UNIT_MM[pxUnit], why };
 }
 
+/**
+ * A path's d split into its separate pieces (each starting with an absolute
+ * M), so each can be measured on its own: the browser walks a whole path for
+ * every point it samples, so one path holding a whole logo is very slow.
+ * Returns [d] unchanged when it can't be read safely.
+ */
+export function splitSubpaths(d: string): string[] {
+  const tok = d.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g);
+  if (!tok || !/^[Mm]$/.test(tok[0])) return [d];
+  const ARGS: Record<string, number> = { m: 2, l: 2, t: 2, h: 1, v: 1, c: 6, s: 4, q: 4, a: 7, z: 0 };
+  const out: string[] = [];
+  let cur: string[] = [];
+  let x = 0, y = 0, sx = 0, sy = 0;
+  let i = 0;
+  while (i < tok.length) {
+    const cmd = tok[i++];
+    const lc = cmd.toLowerCase();
+    if (!(lc in ARGS)) return [d];
+    const rel = cmd !== cmd.toUpperCase();
+    if (lc === 'z') { cur.push('Z'); x = sx; y = sy; continue; }
+    const n = ARGS[lc];
+    let first = true;
+    do {
+      const a = tok.slice(i, i + n).map(Number);
+      if (a.length !== n || a.some((v) => !Number.isFinite(v))) return [d];
+      if (lc === 'a' && ((a[3] !== 0 && a[3] !== 1) || (a[4] !== 0 && a[4] !== 1))) return [d];   // flags run together ("011"): leave it whole
+      i += n;
+      if (lc === 'm' && first) {
+        const nx = rel ? x + a[0] : a[0], ny = rel ? y + a[1] : a[1];
+        if (cur.length) out.push(cur.join(' '));
+        cur = [`M${nx} ${ny}`];
+        x = sx = nx; y = sy = ny;
+      } else {
+        // after a move, more pairs are lines (relative if the move was)
+        const c = lc === 'm' ? (rel ? 'l' : 'L') : cmd;
+        cur.push(c + a.join(' '));
+        if (lc === 'h') x = rel ? x + a[0] : a[0];
+        else if (lc === 'v') y = rel ? y + a[0] : a[0];
+        else { x = rel ? x + a[n - 2] : a[n - 2]; y = rel ? y + a[n - 1] : a[n - 1]; }
+      }
+      first = false;
+    } while (i < tok.length && !/[A-Za-z]/.test(tok[i]));
+  }
+  if (cur.length) out.push(cur.join(' '));
+  return out.length ? out : [d];
+}
+
 /** Is a point inside a closed outline? */
 export function inside(pt: P2, poly: P2[]): boolean {
   let c = false;
@@ -88,7 +135,8 @@ export function area(poly: P2[]): number {
 
 export interface ImportOpts {
   view: ViewName;
-  scale: number;          // mm per drawing unit
+  scale: number;          // mm per drawing unit (across)
+  scaleY?: number;        // mm per drawing unit up, when stretched one way (else scale)
   depth: number;          // 0: flat sketches; more: shapes this tall (holes cut as deep)
   holes: boolean;         // outlines inside others cut (else everything adds)
 }
@@ -99,7 +147,7 @@ export interface ImportOpts {
  * standing on the view's near face. Specks under 0.05 mm² are dropped.
  */
 export function svgFeatures(loops: P2[][], p: Project, o: ImportOpts): Feature[] {
-  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * o.scale] as P2), 0.005))
+  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * (o.scaleY ?? o.scale)] as P2), 0.005))
     .map((l) => (l.length > 1 && Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < 1e-6 ? l.slice(0, -1) : l))
     .filter((l) => l.length >= 3 && Math.abs(area(l)) >= 0.05);
   if (!mm.length) return [];

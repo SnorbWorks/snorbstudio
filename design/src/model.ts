@@ -784,6 +784,88 @@ export function rotateFeature(f: Feature, pivot: Vec3, axis: Vec3, deg: number):
   return true;
 }
 
+/**
+ * Scale a shape about a point, across and up as seen from a view (`from`;
+ * sx along its u, sy along its v). Only the outline changes size: depths stay.
+ * 'scaled': it grew or shrank. 'moved': a hole or gear (standard sizes) only
+ * had its centre moved. 'skipped': drawn on a face this view doesn't look at
+ * square on, or text stretched unevenly.
+ */
+export function scaleFeature(f: Feature, pivot: Vec3, from: ViewName, sx: number, sy: number): 'scaled' | 'moved' | 'skipped' {
+  if (!isShape(f) || !(sx > 0) || !(sy > 0)) return 'skipped';
+  const A = VIEWS[from], V = VIEWS[f.view];
+  if (Math.abs(Math.abs(dot(V.eye, A.eye)) - 1) > 1e-9) return 'skipped';
+  // the shape's own u/v may be the view's v/u (a side view turned) or point the other way: sizes don't care
+  const swap = Math.abs(dot(V.uDir, A.uDir)) < 0.5;
+  const [su, sv] = swap ? [sy, sx] : [sx, sy];
+  const even = Math.abs(su - sv) < 1e-12;
+  const k = Math.min(su, sv);
+  const fix = (x: number) => +x.toFixed(9);
+  const pu = dot(pivot, V.uDir), pv = dot(pivot, V.vDir);
+  const textUneven = f.type === 'text' && !even;
+  if (textUneven) return 'skipped';
+  f.cu = fix(pu + (f.cu - pu) * su); f.cv = fix(pv + (f.cv - pv) * sv);
+  const S = ([u, v]: P2): P2 => [fix(u * su), fix(v * sv)];
+  let result: 'scaled' | 'moved' = 'scaled';
+  const toPoly = (abs: P2[]) => {
+    f.type = 'poly';
+    f.pts = abs.map(([u, v]) => S([u - f0u, v - f0v]));
+    f.w = 0; f.h = 0; f.r = 0; delete f.rot; delete f.sides; delete f.bulges; delete f.curves; delete f.smooth; delete f.corners;
+  };
+  // the outline before the move, about its own centre (f0u/f0v: its old centre)
+  const f0u = pu + (f.cu - pu) / su, f0v = pv + (f.cv - pv) / sv;
+  if (f.type === 'rect') {
+    f.w = fix(f.w * su); f.h = fix(f.h * sv);
+    f.corner = fix(f.corner * k); if (f.corners) f.corners = f.corners.map((c) => fix(c * k));
+  } else if (f.type === 'circle') {
+    if (even) f.r = fix(f.r * su);
+    else { const g = { ...f, cu: f0u, cv: f0v }; toPoly(profile(g, 96)); f.corner = 0; }
+  } else if (f.type === 'polygon') {
+    if (even) { f.r = fix(f.r * su); f.corner = fix(f.corner * su); }
+    else { const c = f.corner; toPoly(verts({ ...f, cu: f0u, cv: f0v })!); f.corner = fix(c * k); }
+  } else if (f.type === 'slot') {
+    const rot = (((f.rot || 0) % 180) + 180) % 180;
+    if (even) { f.w = fix(f.w * su); f.h = fix(f.h * su); }
+    else if (Math.abs(rot) < 1e-9) { f.w = fix(f.w * su); f.h = fix(f.h * sv); }
+    else if (Math.abs(rot - 90) < 1e-9) { f.w = fix(f.w * sv); f.h = fix(f.h * su); }
+    else { toPoly(profile({ ...f, cu: f0u, cv: f0v })); f.corner = 0; }
+  } else if (f.type === 'poly' && f.pts) {
+    const arcs = (f.bulges || []).some((b) => Math.abs(b) > 1e-12);
+    if (arcs && !even) {
+      // a round side stretched one way is no longer round: keep it as many short sides
+      const c = f.corner; toPoly(profile({ ...f, cu: f0u, cv: f0v })); f.corner = fix(c * k);
+    } else {
+      f.pts = f.pts.map(S);
+      if (f.curves) f.curves = f.curves.map((c) => c && (c.map(S) as Ctrl));
+      if (f.bulges) f.bulges = f.bulges.map((b) => fix(b * su));
+      f.corner = fix(f.corner * k); if (f.corners) f.corners = f.corners.map((c) => fix(c * k));
+    }
+  } else if (f.type === 'text' && f.text) {
+    f.text.size = fix(f.text.size * su); f.w = fix(f.w * su); f.h = fix(f.h * su);
+  } else result = 'moved';             // holes and gears: real sizes, just moved
+  if (f.revolve && result === 'scaled') {
+    const r = f.revolve;
+    r.at = S(r.at);
+    const d = [r.dir[0] * su, r.dir[1] * sv], L = Math.hypot(d[0], d[1]) || 1;
+    r.dir = [fix(d[0] / L), fix(d[1] / L)];
+  }
+  if (f.exprs) for (const key of ['w', 'h', 'r', 'corner', 'size']) delete f.exprs[key];
+  // repeats and mirrors (world coordinates) stretch the same way, in the view's plane
+  const sw = (p: Vec3, c: Vec3): Vec3 => {
+    const du = dot([p[0] - c[0], p[1] - c[1], p[2] - c[2]], A.uDir) * (sx - 1), dv = dot([p[0] - c[0], p[1] - c[1], p[2] - c[2]], A.vDir) * (sy - 1);
+    return [0, 1, 2].map((i) => fix(p[i] + A.uDir[i] * du + A.vDir[i] * dv)) as Vec3;
+  };
+  if (f.pattern) {
+    if (f.pattern.kind === 'linear') f.pattern.step = sw(f.pattern.step, [0, 0, 0]);
+    else f.pattern.center = sw(f.pattern.center, pivot);
+  }
+  if (f.mirror) {
+    const ax = f.mirror.axis, s = Math.abs(A.uDir[ax]) > 0.5 ? sx : Math.abs(A.vDir[ax]) > 0.5 ? sy : 1;
+    f.mirror.at = fix(pivot[ax] + (f.mirror.at - pivot[ax]) * s);
+  }
+  return result;
+}
+
 /** The empty space inside a hollow body (world min, max), or null when it's solid. */
 export function shellCavity(p: Project): [Vec3, Vec3] | null {
   const sh = p.shell;
