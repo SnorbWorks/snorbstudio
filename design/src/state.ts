@@ -1,5 +1,6 @@
 // App state: the project, the selection, undo/redo and the latest build.
 
+import { curveProject } from './curvefit.js';
 import type { Feature, Project, Vec3, ViewName } from './model.js';
 import { bounds2d, featureCorners, depthExtent, depthRange, farDepth, into, isShape, nearDepth, newId, newProject, rotateFeature, scaleFeature, withGroups, profile, DEFAULT_FIT, type P2 } from './model.js';
 import { type HoleSpec, defaultHole } from './holes.js';
@@ -124,6 +125,7 @@ export class State {
     this.snapshot();
     this.p = { ...newProject(), ...p };
     delete (this.p as any).thumb;     // the library's picture lives in the saved file only
+    curveProject(this.p);             // traced outlines from older imports become curves
     // parts from before printer fit: the owner's current fit (it only touches holes and slots, which they didn't have)
     if (this.p.fit === undefined) this.p.fit = defaultFit();
     this.sels = []; this.sides = null; this.changed();
@@ -158,6 +160,7 @@ export class State {
     const out: Doc = { p: this.p, undo: this.undoStack, redo: this.redoStack, sels: this.sels };
     this.p = { ...newProject(), ...next.p };
     if (this.p.fit === undefined) this.p.fit = defaultFit();
+    curveProject(this.p);
     this.undoStack = next.undo; this.redoStack = next.redo;
     this.sels = next.sels; this.sides = null;
     this.prune();

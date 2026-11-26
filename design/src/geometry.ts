@@ -441,8 +441,66 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
 
 type Batch = { f: Feature; tool: Solid; box: any }[];
 
+/** A flat outline's edge as a polygon in its view (curves sampled), or null when it isn't a plain one. */
+function outline2d(f: Feature): P2[] | null {
+  if (instances(f).length !== 1 || f.revolve || f.gear || f.text) return null;
+  if (f.type === 'circle') return Array.from({ length: 32 }, (_, k) => [f.cu + f.r * 1.02 * Math.cos((k * Math.PI) / 16), f.cv + f.r * 1.02 * Math.sin((k * Math.PI) / 16)] as P2);
+  if (f.type === 'slot') { const s = slotPath(f, 0); return s ? [s.a, s.b, s.c, s.d] : null; }
+  if (f.type !== 'poly' && f.type !== 'rect' && f.type !== 'polygon') return null;
+  if (f.type !== 'poly') return verts(f);
+  const { pts, bulge, curve } = polyPath(f), n = pts.length, out: P2[] = [];
+  for (let k = 0; k < n; k++) {
+    const P = pts[k], Q = pts[(k + 1) % n], c = curve[k];
+    out.push(P);
+    if (c) for (let i = 1; i < 8; i++) {
+      const t = i / 8, s = 1 - t;
+      out.push([s * s * s * P[0] + 3 * s * s * t * c[0][0] + 3 * s * t * t * c[1][0] + t * t * t * Q[0], s * s * s * P[1] + 3 * s * s * t * c[0][1] + 3 * s * t * t * c[1][1] + t * t * t * Q[1]]);
+    }
+    else if (Math.abs(bulge[k]) > 1e-9) out.push(bulgeMid(P, Q, bulge[k]));
+  }
+  return out;
+}
+
+function segGap(a: P2, b: P2, c: P2, d: P2): number {
+  const cross = (o: P2, p: P2, q: P2) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+  const d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d);
+  if (((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))) return 0;
+  const pd = (p: P2, x: P2, y: P2) => {
+    const dx = y[0] - x[0], dy = y[1] - x[1], L = dx * dx + dy * dy;
+    const t = L < 1e-18 ? 0 : Math.max(0, Math.min(1, ((p[0] - x[0]) * dx + (p[1] - x[1]) * dy) / L));
+    return Math.hypot(p[0] - x[0] - t * dx, p[1] - x[1] - t * dy);
+  };
+  return Math.min(pd(a, c, d), pd(b, c, d), pd(c, a, b), pd(d, a, b));
+}
+
 /**
- * Smallest batch worth it. Below this each feature is built alone, which also
+ * Two flat shapes on the same view whose outlines are clear of each other
+ * (by a safety gap, more with printer fit), neither inside the other. False
+ * whenever unsure: they're then just built separately.
+ */
+function outlinesApart(f: Feature, g: Feature, p: Project): boolean {
+  if (f.view !== g.view) return false;
+  const [a0, a1] = depthRange(f, p), [b0, b1] = depthRange(g, p);
+  if (a1 < b0 - 1e-6 || b1 < a0 - 1e-6) return true;     // one above the other: never meet
+  const A = outline2d(f), B = outline2d(g);
+  if (!A || !B || A.length < 3 || B.length < 3) return false;
+  const gap = 0.2 + fitOf(f, p) + fitOf(g, p);
+  for (let i = 0; i < A.length; i++) for (let j = 0; j < B.length; j++) {
+    if (segGap(A[i], A[(i + 1) % A.length], B[j], B[(j + 1) % B.length]) < gap) return false;
+  }
+  const inside = (q: P2, poly: P2[]) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if ((yi > q[1]) !== (yj > q[1]) && q[0] < ((xj - xi) * (q[1] - yi)) / (yj - yi) + xi) c = !c;
+    }
+    return c;
+  };
+  return !inside(A[0], B) && !inside(B[0], A);
+}
+
+/**
+ * Fewest back-to-back cuts (or adds) worth batching. Below this each feature is built alone, which also
  * tells exactly whether it changed anything ("buried" / "cuts only empty
  * space"); in a batch that is judged by position only.
  */
@@ -470,12 +528,14 @@ function planBatches(p: Project): Map<string, Batch> {
         try { tool = featureTool(f, p); } catch { continue; }   // built alone, which reports its error
         if (!tool) continue;
         const box = tool.boundingBox;
-        const g = groups.find((g) => g.boxes.every((b) => b.isOut(box)));
+        // tools that overlap or touch can't share a boolean (it comes out wrong): boxes first, then the outlines
+        const apart = (b: any, other: Feature) => b.isOut(box) || outlinesApart(f, other, p);
+        const g = groups.find((g) => g.boxes.every((b, k) => apart(b, g.items[k].f)));
         if (g) { g.items.push({ f, tool, box }); g.boxes.push(box); }
         else groups.push({ items: [{ f, tool, box }], boxes: [box] });
       }
       for (const g of groups) {
-        if (g.items.length < BATCH_MIN) continue;
+        if (g.items.length < 2) continue;
         out.set(g.items[0].f.id, g.items);
         for (const b of g.items.slice(1)) out.set(b.f.id, []);
       }

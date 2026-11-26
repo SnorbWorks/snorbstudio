@@ -4,6 +4,7 @@
 // itself happens in svgdialog.ts, where the browser can measure paths.
 import type { Feature, P2, Project, ViewName } from './model.js';
 import { newId, nearDepth } from './model.js';
+import { curveFeature } from './curvefit.js';
 import { VIEWS } from './views.js';
 
 /** How long one of each unit is, in mm. px: CSS pixels, 96 to the inch. */
@@ -147,7 +148,7 @@ export interface ImportOpts {
  * standing on the view's near face. Specks under 0.05 mm² are dropped.
  */
 export function svgFeatures(loops: P2[][], p: Project, o: ImportOpts): Feature[] {
-  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * (o.scaleY ?? o.scale)] as P2), 0.03))
+  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * (o.scaleY ?? o.scale)] as P2), 0.005))
     .map((l) => (l.length > 1 && Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < 1e-6 ? l.slice(0, -1) : l))
     .filter((l) => l.length >= 3 && Math.abs(area(l)) >= 0.05);
   if (!mm.length) return [];
@@ -167,6 +168,8 @@ export function svgFeatures(loops: P2[][], p: Project, o: ImportOpts): Feature[]
       pts: l.map(([u, v]) => [+(u - mid[0] + at[0] - cu).toFixed(4), +(v - mid[1] + at[1] - cv).toFixed(4)] as P2),
       d0: top, d1: top, op: hole ? 'cut' : 'add', through: false,
     };
+    // the drawing was made of curves: give them back (a few Béziers, not hundreds of points)
+    curveFeature(f);
     if (o.depth > 0) {
       // an added shape stands up out of the face; a hole goes down through it as far
       if (hole) { f.d0 = top + o.depth; f.d1 = top; } else f.d1 = top + o.depth;
