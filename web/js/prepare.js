@@ -6,6 +6,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
 import { Viewer, BED } from './viewer.js';
+import { Hotend } from './hotend.js';
 import * as T from './mesh_tools.js';
 import { GcodePreview, parseGcode, FEATURES } from './gcode_preview.js';
 import { mr } from './moonraker.js';
@@ -14,7 +15,7 @@ import { $, $$, el, toast, attempt, confirmBox, fmtBytes, fmtDate, debounce } fr
 import * as fil from './filaments.js';
 
 const MAX_LIVE_FACES = 150000;     // repaint overhangs while dragging below this
-let viewer, preview;
+let viewer, preview, hotend;
 let selected = null;
 let lastSlice = null;              // { file, stats }
 let app;
@@ -24,6 +25,8 @@ export function initPrepare(theApp) {
   app = theApp;
   viewer = new Viewer($('#viewport'));
   preview = new GcodePreview(viewer.preview);
+  hotend = new Hotend(viewer.scene);
+  viewer.onFrame.push(() => hotend.tick());
   wireViewer();
   wireSidebar();
   wireDrop();
@@ -671,6 +674,7 @@ function followPrint() {
   const ps = mr.printer.print_stats;
   const live = mr.busy && previewName && ps?.filename === previewName && preview.p;
   $('#follow-wrap').classList.toggle('hidden', !live);
+  showHotend(live);
   if (!live || !$('#follow-print').checked || !viewer.preview.visible) return;
   const z = mr.printer.gcode_move?.gcode_position?.[2];
   if (z == null) return;
@@ -682,6 +686,17 @@ function followPrint() {
     preview.setLayer(i, $('#layer-single').checked);
     layerLabel();
   }
+}
+
+// The hot end, where the printer says the nozzle is right now (the live
+// position, less any Z adjustment, so it sits on the toolpaths it's printing).
+function showHotend(live) {
+  const p = mr.printer;
+  const at = p.motion_report?.live_position || p.toolhead?.position;
+  const homed = (p.toolhead?.homed_axes || '').length === 3;
+  if (!live || !homed || !at || !viewer.preview.visible) return hotend.set(null);
+  const off = p.gcode_move?.homing_origin || [0, 0, 0];
+  hotend.set([at[0] - off[0], at[1] - off[1], at[2] - off[2]]);
 }
 
 async function previewFile(file, { keepLayer = false } = {}) {
@@ -757,6 +772,7 @@ async function setColorChanges(zs) {
 function showPreviewView() {
   if (!preview.p) return;
   viewer.showPreview(true);
+  followPrint();
   $('#layer-bar').classList.remove('hidden');
   $('#drop-hint').classList.add('hidden');
   $$('#mode-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.show === 'preview'));
@@ -764,6 +780,7 @@ function showPreviewView() {
 
 function showModelView() {
   viewer.showPreview(false);
+  hotend.set(null);
   viewer.attach(selected);
   $('#layer-bar').classList.add('hidden');
   $$('#mode-toggle button').forEach((b) => b.classList.toggle('active', b.dataset.show === 'model'));

@@ -15,6 +15,7 @@ export class Viewer extends EventTarget {
     super();
     this.container = container;
     this.active = true;
+    this.onFrame = [];             // called before each frame is drawn
     const r = this.renderer = new THREE.WebGLRenderer({ antialias: true });
     r.setPixelRatio(Math.min(devicePixelRatio, 2));
     r.setClearColor(0x100a13);
@@ -70,6 +71,7 @@ export class Viewer extends EventTarget {
     const loop = () => {
       requestAnimationFrame(loop);
       if (!this.active) return;
+      for (const f of this.onFrame) f();
       ctl.update();
       r.render(scene, cam);
     };
