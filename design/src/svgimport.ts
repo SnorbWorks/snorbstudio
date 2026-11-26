@@ -147,7 +147,7 @@ export interface ImportOpts {
  * standing on the view's near face. Specks under 0.05 mm² are dropped.
  */
 export function svgFeatures(loops: P2[][], p: Project, o: ImportOpts): Feature[] {
-  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * (o.scaleY ?? o.scale)] as P2), 0.005))
+  const mm = loops.map((l) => simplify(l.map(([x, y]) => [x * o.scale, -y * (o.scaleY ?? o.scale)] as P2), 0.03))
     .map((l) => (l.length > 1 && Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < 1e-6 ? l.slice(0, -1) : l))
     .filter((l) => l.length >= 3 && Math.abs(area(l)) >= 0.05);
   if (!mm.length) return [];

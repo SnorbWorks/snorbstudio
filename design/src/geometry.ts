@@ -2,7 +2,7 @@
 // node for the tests. Nothing here touches the DOM.
 
 import {
-  cast, getOC, makeBaseBox, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
+  cast, getOC, makeBaseBox, makeCompound, makeCylinder, makeProjectedEdges, measureVolume, Plane, ProjectionCamera,
   draw, drawCircle, drawText,
 } from 'replicad';
 import type { Drawing } from 'replicad';
@@ -13,6 +13,15 @@ import { joinLines } from './dxf.js';
 import type { Section } from './section.js';
 import { pitchRadius, outerRadius, gearPath, placePath, type Path } from './gears.js';
 import { VIEWS, VIEW_ORDER } from './views.js';
+import { simplify as fewerPoints } from './svgimport.js';
+
+/**
+ * Dense outlines (SVG imports are traced in hundreds of tiny steps) are built
+ * with the points that sit within this of a straight run left out. Every
+ * point becomes a face and an edge, and every face slows every later cut and
+ * every view; 0.03 mm is well under what the printer can make.
+ */
+export const DENSE_POINTS = 24, DENSE_TOL = 0.03;
 
 export type Line = number[];         // flat [u0, v0, u1, v1, ...]
 
@@ -131,10 +140,12 @@ function drawing(f: Feature, grow = 0): Drawing | null {
     if (f.rot) d = d.rotate(f.rot, [f.cu, f.cv]);
     return d;
   }
-  const v = verts(f);
+  let v = verts(f);
   if (!v) return null;
   if (f.type === 'rect' && (f.w <= 1e-6 || f.h <= 1e-6)) return null;
-  return roundedPolygon(v, cornerRadii(f));
+  const radii = cornerRadii(f);
+  if (f.type === 'poly' && v.length > DENSE_POINTS && radii.every((r) => !(r > 1e-9))) { v = fewerPoints(v, DENSE_TOL); return roundedPolygon(v, v.map(() => 0)); }
+  return roundedPolygon(v, radii);
 }
 
 /** Measured size of a text feature (before turning). */
@@ -357,6 +368,7 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
   let vol = solid ? measureVolume(solid) : 0;
   const effect: Record<string, boolean> = {};
   const errors: Record<string, string> = {};
+  const batches = solid ? planBatches(p) : new Map<string, Batch>();
   for (const f of p.features) {
     try {
       let next: Solid | null = null;
@@ -377,6 +389,20 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
         if (!(size > 0) || !live.length) { effect[f.id] = false; continue; }
         const pick = (e: any) => (live.some((pt) => edgeNear(e, pt)) ? size : 0);
         next = mode === 'chamfer' ? solid.chamfer(pick as any) : solid.fillet(pick as any);
+      } else if (batches.has(f.id)) {
+        const batch = batches.get(f.id)!;
+        if (!batch.length) continue;                  // built with the first of its batch
+        if (!solid) throw new Error('no solid');      // (cannot happen: batches start after a solid exists)
+        const before = solid.boundingBox;
+        const all = makeCompound(batch.map((b) => b.tool.clone()));   // (makeCompound uses up what it's given)
+        next = f.op === 'add' ? solid.fuse(all) : solid.cut(all);
+        const nv = measureVolume(next);
+        const changed = Math.abs(nv - vol) > 1e-6 * Math.max(1, vol);
+        // one boolean for the lot, so whether each one did anything is judged by where it is
+        for (const b of batch) effect[b.f.id] = changed && !before.isOut(b.box);
+        solid = next;
+        vol = nv;
+        continue;
       } else {
         const tool = featureTool(f, p);
         if (!tool) { effect[f.id] = false; continue; }
@@ -389,11 +415,74 @@ export function buildSolid(p: Project): { solid: Solid | null; effect: Record<st
       solid = next;
       vol = nv;
     } catch (e: any) {
+      const batch = batches.get(f.id);
+      if (batch?.length) {
+        // the joint boolean failed: do them one at a time, as before
+        for (const b of batch) {
+          try {
+            const next: Solid = f.op === 'add' ? solid.fuse(b.tool) : solid.cut(b.tool);
+            const nv = measureVolume(next);
+            effect[b.f.id] = Math.abs(nv - vol) > 1e-6 * Math.max(1, vol);
+            solid = next;
+            vol = nv;
+          } catch (e2: any) {
+            effect[b.f.id] = false;
+            errors[b.f.id] = String(e2?.message || e2);
+          }
+        }
+        continue;
+      }
       effect[f.id] = false;
       errors[f.id] = String(e?.message || e);
     }
   }
   return { solid, effect, errors, fillets };
+}
+
+type Batch = { f: Feature; tool: Solid; box: any }[];
+
+/**
+ * Smallest batch worth it. Below this each feature is built alone, which also
+ * tells exactly whether it changed anything ("buried" / "cuts only empty
+ * space"); in a batch that is judged by position only.
+ */
+const BATCH_MIN = 4;
+
+/**
+ * Back-to-back cuts (or adds) are done in one boolean when their tools don't
+ * overlap each other: on a part with many faces each boolean costs about the
+ * same however small the tool, so an imported logo of 40 shapes is 40 times
+ * faster this way (BATCH_MIN or more of them). Map: first feature of a batch -> the batch; the others ->
+ * []. Features not in the map are built one at a time.
+ */
+function planBatches(p: Project): Map<string, Batch> {
+  const out = new Map<string, Batch>();
+  const fs = p.features;
+  let i = 0;
+  while (i < fs.length) {
+    const op = fs[i].op;
+    let j = i;
+    while (j < fs.length && fs[j].type !== 'fillet' && fs[j].op === op) j++;
+    if (j - i >= BATCH_MIN) {
+      const groups: { items: Batch; boxes: any[] }[] = [];
+      for (const f of fs.slice(i, j)) {
+        let tool: Solid | null = null;
+        try { tool = featureTool(f, p); } catch { continue; }   // built alone, which reports its error
+        if (!tool) continue;
+        const box = tool.boundingBox;
+        const g = groups.find((g) => g.boxes.every((b) => b.isOut(box)));
+        if (g) { g.items.push({ f, tool, box }); g.boxes.push(box); }
+        else groups.push({ items: [{ f, tool, box }], boxes: [box] });
+      }
+      for (const g of groups) {
+        if (g.items.length < BATCH_MIN) continue;
+        out.set(g.items[0].f.id, g.items);
+        for (const b of g.items.slice(1)) out.set(b.f.id, []);
+      }
+    }
+    i = Math.max(j, i + 1);
+  }
+  return out;
 }
 
 function nearPoly(poly: number[], pt: Vec3, tol = 0.05): boolean {
